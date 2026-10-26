@@ -5,7 +5,11 @@
 
 #include "game.h"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 
 enum { STREAM_ERROR = 16 }; // u32 error code inside each stream object
@@ -13,8 +17,16 @@ enum { STREAM_ERROR = 16 }; // u32 error code inside each stream object
 static void clearError(void *stream);
 
 DataBuffer *stream_create(void) {
+#ifdef _WIN32
 	DataBuffer *buffer =
 		VirtualAlloc(NULL, sizeof(DataBuffer), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+	DataBuffer *buffer =
+		mmap(NULL, sizeof(DataBuffer), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (buffer == MAP_FAILED) {
+		buffer = NULL;
+	}
+#endif
 	if (buffer) {
 		((DataBufferCtorFn)game_function(RVA_DATA_BUFFER_CTOR))(buffer);
 	}

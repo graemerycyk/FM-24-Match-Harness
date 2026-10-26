@@ -29,12 +29,20 @@ void database_freePeople(PeopleIndex *index);
 // The person with this unique ID, or NULL.
 uint8_t *database_findPerson(const PeopleIndex *index, uint32_t uniqueId);
 
+// How many people the database holds: 0 with no game loaded.
+size_t database_countPeople(void);
+
 // The first human manager's (db::HUMAN_NON_PLAYER) current team, or NULL.
 uint8_t *database_findHumanTeam(void);
 
 // The player record (db::ACTUAL_PLAYER or db::ACTUAL_PLAYER_AND_NON_PLAYER) that `person` is part
 // of, found through the object's RTTI, or NULL if the person is not a player.
 uint8_t *database_playerRecord(const uint8_t *person);
+
+// What game.h's PERSON_* offsets other than PERSON_UNIQUE_ID are relative to: the person itself on
+// Windows; on macOS the person's ACTUAL_PERSON_BASE part, found through its vtable (NULL for the
+// few kinds of person without one).
+const uint8_t *database_personFields(const uint8_t *person);
 
 // "Forename Surname"; returns false (and writes "") if the names cannot be read.
 bool database_personName(const uint8_t *person, char *out, size_t size);

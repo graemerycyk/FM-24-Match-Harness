@@ -20,6 +20,11 @@
 #include <stdint.h>
 
 
+enum {
+	CONFIG_SAVE_LENGTH = 256, // a "save" of up to 255 UTF-8 bytes and its NUL
+	CONFIG_DATE_LENGTH = 32,  // a "game_date" and its NUL
+};
+
 typedef enum ConfigValueKind {
 	CONFIG_U8 = 1,
 	CONFIG_U16 = 2,
@@ -48,6 +53,15 @@ typedef struct ConfigVisitor {
 	void (*source)(void *context, const char *source);
 } ConfigVisitor;
 
+// The save a config was exported from and the in-game date then: its "save" and "game_date" header
+// keys (see docs/FIXTURE.md). Each text is "" unless the key is a string that fits, without control
+// characters.
+typedef struct ConfigOrigin {
+	bool hasSave; // the config has a "save" key, usable or not
+	char save[CONFIG_SAVE_LENGTH];
+	char gameDate[CONFIG_DATE_LENGTH];
+} ConfigOrigin;
+
 // Fills `out` and optional home/away replacement IDs (`teams`, 0 for unchanged).
 // On failure clears both IDs and returns false with a message in `error`.
 bool matchConfig_encode(
@@ -68,6 +82,10 @@ bool matchConfig_visit(
 	char *error,
 	size_t errorSize
 );
+
+// Reads the origin keys of a config's top-level object, skipping everything else. False (with
+// `origin` cleared) if the text is not a JSON object.
+bool matchConfig_readOrigin(const char *json, size_t length, ConfigOrigin *origin);
 
 // As matchConfig_visit, for a file of the same field syntax with another "format"
 // (e.g. "fm24-player/1", a player's database values from `fm24ctl get-player`).

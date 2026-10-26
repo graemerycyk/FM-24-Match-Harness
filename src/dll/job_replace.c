@@ -7,6 +7,7 @@
 #include "database.h"
 #include "files.h"
 #include "game.h"
+#include "game_state.h"
 #include "job.h"
 #include "log.h"
 #include "match.h"
@@ -119,10 +120,14 @@ static void writeConfig(const Job *job, SeedBuilder *builder, uint8_t *team, uin
 	);
 	ByteBuffer merged = {0};
 	Serialised serialised = {0};
+	GameState state;
+	(void)gameState_read(&state, false);
 	if (!seedBuilder_build(builder, seed, &merged)) {
 		job_writeResult("error: the input's edits cannot be placed in the new build; see harness.log");
 	} else if (!reserialise(&merged, &serialised) ||
-						 !output_write(job->output, &serialised, source, teamIds, job->full)) {
+						 !output_write(
+							 job->output, &serialised, source, state.save, state.date, teamIds, job->full
+						 )) {
 		job_writeResult("error: serialise or write failed; see harness.log");
 	} else {
 		job_writeResult(

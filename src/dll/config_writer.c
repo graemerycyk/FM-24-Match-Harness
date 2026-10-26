@@ -7,6 +7,7 @@
 #include "labels.h"
 #include "match.h"
 #include "memory.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +22,6 @@ enum {
 
 static void writeEscaped(FILE *file, const uint8_t *text, size_t length);
 static size_t sequenceLength(uint8_t lead);
-static bool isText(const uint8_t *text, size_t length);
 static bool isStringPair(const Serialised *serialised, size_t i);
 static void writeRatings(FILE *file, const uint8_t *value);
 static void writeStaffAttributes(
@@ -45,6 +45,8 @@ static void writeHeader(
 	FILE *file,
 	const Serialised *serialised,
 	const char *source,
+	const char *save,
+	const char *gameDate,
 	const uint32_t teams[2],
 	bool full
 );
@@ -53,6 +55,8 @@ bool configWriter_write(
 	const wchar_t *path,
 	const Serialised *serialised,
 	const char *source,
+	const char *save,
+	const char *gameDate,
 	const PeopleIndex *people,
 	const uint32_t teams[2],
 	bool full
@@ -61,14 +65,14 @@ bool configWriter_write(
 	if (!labels) {
 		return false;
 	}
-	FILE *file = _wfopen(path, L"wb");
+	FILE *file = platform_openFile(path, "wb");
 	if (!file) {
 		free(labels);
 		return false;
 	}
 	size_t seedOffset = SIZE_MAX;
 	(void)match_seedOffset(serialised->bytes.data, serialised->bytes.length, &seedOffset);
-	writeHeader(file, serialised, source, teams, full);
+	writeHeader(file, serialised, source, save, gameDate, teams, full);
 	for (size_t i = 0; i < serialised->recordCount;) {
 		i += writeField(file, serialised, labels, i, seedOffset, full);
 	}
@@ -112,8 +116,7 @@ static size_t sequenceLength(uint8_t lead) {
 	return lead >= 0xF0 && lead <= 0xF4 ? 4 : 0;
 }
 
-// Valid UTF-8 without control characters: safe to show as a JSON string.
-static bool isText(const uint8_t *text, size_t length) {
+bool configWriter_isText(const uint8_t *text, size_t length) {
 	for (size_t i = 0; i < length;) {
 		size_t sequence = sequenceLength(text[i]);
 		if (sequence == 0 || text[i] < 0x20 || text[i] == 0x7F || i + sequence > length) {
@@ -143,7 +146,8 @@ static bool isStringPair(const Serialised *serialised, size_t i) {
 	const TraceRecord *text = &serialised->records[i + 1];
 	uint32_t size = memory_loadU32(serialised->bytes.data + length->offset);
 	return size > 0 && size <= MAX_MERGED_STRING && text->length == size &&
-				 text->offset == length->offset + 4 && isText(serialised->bytes.data + text->offset, size);
+				 text->offset == length->offset + 4 &&
+				 configWriter_isText(serialised->bytes.data + text->offset, size);
 }
 
 static void writeRatings(FILE *file, const uint8_t *value) {
@@ -279,6 +283,8 @@ static void writeHeader(
 	FILE *file,
 	const Serialised *serialised,
 	const char *source,
+	const char *save,
+	const char *gameDate,
 	const uint32_t teams[2],
 	bool full
 ) {
@@ -291,6 +297,14 @@ static void writeHeader(
 	fprintf(file, "  \"engine_version\": \"%u.%u.%u.%u\",\n", bytes[2], bytes[3], bytes[4], bytes[5]);
 	fprintf(file, "  \"source\": ");
 	configWriter_writeString(file, source);
+	if (save && save[0]) {
+		fprintf(file, ",\n  \"save\": ");
+		configWriter_writeString(file, save);
+	}
+	if (gameDate && gameDate[0]) {
+		fprintf(file, ",\n  \"game_date\": ");
+		configWriter_writeString(file, gameDate);
+	}
 	for (unsigned side = 0; teams && side < 2; ++side) {
 		if (teams[side]) {
 			fprintf(file, ",\n  \"%s_team\": %u", side ? "away" : "home", (unsigned)teams[side]);

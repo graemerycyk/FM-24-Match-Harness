@@ -1,14 +1,15 @@
 """Max out each home staff member's attributes in turn over seeds 1-50.
 
-Run from bin/ on Windows, with the harness built there
+Run from bin/ on Windows or macOS, with the harness built there
 and FM24 idle after "Simulate Match", before "Continue":
 
     python -I ../tools/experiments/staff_attributes.py
     python -I ../tools/experiments/staff_attributes.py --seeds 1-100
     python -I ../tools/experiments/staff_attributes.py --help
 
-The script looks for fm24ctl.exe in the working directory, then in ../bin/.
-Commands run from the executable's directory.
+On macOS, use python3 and start the game with the harness (docs/MACOS.md).
+The script looks for fm24ctl (fm24ctl.exe on Windows) in the working
+directory, then in ../bin/. Commands run from the executable's directory.
 
 The next fixture is exported with seed 42. Every home block with staff
 attributes (the manager, each backroom entry and team_extra: the
@@ -32,10 +33,12 @@ import csv
 import json
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+FM24CTL = "fm24ctl.exe" if sys.platform == "win32" else "fm24ctl"
 
 ATTRIBUTE_COUNT = 52
 SCALE_20_COUNT = 27  # the first 27 are on the 1-20 scale, the rest on 1-100
@@ -142,11 +145,11 @@ def main():
     parser.add_argument("--seeds", default="1-50", help="seed pattern (default 1-50)")
     args = parser.parse_args()
     started = time.perf_counter()
-    fm24ctl = Path("fm24ctl.exe").resolve()
+    fm24ctl = Path(FM24CTL).resolve()
     if not fm24ctl.is_file():
-        fm24ctl = Path("../bin/fm24ctl.exe").resolve()
+        fm24ctl = Path("../bin", FM24CTL).resolve()
     if not fm24ctl.is_file():
-        raise FileNotFoundError("fm24ctl.exe not found in the working directory or ../bin/")
+        raise FileNotFoundError(f"{FM24CTL} not found in the working directory or ../bin/")
     count = seed_count(args.seeds)
     directory = ROOT / "results" / "staff_attributes"
     directory.mkdir(parents=True, exist_ok=True)

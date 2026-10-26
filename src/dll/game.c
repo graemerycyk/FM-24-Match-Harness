@@ -160,6 +160,14 @@ uint32_t game_rva(const void *address) {
 	return rva;
 }
 
+size_t game_translateFrames(void *const *frames, size_t count, uint32_t *out, size_t capacity) {
+	size_t written = count < capacity ? count : capacity;
+	for (size_t i = 0; i < written; ++i) {
+		out[i] = game_rva(frames[i]);
+	}
+	return written;
+}
+
 uint8_t *game_initThread(void) {
 	uint8_t **slots = NULL;
 	memcpy(&slots, (const uint8_t *)NtCurrentTeb() + TEB_TLS_POINTER, sizeof slots);

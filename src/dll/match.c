@@ -10,7 +10,12 @@
 #include "stream.h"
 
 #include <string.h>
+
+#ifdef _WIN32
 #include <xmmintrin.h>
+#else
+#include <fenv.h>
+#endif
 
 
 enum {
@@ -28,7 +33,11 @@ uint8_t *match_build(uint8_t *fixture, uint32_t seed) {
 	rng_seedThread(seed);
 	_Alignas(16) uint8_t scratch[16] = {0};
 	((FixturePrepareFn)game_function(RVA_FIXTURE_PREPARE_TEAMS))(fixture, scratch);
+#ifdef __APPLE__
+	uint8_t *match = ((MatchAllocFn)game_function(RVA_ALLOC_FROM_POOL))(MATCH_SIZE);
+#else
 	uint8_t *match = ((MatchCreateFn)game_function(RVA_ALLOC_FROM_POOL))();
+#endif
 	if (!match) {
 		return NULL;
 	}
@@ -77,9 +86,15 @@ uint8_t *match_deserializeOn(unsigned slot, ByteBuffer *bytes) {
 }
 
 void match_delete(uint8_t *match) {
+#ifdef __APPLE__
+	// The deleting destructor, which takes no flags under the Itanium ABI.
+	MatchFn destroy = (*(MatchFn **)match)[MATCH_DELETING_DESTRUCTOR_SLOT];
+	destroy(match);
+#else
 	// The scalar deleting destructor (vtable slot 0), as the game's session code uses.
 	MatchDeleteFn destroy = **(MatchDeleteFn **)match;
 	destroy(match, 1);
+#endif
 }
 
 void match_handToAssistant(const uint8_t *match) {
@@ -94,10 +109,20 @@ void match_handToAssistant(const uint8_t *match) {
 }
 
 void match_play(uint8_t *match) {
+#ifdef _WIN32
 	unsigned csr = _mm_getcsr();
+#else
+	fenv_t environment;
+	(void)fegetenv(&environment);
+#endif
 	((MatchPrepareFn)game_function(RVA_GAME_MATCH_PREPARE))(match, 0);
 	((MatchRunFn)game_function(RVA_GAME_MATCH_RUN))(match, RUN_TO_END, -1);
-	_mm_setcsr(csr); // Run switches to round-to-nearest + flush-to-zero; restore ours
+	// Run switches to round-to-nearest + flush-to-zero; restore ours
+#ifdef _WIN32
+	_mm_setcsr(csr);
+#else
+	(void)fesetenv(&environment);
+#endif
 }
 
 MatchResult match_result(const uint8_t *match) {

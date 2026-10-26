@@ -14,6 +14,7 @@
 #include "labels.h"
 #include "log.h"
 #include "memory.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -78,8 +79,9 @@ void jobs_getPlayer(const Job *job) {
 static bool readValues(const uint8_t *person, const uint8_t *player, PlayerValues *out) {
 	*out = (PlayerValues){0};
 	uint8_t *nation = NULL;
+	const uint8_t *fields = database_personFields(person);
 	bool ok =
-		memory_readU32(person, PERSON_UNIQUE_ID, &out->uniqueId) &&
+		fields && memory_readU32(person, PERSON_UNIQUE_ID, &out->uniqueId) &&
 		memory_read(player + PLAYER_RATINGS, out->ratings, sizeof out->ratings) &&
 		memory_readU16(player, PLAYER_SHARPNESS, &out->sharpness) &&
 		memory_readU16(player, PLAYER_FATIGUE, &out->fatigue) &&
@@ -89,9 +91,9 @@ static bool readValues(const uint8_t *person, const uint8_t *player, PlayerValue
 		memory_read(player + PLAYER_MORALE, &out->morale, 1) &&
 		memory_readU32(player, PLAYER_LAST_TRANSFER_FEE, &out->lastTransferFee) &&
 		memory_read(player + PLAYER_PREFERRED_POSITION, &out->preferredPosition, 1) &&
-		memory_read(person + PERSON_TRAITS, &out->traits, sizeof out->traits) &&
-		memory_readPointer(person, PERSON_NATION, &nation) &&
-		memory_read(person + PERSON_PERSONALITY, out->personality, PERSONALITY_COUNT) &&
+		memory_read(fields + PERSON_TRAITS, &out->traits, sizeof out->traits) &&
+		memory_readPointer(fields, PERSON_NATION, &nation) &&
+		memory_read(fields + PERSON_PERSONALITY, out->personality, PERSONALITY_COUNT) &&
 		memory_readU16(player, PLAYER_HEIGHT, &out->height) &&
 		memory_read(player + PLAYER_WEIGHT, &out->weight, 1);
 	if (ok && nation) {
@@ -106,8 +108,9 @@ static bool readValues(const uint8_t *person, const uint8_t *player, PlayerValue
 static uint8_t ageOn(const uint8_t *person) {
 	uint16_t birthDay = 0;
 	uint16_t birthYear = 0;
-	if (!memory_readU16(person, PERSON_DATE_OF_BIRTH, &birthDay) ||
-			!memory_readU16(person, PERSON_DATE_OF_BIRTH + 2, &birthYear)) {
+	const uint8_t *fields = database_personFields(person);
+	if (!memory_readU16(fields, PERSON_DATE_OF_BIRTH, &birthDay) ||
+			!memory_readU16(fields, PERSON_DATE_OF_BIRTH + 2, &birthYear)) {
 		return 0;
 	}
 	NextFixture next;
@@ -138,7 +141,7 @@ static bool writePlayer(const wchar_t *path, const PlayerValues *values, const c
 		"personality.sportsmanship",
 		"personality.temperament",
 	};
-	FILE *file = _wfopen(path, L"wb");
+	FILE *file = platform_openFile(path, "wb");
 	if (!file) {
 		return false;
 	}

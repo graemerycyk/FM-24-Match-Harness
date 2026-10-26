@@ -77,7 +77,7 @@ bool embedded_write(const wchar_t *path, const void *bytes, size_t size) {
 		fprintf(
 			stderr,
 			"cannot replace %ls: fm.exe has a different build of protocol %ls loaded; bump "
-			"HARNESS_PROTOCOL or restart the game\n",
+			"HARNESS_PROTOCOL_TEXT (src/common/protocol.h) or restart the game\n",
 			path,
 			HARNESS_PROTOCOL
 		);

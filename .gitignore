@@ -1,5 +1,6 @@
 # build output
 /build/
+/build-windows/
 /bin/
 
 # personal research data (FM database content; do not distribute)
@@ -7,3 +8,6 @@ __pycache__
 /data
 /knowledge-base
 /results
+
+# releases (scripts/release_macos.sh)
+/dist/

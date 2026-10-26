@@ -1,16 +1,17 @@
 """Compare home-player Current Ability at 1 and 200 over seeds 1-300.
 
-Run from bin/ on Windows, with the harness built there
+Run from bin/ on Windows or macOS, with the harness built there
 and FM24 idle after "Simulate Match", before "Continue":
 
     python -I ../tools/experiments/current_ability.py
     python -I ../tools/experiments/current_ability.py --baseline
     python -I ../tools/experiments/current_ability.py --help
 
-The script first looks for fm24ctl.exe in the working directory, then in
-../bin/ relative to that directory. If neither file exists, it raises an
-error before exporting or creating results. Commands run from the selected
-executable's directory.
+On macOS, use python3 and start the game with the harness (docs/MACOS.md).
+The script first looks for fm24ctl (fm24ctl.exe on Windows) in the working
+directory, then in ../bin/ relative to that directory. If neither file exists,
+it raises an error before exporting or creating results. Commands run from the
+selected executable's directory.
 
 Options:
     --baseline  Also run the unmodified fixture before the two CA variants.
@@ -30,10 +31,12 @@ import csv
 import json
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
-THIS_DIR = Path(__file__).resolve()
+ROOT = Path(__file__).resolve().parents[2]
+FM24CTL = "fm24ctl.exe" if sys.platform == "win32" else "fm24ctl"
 
 
 def write_variant(original, label, ability):
@@ -90,14 +93,14 @@ def main():
     )
     args = parser.parse_args()
     started = time.perf_counter()
-    fm24ctl = Path("fm24ctl.exe").resolve()
+    fm24ctl = Path(FM24CTL).resolve()
     if not fm24ctl.is_file():
-        fm24ctl = Path("../bin/fm24ctl.exe").resolve()
+        fm24ctl = Path("../bin", FM24CTL).resolve()
     if not fm24ctl.is_file():
         raise FileNotFoundError(
-            "fm24ctl.exe not found in the working directory or ../bin/"
+            f"{FM24CTL} not found in the working directory or ../bin/"
         )
-    directory = THIS_DIR / "results" / "current-ability"
+    directory = ROOT / "results" / "current-ability"
     directory.mkdir(parents=True, exist_ok=True)
     original = directory / "next-fixture.json"
     subprocess.run(

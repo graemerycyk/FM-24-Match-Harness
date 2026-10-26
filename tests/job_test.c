@@ -125,6 +125,21 @@ TEST(parses_job_messages) {
 	ASSERT_INT_EQ(strcmp(job_takeResult(), ""), 0);
 }
 
+TEST(parses_status_jobs_without_keys) {
+	Job job;
+	char status[] = "command=status\n";
+	ASSERT_BOOL_EQ(job_parse(status, &job), true);
+	ASSERT_BOOL_EQ(job.command == JOB_STATUS, true);
+	ASSERT_BOOL_EQ(job.input[0] == 0 && job.output[0] == 0 && job.seedCount == 0, true);
+	job_free(&job);
+	char withKeys[] = "command=status\r\noutput=C:/ignored.txt\nunknown=1";
+	ASSERT_BOOL_EQ(job_parse(withKeys, &job), true);
+	ASSERT_BOOL_EQ(job.command == JOB_STATUS, true);
+	job_free(&job);
+	char misspelt[] = "command=Status\n";
+	ASSERT_BOOL_EQ(job_parse(misspelt, &job), false);
+}
+
 void registerJobTests(void) {
 	test_run(
 		"job parses progress window handles and rejects invalid values", test_parses_progress_window
@@ -135,4 +150,5 @@ void registerJobTests(void) {
 	);
 	test_run("job rejects malformed and overflowing seeds", test_rejects_invalid_seeds);
 	test_run("job parses job messages and keeps one result", test_parses_job_messages);
+	test_run("job parses status jobs, which need no keys", test_parses_status_jobs_without_keys);
 }

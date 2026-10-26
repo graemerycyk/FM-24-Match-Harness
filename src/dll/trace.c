@@ -10,18 +10,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 
 enum {
-	TRACE_DEPTH = 16, // stack frames kept per write
-	WRITE_SLOT = 5,   // the stream vtable's write method
-	VTABLE_SLOTS = 6,
+	TRACE_DEPTH = 16,     // stack frames kept per write (as Windows RVAs)
+	CAPTURE_DEPTH = 24,   // raw frames captured, before translation (macOS)
 	PATH_BUCKETS = 4096,  // power of two
 	CHAIN_CAPACITY = 256, // TRACE_DEPTH RVAs of at most 8 hex digits plus separators
 };
-
-typedef int64_t (*StreamWriteFn)(void *self, const void *bytes, int64_t length);
 
 typedef struct PathEntry {
 	uint32_t rvas[TRACE_DEPTH - 1];
@@ -39,8 +41,11 @@ static bool traceFailed;
 static uint32_t hashChain(const uint32_t *rvas, size_t count);
 static bool appendPath(Serialised *serialised, const char *chain);
 static uint32_t internPath(const uint32_t *rvas, size_t count);
-static uint32_t pathOf(void *const *frames, int count);
-static int64_t tracedWrite(void *self, const void *bytes, int64_t length);
+static uint32_t pathOf(const uint32_t *frames, size_t count);
+static StreamWriteResult tracedWrite(void *self, const void *bytes, StreamWriteLength length);
+#ifndef _WIN32
+static size_t captureFrames(void *framePointer, void **frames, size_t capacity);
+#endif
 static bool recordsTileBytes(const Serialised *serialised);
 
 bool trace_appendRecord(Serialised *serialised, TraceRecord record) {
@@ -76,19 +81,20 @@ bool trace_serialize(uint8_t *match, Serialised *out, bool traced) {
 	stream_resetOutput(outputBuffer);
 	void ***vtableSlot = (void ***)outputBuffer->output;
 	void **vtable = *vtableSlot;
-	static void *tracingVtable[VTABLE_SLOTS + 1];
+	static void *tracingVtable[STREAM_VTABLE_PREFIX + STREAM_VTABLE_SLOTS];
 	if (traced) {
-		tracingVtable[0] = vtable[-1]; // RTTI locator, in case anything looks
-		memcpy(&tracingVtable[1], vtable, VTABLE_SLOTS * sizeof(void *));
-		originalWrite = (StreamWriteFn)game_functionAt(vtable[WRITE_SLOT]);
+		// The ABI's entries before the address point (RTTI), in case anything looks.
+		memcpy(tracingVtable, vtable - STREAM_VTABLE_PREFIX, STREAM_VTABLE_PREFIX * sizeof(void *));
+		memcpy(&tracingVtable[STREAM_VTABLE_PREFIX], vtable, STREAM_VTABLE_SLOTS * sizeof(void *));
+		originalWrite = (StreamWriteFn)game_functionAt(vtable[STREAM_WRITE_SLOT]);
 		StreamWriteFn replacement = tracedWrite;
 		memcpy(
-			&tracingVtable[1 + WRITE_SLOT], &replacement, sizeof replacement
+			&tracingVtable[STREAM_VTABLE_PREFIX + STREAM_WRITE_SLOT], &replacement, sizeof replacement
 		); // code address as a slot
 		memset(pathBuckets, 0, sizeof pathBuckets);
 		traceFailed = false;
 		active = out;
-		*vtableSlot = &tracingVtable[1];
+		*vtableSlot = &tracingVtable[STREAM_VTABLE_PREFIX];
 	}
 	bool ok =
 		((MatchStreamFn)game_function(RVA_GAME_MATCH_SERIALIZE))(match, &outputBuffer->output, 0);
@@ -193,11 +199,11 @@ static uint32_t internPath(const uint32_t *rvas, size_t count) {
 
 // frames[0] is the write's call site; the chain is frames[1..k] from the outside in, where frame k
 // is the return address inside GAME_MATCH__serialize.
-static uint32_t pathOf(void *const *frames, int count) {
+static uint32_t pathOf(const uint32_t *frames, size_t count) {
 	uint32_t rvas[TRACE_DEPTH - 1];
 	size_t length = 0;
-	for (int k = count - 1; k >= 1; --k) {
-		uint32_t rva = game_rva(frames[k]);
+	for (size_t k = count; k-- > 1;) {
+		uint32_t rva = frames[k];
 		bool top = rva >= RVA_GAME_MATCH_SERIALIZE && rva < RVA_GAME_MATCH_SERIALIZE_END;
 		if (length == 0 && !top) {
 			continue;
@@ -207,29 +213,62 @@ static uint32_t pathOf(void *const *frames, int count) {
 	return internPath(rvas, length);
 }
 
-static int64_t tracedWrite(void *self, const void *bytes, int64_t length) {
+static StreamWriteResult tracedWrite(void *self, const void *bytes, StreamWriteLength length) {
 	if (length <= 0 || traceFailed) {
 		return originalWrite(self, bytes, length);
 	}
-	void *frames[TRACE_DEPTH] = {0};
-	USHORT count =
-		RtlCaptureStackBackTrace(1, TRACE_DEPTH, frames, NULL); // [0] = serialiser call site
+	void *frames[CAPTURE_DEPTH] = {0};
+#ifdef _WIN32
+	size_t captured =
+		RtlCaptureStackBackTrace(1, TRACE_DEPTH, frames, NULL); // [0]: serialiser call site
+#else
+	size_t captured = captureFrames(__builtin_frame_address(0), frames, CAPTURE_DEPTH);
+#endif
+	uint32_t rvas[TRACE_DEPTH] = {0};
+	size_t count = game_translateFrames(frames, captured, rvas, TRACE_DEPTH);
 	uint32_t offset = (uint32_t)stream_outputSize(outputBuffer);
-	int64_t written = originalWrite(self, bytes, length);
+	StreamWriteResult written = originalWrite(self, bytes, length);
 	if (count == 0 || (uint64_t)length > UINT32_MAX - offset) {
 		traceFailed = true;
 	} else {
 		TraceRecord record = {
 			.offset = offset,
 			.length = (uint32_t)length,
-			.site = game_rva(frames[0]),
-			.caller = game_rva(frames[1]),
-			.path = pathOf(frames, count),
+			.site = rvas[0],
+			.caller = count > 1 ? rvas[1] : 0,
+			.path = pathOf(rvas, count),
 		};
 		traceFailed = record.path == UINT32_MAX || !trace_appendRecord(active, record);
 	}
 	return written;
 }
+
+#ifndef _WIN32
+// The return addresses of the frame-pointer chain from `framePointer` (the tracing hook's own
+// frame, so frames[0] is the serialiser's call site), staying on this thread's stack. The game
+// keeps frame pointers, as the Apple ABIs require.
+static size_t captureFrames(void *framePointer, void **frames, size_t capacity) {
+	pthread_t self = pthread_self();
+	uintptr_t high = (uintptr_t)pthread_get_stackaddr_np(self);
+	uintptr_t low = high - pthread_get_stacksize_np(self);
+	uintptr_t frame = (uintptr_t)framePointer;
+	size_t count = 0;
+	while (count < capacity && frame >= low && frame + 2 * sizeof(void *) <= high &&
+				 frame % sizeof(void *) == 0) {
+		void *const *record = (void *const *)frame; // NOLINT(performance-no-int-to-ptr)
+		if (!record[1]) {
+			break;
+		}
+		frames[count++] = record[1];
+		uintptr_t next = (uintptr_t)record[0];
+		if (next <= frame) {
+			break;
+		}
+		frame = next;
+	}
+	return count;
+}
+#endif
 
 // The records must tile the bytes exactly, or the config would not re-encode losslessly.
 static bool recordsTileBytes(const Serialised *serialised) {

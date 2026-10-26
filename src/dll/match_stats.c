@@ -6,6 +6,7 @@
 #include "database.h"
 #include "game.h"
 #include "memory.h"
+#include "platform.h"
 #include "protocol.h"
 
 #include <math.h>
@@ -15,12 +16,21 @@
 
 
 enum {
-	TEAM_DATABASE_TEAM = 72,   // MATCH_TEAM: the database team (club name via database.h)
-	PLAYER_UNIQUE_ID = 80,     // MATCH_PLAYER: u32 database person unique ID
-	TEAM_PLAYERS = 376,        // MATCH_TEAM: MATCH_PLAYER *[TEAM_PLAYER_COUNT]
-	TEAM_PLAYER_COUNT = 962,   // MATCH_TEAM: i8, the matchday squad including substitutes
-	PLAYER_STATS = 5856,       // MATCH_PLAYER: GAME_MATCH_PLAYER_STATS *
-	MATCH_RESULT = 2352,       // GAME_MATCH: the match result object
+#ifdef __APPLE__
+	TEAM_DATABASE_TEAM = 0x50,
+	PLAYER_UNIQUE_ID = 0x48,
+	TEAM_PLAYERS = 0x180,
+	TEAM_PLAYER_COUNT = 0x3D2,
+	PLAYER_STATS = 0x16E0,
+	MATCH_RESULT = 0x920,
+#else
+	TEAM_DATABASE_TEAM = 72, // MATCH_TEAM: the database team (club name via database.h)
+	PLAYER_UNIQUE_ID = 80,   // MATCH_PLAYER: u32 database person unique ID
+	TEAM_PLAYERS = 376,      // MATCH_TEAM: MATCH_PLAYER *[TEAM_PLAYER_COUNT]
+	TEAM_PLAYER_COUNT = 962, // MATCH_TEAM: i8, the matchday squad including substitutes
+	PLAYER_STATS = 5856,     // MATCH_PLAYER: GAME_MATCH_PLAYER_STATS *
+	MATCH_RESULT = 2352,     // GAME_MATCH: the match result object
+#endif
 	RESULT_MATCH_LENGTH = 148, // match result: u16 minutes (90)
 	// GAME_MATCH_PLAYER_STATS members (docs/PLAN.md Phase 18)
 	STATS_PERSON = 16,      // i32 database person ID, -1 if not in the squad
@@ -251,8 +261,8 @@ bool matchStats_write(const MatchStatsTotals *totals, const wchar_t *runOutput) 
 			!siblingPath(runOutput, L"-teams.csv", teamsPath, HARNESS_PATH_LENGTH)) {
 		return false;
 	}
-	FILE *players = _wfopen(playersPath, L"wb");
-	FILE *teams = _wfopen(teamsPath, L"wb");
+	FILE *players = platform_openFile(playersPath, "wb");
+	FILE *teams = platform_openFile(teamsPath, "wb");
 	bool ok = players && teams;
 	if (ok) {
 		PeopleIndex people = {0};
@@ -438,7 +448,9 @@ static bool addTeam(
 static bool
 siblingPath(const wchar_t *runOutput, const wchar_t *suffix, wchar_t *out, size_t size) {
 	size_t length = wcslen(runOutput);
-	size_t stem = length > 4 && _wcsicmp(runOutput + length - 4, L".csv") == 0 ? length - 4 : length;
+	size_t stem = length > 4 && platform_compareWideIgnoringCase(runOutput + length - 4, L".csv") == 0
+									? length - 4
+									: length;
 	int written = swprintf(out, size, L"%.*ls%ls", (int)stem, runOutput, suffix);
 	return written >= 0 && (size_t)written < size;
 }

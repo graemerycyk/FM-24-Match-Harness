@@ -10,3 +10,12 @@
 enum { FIXTURE_EXPORT_FILENAME_LENGTH = 256 };
 
 bool fixtureExport_filename(const FixtureData *data, uint64_t timestamp, wchar_t *out, size_t size);
+// As fixtureExport_filename, as UTF-8 (the name is plain ASCII) ending in `extension`, such as
+// ".json".
+bool fixtureExport_filenameUtf8(
+	const FixtureData *data,
+	uint64_t timestamp,
+	const char *extension,
+	char *out,
+	size_t size
+);

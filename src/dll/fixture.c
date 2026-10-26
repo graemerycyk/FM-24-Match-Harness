@@ -5,29 +5,26 @@
 
 #include "database.h"
 #include "game.h"
+#include "game_state.h"
 #include "memory.h"
 
 #include <stdio.h>
 
 
-enum {
-	DAY_MASK = 0x1FF,
-	TIME_SHIFT = 9,
-	TIME_MASK = 0x7F,
-	QUARTER_HOUR = 15,
-	FIRST_SLOT_HOUR = 6, // time codes count quarter hours from 06:00, plus one
-};
+enum { DAY_MASK = 0x1FF, TIME_SHIFT = 9 };
 
 typedef struct Search {
 	const uint8_t *team;
 	uint64_t now;
 	uint8_t *best;
 	uint64_t bestKey;
+	uint16_t bestDayWord; // the best fixture's date
+	uint16_t bestYear;
 } Search;
 
 static uint64_t dateKey(uint16_t dayWord, uint16_t year);
 static void considerFixture(void *context, uint8_t *fixture);
-static void describe(NextFixture *next, uint64_t key);
+static void describe(NextFixture *next, uint16_t dayWord, uint16_t year);
 
 bool fixture_findNext(NextFixture *next, const char **error) {
 	*next = (NextFixture){0};
@@ -48,7 +45,7 @@ bool fixture_findNext(NextFixture *next, const char **error) {
 		return false;
 	}
 	next->fixture = search.best;
-	describe(next, search.bestKey);
+	describe(next, search.bestDayWord, search.bestYear);
 	return true;
 }
 
@@ -103,10 +100,12 @@ static void considerFixture(void *context, uint8_t *fixture) {
 	if (key >= search->now && key < search->bestKey) {
 		search->bestKey = key;
 		search->best = fixture;
+		search->bestDayWord = dayWord;
+		search->bestYear = year;
 	}
 }
 
-static void describe(NextFixture *next, uint64_t key) {
+static void describe(NextFixture *next, uint16_t dayWord, uint16_t year) {
 	uint8_t *home = NULL;
 	uint8_t *away = NULL;
 	char homeName[64];
@@ -116,18 +115,5 @@ static void describe(NextFixture *next, uint64_t key) {
 	database_clubShortName(home, homeName, sizeof homeName);
 	database_clubShortName(away, awayName, sizeof awayName);
 	(void)snprintf(next->description, sizeof next->description, "%s vs %s", homeName, awayName);
-
-	unsigned year = (unsigned)(key >> 32);
-	unsigned day = (unsigned)(key >> 16) & DAY_MASK;
-	unsigned timeCode = (unsigned)key & TIME_MASK;
-	unsigned minutes = timeCode ? FIRST_SLOT_HOUR * 60 + (timeCode - 1) * QUARTER_HOUR : 0;
-	(void)snprintf(
-		next->when,
-		sizeof next->when,
-		"%u day %u %02u:%02u",
-		year,
-		day,
-		(minutes / 60) % 24,
-		minutes % 60
-	);
+	gameState_formatDate(dayWord, year, next->when, sizeof next->when);
 }

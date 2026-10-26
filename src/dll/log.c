@@ -3,19 +3,26 @@
 
 #include "log.h"
 
+#include "platform.h"
 #include "protocol.h"
 
 #include <stdarg.h>
 #include <stdio.h>
-#include <windows.h>
 
 
 static FILE *logFile;
 
 void log_open(const wchar_t *directory) {
-	wchar_t path[MAX_PATH];
-	if (swprintf(path, MAX_PATH, L"%ls\\%ls", directory, HARNESS_LOG_FILE) > 0) {
-		logFile = _wfopen(path, L"ab");
+	wchar_t path[HARNESS_PATH_LENGTH];
+	if (swprintf(
+				path,
+				HARNESS_PATH_LENGTH,
+				L"%ls%lc%ls",
+				directory,
+				(wint_t)PLATFORM_PATH_SEPARATOR,
+				HARNESS_LOG_FILE
+			) > 0) {
+		logFile = platform_openFile(path, "ab");
 	}
 }
 
@@ -23,11 +30,12 @@ void log_message(const char *format, ...) {
 	if (!logFile) {
 		return;
 	}
-	SYSTEMTIME time;
-	GetLocalTime(&time);
-	fprintf(
-		logFile, "%02d:%02d:%02d.%03d ", time.wHour, time.wMinute, time.wSecond, time.wMilliseconds
-	);
+	int hour = 0;
+	int minute = 0;
+	int second = 0;
+	int millisecond = 0;
+	platform_timeOfDay(&hour, &minute, &second, &millisecond);
+	fprintf(logFile, "%02d:%02d:%02d.%03d ", hour, minute, second, millisecond);
 	va_list args;
 	va_start(args, format);
 	vfprintf(logFile, format, args);

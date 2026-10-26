@@ -84,14 +84,18 @@ int main(const int argc, const char *argv[]) {
 #endif
 #if defined(_WIN32) || defined(FM24_RUNNER_TESTS)
 		{"runner", registerRunnerTests},
+		{"runner_main", registerRunnerMainTests},
 #endif
 #ifdef _WIN32
-		{"runner_main", registerRunnerMainTests},
 		{"fixture_window", registerFixtureWindowTests},
 		{"fixture_load", registerFixtureLoadTests},
 #endif
+#ifdef FM24_MACOS_TESTS
+		{"macos", registerMacosTests},
+#endif
 		{"fixture_data", registerFixtureDataTests},
 		{"fixture_export", registerFixtureExportTests},
+		{"fixture_view", registerFixtureViewTests},
 		{"player_inject", registerPlayerInjectTests},
 	};
 	for (size_t i = 0; i < sizeof tests / sizeof tests[0]; ++i) {

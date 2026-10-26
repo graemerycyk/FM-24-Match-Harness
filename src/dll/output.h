@@ -13,12 +13,15 @@
 // True if `path` wants a JSON config (and therefore a traced serialisation).
 bool output_wantsJson(const wchar_t *path);
 
-// `teams`: optional home/away replacement IDs (0 for unchanged); `full`: also
-// write the research keys. Both apply to a JSON config only (see config_writer.h).
+// `save` and `gameDate`: the loaded save's name and the in-game date, NULL or "" if unknown;
+// `teams`: optional home/away replacement IDs (0 for unchanged); `full`: also write the research
+// keys. They apply to a JSON config only (see config_writer.h).
 bool output_write(
 	const wchar_t *path,
 	const Serialised *serialised,
 	const char *source,
+	const char *save,
+	const char *gameDate,
 	const uint32_t teams[2],
 	bool full
 );

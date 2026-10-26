@@ -13,8 +13,10 @@ void registerFixtureBaselineTests(const char *path);
 void registerRunnerMainTests(void);
 void registerRunnerTests(void);
 void registerFixtureExportTests(void);
+void registerFixtureViewTests(void);
 void registerFixtureWindowTests(void);
 void registerFixtureLoadTests(void);
 void registerPlayerInjectTests(void);
+void registerMacosTests(void);
 
 #endif

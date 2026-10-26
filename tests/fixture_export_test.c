@@ -53,6 +53,35 @@ TEST(enforces_export_filename_length) {
 	ASSERT_BOOL_EQ(fixtureExport_filename(&data, 42, longer, 512), false);
 }
 
+TEST(builds_utf8_export_filenames) {
+	FixtureData data = {0};
+	char filename[FIXTURE_EXPORT_FILENAME_LENGTH] = "";
+	(void)snprintf(data.teams[0].name, FIXTURE_TEXT, "M\xc3\xbcnchen\t\r\n\x01\x7f/\\:*?\"<>|");
+	(void)snprintf(data.teams[1].name, FIXTURE_TEXT, "FC  CITY-1.2&'()");
+	ASSERT_BOOL_EQ(fixtureExport_filenameUtf8(&data, 42, ".json", filename, sizeof filename), true);
+	ASSERT_INT_EQ(strcmp(filename, "mnchen-v-fc--city-1.2&'()-42.json"), 0);
+	ASSERT_BOOL_EQ(fixtureExport_filenameUtf8(&data, 42, ".csv", filename, sizeof filename), true);
+	ASSERT_INT_EQ(strcmp(filename, "mnchen-v-fc--city-1.2&'()-42.csv"), 0);
+	ASSERT_BOOL_EQ(fixtureExport_filenameUtf8(&data, 42, ".json", filename, 8), false);
+	ASSERT_INT_EQ(filename[0], 0);
+	memset(&data, 0, sizeof data);
+	ASSERT_BOOL_EQ(fixtureExport_filenameUtf8(&data, 0, ".json", filename, sizeof filename), true);
+	ASSERT_INT_EQ(strcmp(filename, "-v--0.json"), 0);
+	// The same names, and the same 255-character limit, as the wide version.
+	size_t homeLength = 255 - strlen("-v--42.json");
+	memset(data.teams[0].name, 'A', homeLength);
+	ASSERT_BOOL_EQ(fixtureExport_filenameUtf8(&data, 42, ".json", filename, sizeof filename), true);
+	ASSERT_BOOL_EQ(strlen(filename) == 255, true);
+	wchar_t wide[FIXTURE_EXPORT_FILENAME_LENGTH];
+	ASSERT_BOOL_EQ(fixtureExport_filename(&data, 42, wide, FIXTURE_EXPORT_FILENAME_LENGTH), true);
+	for (size_t i = 0; i <= 255; ++i) {
+		ASSERT_BOOL_EQ(wide[i] == (wchar_t)filename[i], true);
+	}
+	data.teams[0].name[homeLength] = 'A';
+	char longer[512];
+	ASSERT_BOOL_EQ(fixtureExport_filenameUtf8(&data, 42, ".json", longer, sizeof longer), false);
+}
+
 void registerFixtureExportTests(void) {
 	test_run("fixture export builds team-based filenames", test_builds_export_filenames);
 	test_run("fixture export sanitises team names", test_sanitises_export_filenames);
@@ -60,4 +89,5 @@ void registerFixtureExportTests(void) {
 	test_run(
 		"fixture export enforces the filename length limit", test_enforces_export_filename_length
 	);
+	test_run("fixture export builds UTF-8 filenames", test_builds_utf8_export_filenames);
 }

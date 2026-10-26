@@ -2,16 +2,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "fixture_export.h"
 
+#include <stdio.h>
 #include <string.h>
 
 
+// What a team name's byte becomes in a filename, or 0 to drop it.
+static char filenameCharacter(unsigned char c) {
+	if (c < ' ' || c > '~' || strchr("<>:\"/\\|?*", c)) {
+		return 0;
+	}
+	return (char)(c == ' ' ? '-' : c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+}
+
 static void teamFilename(const char *name, wchar_t *out) {
 	for (; *name; ++name) {
-		unsigned char c = (unsigned char)*name;
-		if (c < ' ' || c > '~' || strchr("<>:\"/\\|?*", c)) {
-			continue;
+		char c = filenameCharacter((unsigned char)*name);
+		if (c) {
+			*out++ = (wchar_t)c;
 		}
-		*out++ = (wchar_t)(c == ' ' ? '-' : c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
 	}
 	*out = 0;
 }
@@ -43,5 +51,37 @@ bool fixtureExport_filename(
 	wcscat(out, L"-");
 	wcscat(out, stamp);
 	wcscat(out, L".json");
+	return true;
+}
+
+static void teamFilenameUtf8(const char *name, char *out) {
+	for (; *name; ++name) {
+		char c = filenameCharacter((unsigned char)*name);
+		if (c) {
+			*out++ = c;
+		}
+	}
+	*out = 0;
+}
+
+bool fixtureExport_filenameUtf8(
+	const FixtureData *data,
+	uint64_t timestamp,
+	const char *extension,
+	char *out,
+	size_t size
+) {
+	char home[FIXTURE_TEXT];
+	char away[FIXTURE_TEXT];
+	teamFilenameUtf8(data->teams[0].name, home);
+	teamFilenameUtf8(data->teams[1].name, away);
+	int length =
+		snprintf(out, size, "%s-v-%s-%llu%s", home, away, (unsigned long long)timestamp, extension);
+	if (length < 0 || (size_t)length >= size || length >= FIXTURE_EXPORT_FILENAME_LENGTH) {
+		if (size) {
+			out[0] = 0;
+		}
+		return false;
+	}
 	return true;
 }

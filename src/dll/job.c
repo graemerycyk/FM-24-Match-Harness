@@ -4,6 +4,7 @@
 #include "job.h"
 
 #include "log.h"
+#include "platform.h"
 #include "protocol.h"
 
 #include <errno.h>
@@ -11,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 
 enum { MAX_SEED_RANGE = 10000000 };
@@ -80,7 +80,7 @@ const char *job_takeResult(void) {
 }
 
 static bool widen(const char *text, wchar_t *out, size_t size) {
-	return MultiByteToWideChar(CP_UTF8, 0, text, -1, out, (int)size) > 0;
+	return platform_fromUtf8(text, out, size);
 }
 
 static bool appendSeed(Job *job, size_t *capacity, uint32_t seed) {
@@ -167,6 +167,7 @@ static bool parseCommand(Job *job, const char *value) {
 		{"list_teams", JOB_LIST_TEAMS},
 		{"list_players", JOB_LIST_PLAYERS},
 		{"get_player", JOB_GET_PLAYER},
+		{"status", JOB_STATUS},
 	};
 	for (size_t i = 0; i < sizeof commands / sizeof commands[0]; ++i) {
 		if (strcmp(value, commands[i].name) == 0) {
@@ -292,6 +293,7 @@ static bool isComplete(const Job *job) {
 		case JOB_LIST_TEAMS:
 		case JOB_LIST_PLAYERS: return hasOutput;
 		case JOB_GET_PLAYER: return hasOutput && job->personId != 0;
+		case JOB_STATUS: return true;
 	}
 	return false;
 }

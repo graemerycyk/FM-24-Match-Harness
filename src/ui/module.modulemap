@@ -1,0 +1,8 @@
+// The C the macOS viewer's Swift calls (cmake/macos_viewer.cmake passes -I src/ui). Its headers use
+// only standard C headers; C builds, which do not use modules, ignore this file.
+module FixtureCore {
+	header "fixture_view.h"
+	header "save_list.h"
+	header "../common/channel.h"
+	export *
+}

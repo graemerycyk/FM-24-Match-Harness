@@ -9,6 +9,19 @@
 #include <stdint.h>
 
 
+// The output stream's vtable as the trace copies it (trace.c): the entries before the address point
+// (MSVC: the RTTI locator; Itanium: offset-to-top and type_info), and the write method's slot.
+#ifdef _WIN32
+enum { STREAM_VTABLE_PREFIX = 1, STREAM_VTABLE_SLOTS = 6, STREAM_WRITE_SLOT = 5 };
+typedef int64_t StreamWriteLength;
+typedef int64_t StreamWriteResult;
+#else
+enum { STREAM_VTABLE_PREFIX = 2, STREAM_VTABLE_SLOTS = 7, STREAM_WRITE_SLOT = 6 };
+typedef int64_t StreamWriteLength;
+typedef int64_t StreamWriteResult;
+#endif
+typedef StreamWriteResult (*StreamWriteFn)(void *self, const void *bytes, StreamWriteLength length);
+
 // {refcount, begin, end, cap, pos}, allocated and owned by the game.
 typedef struct SharedBuffer {
 	uint32_t refcount;

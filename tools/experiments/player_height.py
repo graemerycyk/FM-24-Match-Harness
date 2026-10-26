@@ -1,16 +1,18 @@
 """Compare all home players at 150 cm and 210 cm over seeds 1-300.
 
-Run from bin/ on Windows, with the harness built there and FM24 idle after
-"Simulate Match", before "Continue":
+Run from bin/ on Windows or macOS, with the harness built there and FM24 idle
+after "Simulate Match", before "Continue":
 
     python -I ../tools/experiments/player_height.py
     python -I ../tools/experiments/player_height.py --baseline
 
-The script looks for fm24ctl.exe in the working directory, then ../bin/.
-It exports the next fixture with seed 42, then runs 300 matches at 150 cm,
-followed by 300 at 210 cm, including substitutes. Only home-player heights
-change: each .height u32 holds the bits of a float in metres, not centimetres.
-Ratings (including jumping reach), weights and away players stay unchanged.
+On macOS, use python3 and start the game with the harness (docs/MACOS.md).
+The script looks for fm24ctl (fm24ctl.exe on Windows) in the working
+directory, then ../bin/. It exports the next fixture with seed 42, then runs
+300 matches at 150 cm, followed by 300 at 210 cm, including substitutes. Only
+home-player heights change: each .height u32 holds the bits of a float in
+metres, not centimetres. Ratings (including jumping reach), weights and away
+players stay unchanged.
 
 Each run uses --detailed and prints the home team's win/draw/loss record.
 --baseline also runs the unmodified fixture before the two height variants.
@@ -24,10 +26,12 @@ import json
 import re
 import struct
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+FM24CTL = "fm24ctl.exe" if sys.platform == "win32" else "fm24ctl"
 
 
 def write_variant(original, label, height):
@@ -86,12 +90,12 @@ def main():
     )
     args = parser.parse_args()
     started = time.perf_counter()
-    fm24ctl = Path("fm24ctl.exe").resolve()
+    fm24ctl = Path(FM24CTL).resolve()
     if not fm24ctl.is_file():
-        fm24ctl = Path("../bin/fm24ctl.exe").resolve()
+        fm24ctl = Path("../bin", FM24CTL).resolve()
     if not fm24ctl.is_file():
         raise FileNotFoundError(
-            "fm24ctl.exe not found in the working directory or ../bin/"
+            f"{FM24CTL} not found in the working directory or ../bin/"
         )
     directory = ROOT / "results" / "player-height"
     directory.mkdir(parents=True, exist_ok=True)

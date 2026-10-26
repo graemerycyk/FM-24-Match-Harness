@@ -22,7 +22,6 @@ static wchar_t directory[HARNESS_PATH_LENGTH]; // where the DLL and its log live
 
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved);
 
-static void runJob(char *text);
 static void serve(HANDLE pipe);
 static DWORD WINAPI worker(LPVOID parameter);
 static void setDirectory(HINSTANCE module);
@@ -42,26 +41,6 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
 	return TRUE;
 }
 
-static void runJob(char *text) {
-	Job job;
-	if (!job_parse(text, &job)) {
-		job_writeResult("error: cannot read the job; see harness.log");
-		return;
-	}
-	switch (job.command) {
-		case JOB_NONE: break; // job_parse rejects it
-		case JOB_RUN: jobs_run(&job); break;
-		case JOB_BUILD_NEXT: jobs_buildNext(&job); break;
-		case JOB_INSPECT: jobs_inspect(&job); break;
-		case JOB_REPLACE_AWAY:
-		case JOB_REPLACE_HOME: jobs_replaceTeam(&job); break;
-		case JOB_LIST_TEAMS: jobs_listTeams(&job); break;
-		case JOB_LIST_PLAYERS: jobs_listPlayers(&job); break;
-		case JOB_GET_PLAYER: jobs_getPlayer(&job); break;
-	}
-	job_free(&job);
-}
-
 // Reads one job message from a connected runner, runs it and replies with its result line.
 static void serve(HANDLE pipe) {
 	static char text[HARNESS_JOB_LENGTH + 1];
@@ -78,7 +57,7 @@ static void serve(HANDLE pipe) {
 		job_writeResult("error: cannot read the job; see harness.log");
 	} else {
 		text[length] = 0;
-		runJob(text);
+		job_execute(text);
 	}
 	const char *result = job_takeResult();
 	if (!result[0]) {

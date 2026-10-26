@@ -5,6 +5,7 @@
 
 #include "game.h"
 #include "memory.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,6 +84,12 @@ uint8_t *database_findPerson(const PeopleIndex *index, uint32_t uniqueId) {
 	return found ? found->address : NULL;
 }
 
+size_t database_countPeople(void) {
+	uint8_t **start = NULL;
+	uint8_t **end = NULL;
+	return peopleRange(&start, &end) ? (size_t)(end - start) : 0;
+}
+
 uint8_t *database_findHumanTeam(void) {
 	uint8_t **start = NULL;
 	uint8_t **end = NULL;
@@ -97,7 +104,7 @@ uint8_t *database_findHumanTeam(void) {
 		uint8_t *team = NULL;
 		if (memory_readPointer(entry, 0, &person) && memory_readPointer(person, 0, &vtable) &&
 				(uintptr_t)vtable == humanVtable &&
-				memory_readPointer(person, PERSON_CONTRACT, &contract) &&
+				memory_readPointer(database_personFields(person), PERSON_CONTRACT, &contract) &&
 				memory_readPointer(contract, CONTRACT_TEAM, &team)) {
 			return team; // single-player saves have exactly one human manager
 		}
@@ -105,6 +112,52 @@ uint8_t *database_findHumanTeam(void) {
 	return NULL;
 }
 
+#ifdef __APPLE__
+uint8_t *database_playerRecord(const uint8_t *person) {
+	// Itanium RTTI: vtable[-2] is the offset from this subobject to the complete object, vtable[-1]
+	// the std::type_info, whose mangled name is at +8 (arm64 may flag a non-unique name in bit 63).
+	static const char *const playerClasses[] = {
+		"N2db13ACTUAL_PLAYERE",
+		"N2db28ACTUAL_PLAYER_AND_NON_PLAYERE",
+	};
+	uint8_t *vtable = NULL;
+	uint8_t *typeInfo = NULL;
+	uint8_t *nameText = NULL;
+	int64_t offsetToTop = 0;
+	char name[48] = "";
+	if (!memory_readPointer(person, 0, &vtable) ||
+			!memory_read(vtable - 2 * sizeof(void *), &offsetToTop, sizeof offsetToTop) ||
+			!memory_readPointer(vtable, -(ptrdiff_t)sizeof(void *), &typeInfo) ||
+			!memory_readPointer(typeInfo, sizeof(void *), &nameText)) {
+		return NULL;
+	}
+	// NOLINTNEXTLINE(performance-no-int-to-ptr): an address read from the game's RTTI.
+	nameText = (uint8_t *)((uintptr_t)nameText & ~((uintptr_t)1 << 63));
+	if (!memory_read(nameText, name, sizeof name - 1)) {
+		return NULL;
+	}
+	for (size_t i = 0; i < sizeof playerClasses / sizeof playerClasses[0]; ++i) {
+		if (strcmp(name, playerClasses[i]) == 0) {
+			return (uint8_t *)person + offsetToTop;
+		}
+	}
+	return NULL;
+}
+
+const uint8_t *database_personFields(const uint8_t *person) {
+	// The game's own getters for these members are thunks that add this vtable entry to the person.
+	uint8_t *vtable = NULL;
+	uint8_t *getter = NULL;
+	int64_t offset = 0;
+	if (!memory_readPointer(person, 0, &vtable) ||
+			!memory_readPointer(vtable, PERSON_FIELDS_GETTER_SLOT, &getter) ||
+			getter != game_address(RVA_MACOS_PERSON_FORENAME) ||
+			!memory_read(vtable + PERSON_FIELDS_OFFSET, &offset, sizeof offset)) {
+		return NULL;
+	}
+	return person + offset;
+}
+#else
 uint8_t *database_playerRecord(const uint8_t *person) {
 	// MSVC RTTI: vtable[-1] is the complete object locator: u32 signature (1 on x64), u32 offset of
 	// this subobject in the complete object, u32 constructor displacement offset, u32 RVA of the
@@ -129,6 +182,11 @@ uint8_t *database_playerRecord(const uint8_t *person) {
 	}
 	return NULL;
 }
+
+const uint8_t *database_personFields(const uint8_t *person) {
+	return person;
+}
+#endif
 
 bool database_personName(const uint8_t *person, char *out, size_t size) {
 	char forename[MAX_NAME_LENGTH + 1] = "";
@@ -224,11 +282,22 @@ uint32_t database_teamUniqueId(const uint8_t *team) {
 	return uniqueId;
 }
 
-// A game string object: u32 byte length followed by UTF-8 bytes.
+// A game string object: u32 byte length followed by UTF-8 bytes (and a NUL). A length of
+// UINT32_MAX means the game has not counted it: the text ends at the NUL.
 static bool readString(const uint8_t *object, char *out, size_t size) {
 	uint32_t length = 0;
-	if (!memory_readU32(object, 0, &length) || length == 0 || length > MAX_NAME_LENGTH ||
-			length >= size) {
+	if (!memory_readU32(object, 0, &length) || length == 0) {
+		return false;
+	}
+	if (length == UINT32_MAX) {
+		char text[MAX_NAME_LENGTH + 1];
+		if (!memory_read(object + sizeof length, text, sizeof text)) {
+			return false;
+		}
+		const char *end = memchr(text, 0, sizeof text);
+		length = end ? (uint32_t)(end - text) : UINT32_MAX;
+	}
+	if (length == 0 || length > MAX_NAME_LENGTH || length >= size) {
 		return false;
 	}
 	if (!memory_read(object + sizeof length, out, length)) {
@@ -242,12 +311,12 @@ static bool readString(const uint8_t *object, char *out, size_t size) {
 static bool readPersonString(const uint8_t *person, ptrdiff_t offset, char *out, size_t size) {
 	uint8_t *nameObject = NULL;
 	uint8_t *string = NULL;
-	return memory_readPointer(person, offset, &nameObject) &&
+	return memory_readPointer(database_personFields(person), offset, &nameObject) &&
 				 memory_readPointer(nameObject, 0, &string) && readString(string, out, size);
 }
 
-// The people list: [fm.exe + RVA_PEOPLE_LIST] + 0x80 -> {start, end} of an array of person
-// pointers.
+// The people list: [fm.exe + RVA_PEOPLE_LIST] + PEOPLE_LIST_HOLDER -> {start, end} of an array of
+// person pointers.
 static bool peopleRange(uint8_t ***start, uint8_t ***end) {
 	uint8_t *holder = NULL;
 	uint8_t *list = NULL;
@@ -280,7 +349,7 @@ static bool parseUniqueId(const char *spec, uint32_t *uniqueId) {
 static bool containsIgnoringCase(const char *text, const char *part) {
 	size_t length = strlen(part);
 	for (const char *start = text; *start; ++start) {
-		if (_strnicmp(start, part, length) == 0) {
+		if (platform_compareIgnoringCaseN(start, part, length) == 0) {
 			return true;
 		}
 	}
@@ -313,7 +382,7 @@ static void considerTeam(void *context, uint8_t *team) {
 	}
 	char name[MAX_NAME_LENGTH + 1];
 	database_clubShortName(team, name, sizeof name);
-	if (_stricmp(name, search->name) == 0) {
+	if (platform_compareIgnoringCase(name, search->name) == 0) {
 		addClub(search->exact, &search->exactCount, club);
 	} else if (containsIgnoringCase(name, search->name)) {
 		addClub(search->partial, &search->partialCount, club);
@@ -403,7 +472,7 @@ static bool appendPlayer(ByteBuffer *out, const uint8_t *person) {
 	}
 	uint8_t *contract = NULL;
 	uint8_t *team = NULL;
-	if (memory_readPointer(person, PERSON_CONTRACT, &contract) &&
+	if (memory_readPointer(database_personFields(person), PERSON_CONTRACT, &contract) &&
 			memory_readPointer(contract, CONTRACT_TEAM, &team)) {
 		database_clubShortName(team, names[3], sizeof names[3]);
 	}

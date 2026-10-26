@@ -16,6 +16,8 @@ bool output_write(
 	const wchar_t *path,
 	const Serialised *serialised,
 	const char *source,
+	const char *save,
+	const char *gameDate,
 	const uint32_t teams[2],
 	bool full
 ) {
@@ -24,7 +26,7 @@ bool output_write(
 	}
 	PeopleIndex people;
 	(void)database_loadPeople(&people); // without it the config just lacks player names
-	bool ok = configWriter_write(path, serialised, source, &people, teams, full);
+	bool ok = configWriter_write(path, serialised, source, save, gameDate, &people, teams, full);
 	database_freePeople(&people);
 	return ok;
 }

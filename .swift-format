@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "indentation": { "tabs": 1 },
+  "tabWidth": 2,
+  "lineLength": 100,
+  "lineBreakBeforeEachArgument": true,
+  "respectsExistingLineBreaks": true,
+  "rules": { "AlwaysUseLowerCamelCase": false }
+}

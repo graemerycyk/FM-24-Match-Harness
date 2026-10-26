@@ -1,0 +1,86 @@
+# Builds and tests the harness on Windows (MSYS2 MinGW-w64) and macOS, with the macOS fixture
+# viewer, on every push and pull request. Neither job needs the game. Actions are pinned to full
+# commit SHAs.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # The sources and scripts use LF line endings; keep them (the runner's Git would convert).
+      - name: Keep LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The runner's own MSYS2, in C:\msys64, where cmake/mingw64.cmake and scripts/env.sh expect
+      # it. MINGW64 matches the toolchain the project is built with.
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: MINGW64
+          release: false
+          update: true
+          suppress-deprecation-warnings: msystem-mingw64
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+      - name: Build
+        env:
+          CMAKE: /mingw64/bin/cmake.exe
+          NINJA: /mingw64/bin/ninja.exe
+        run: scripts/build.sh
+      - name: Test
+        run: |
+          bin/fm24_tests.exe
+          /mingw64/bin/ctest.exe --test-dir build --output-on-failure
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tools
+        run: brew install ninja llvm
+      # ctest checks the x86_64 slice too when Rosetta is installed.
+      - name: Install Rosetta
+        run: sudo softwareupdate --install-rosetta --agree-to-license || true
+      # The runner's Xcode builds every slice of FM24Viewer.app, so a missing one fails the build.
+      - name: Build
+        env:
+          FM24_VIEWER: "ON"
+        run: scripts/build.sh
+      # ctest also runs the viewer's Swift tests on both slices and checks the bundle.
+      - name: Test
+        run: |
+          bin/fm24_tests
+          ctest --test-dir build --output-on-failure
+      - name: Format and lint
+        run: |
+          scripts/format.sh --check
+          scripts/tidy.sh
+
+  windows-cross:
+    # The MinGW-w64 cross build from a Unix host (cmake/mingw64-cross.cmake), as on a Mac with
+    # Homebrew's mingw-w64. Its tests need Windows, so only the release check runs here.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 cmake ninja-build
+      - name: Build
+        run: |
+          cmake -S . -B build-windows -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw64-cross.cmake \
+            -DCMAKE_BUILD_TYPE=Release -DFM24_BUILD_TESTS=ON
+          cmake --build build-windows
+      - name: Release check
+        run: ctest --test-dir build-windows -R '^release$' --output-on-failure

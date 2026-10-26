@@ -21,5 +21,6 @@ bool fixture_findNext(NextFixture *next, const char **error);
 
 // Whether a copy of `fixture` (the same home and away teams) is among the human manager's attended
 // matches. Only then does the match builder give the human control of their side, with their
-// line-up and tactic; the game adds the copy on match day.
+// line-up and tactic; the game adds the copy once match day reaches the match (Go to Match), not
+// in the morning.
 bool fixture_isAttended(const uint8_t *fixture);

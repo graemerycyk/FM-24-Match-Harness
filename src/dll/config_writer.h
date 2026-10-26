@@ -10,6 +10,8 @@
 //              ["member": game object member,] ["player": name,] ["flags": [...],] <value>
 //              [, "role": "seed"]}
 //
+// "save" and "game_date" (written when given: NULL or "" leaves them out) record the loaded save's
+// name and the in-game date at export (game_state.h), for the runner's information.
 // "home_team"/"away_team" (written for nonzero `teams` IDs) identify teams replacing the
 // fixture's original sides (job_replace.c); `run` rebuilds the input with them.
 //
@@ -34,6 +36,8 @@ bool configWriter_write(
 	const wchar_t *path,
 	const Serialised *serialised,
 	const char *source,
+	const char *save,
+	const char *gameDate,
 	const PeopleIndex *people,
 	const uint32_t teams[2],
 	bool full
@@ -41,3 +45,6 @@ bool configWriter_write(
 
 // Writes `text` (UTF-8) as a quoted JSON string.
 void configWriter_writeString(FILE *file, const char *text);
+
+// Valid UTF-8 without control characters: safe to show as a JSON string or on a result line.
+bool configWriter_isText(const uint8_t *text, size_t length);

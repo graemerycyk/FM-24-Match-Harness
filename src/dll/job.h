@@ -4,6 +4,7 @@
 // Jobs submitted by the runner: a message of key=value lines, and a one-line result (protocol.h).
 #pragma once
 
+#include "platform.h"
 #include "protocol.h"
 
 #include <stdbool.h>
@@ -22,6 +23,7 @@ typedef enum JobCommand {
 	JOB_LIST_TEAMS,   // write every club's first team (unique ID and short name) to a text file
 	JOB_LIST_PLAYERS, // write every player (unique ID, names and club) to a text file
 	JOB_GET_PLAYER,   // write a player's database values for a match config player block
+	JOB_STATUS,       // report what the game is doing (game_state.h), without touching it
 } JobCommand;
 
 enum { JOB_TEAM_LENGTH = 256 };
@@ -33,14 +35,15 @@ typedef struct Job {
 	wchar_t profile[HARNESS_PATH_LENGTH]; // run: optional sample file (see profiler.h)
 	uint32_t *seeds;                      // run
 	size_t seedCount;
-	unsigned threads;         // run: worker threads (1..HARNESS_MAX_THREADS)
-	uintptr_t progressWindow; // run: optional viewer window receiving HARNESS_PROGRESS_MESSAGE
-	bool keepSeed;            // run: play the input's own seed once
-	bool detailed;            // run: also write per-player and per-team statistics (match_stats.h)
+	unsigned threads; // run: worker threads (1..HARNESS_MAX_THREADS)
+	uintptr_t
+		progressWindow;  // run: optional viewer window receiving HARNESS_PROGRESS_MESSAGE (Windows)
+	bool keepSeed;     // run: play the input's own seed once
+	bool detailed;     // run: also write per-player and per-team statistics (match_stats.h)
 	bool humanControl; // run: keep the input's "human in control" flags (no AI in-match changes)
 	bool keepBuild;    // run: patch each seed into the input instead of rebuilding it per seed
 	bool hasSeed;      // build_next: use `seed` instead of a clock value
-	bool full;         // build_next, replace: also write the research keys in a JSON config
+	bool full;         // build_next, inspect, replace: also write the research keys in a JSON config
 	uint32_t seed;
 	char team[JOB_TEAM_LENGTH];     // replace: the new team (database_findTeam's spec)
 	char teams[2][JOB_TEAM_LENGTH]; // run, replace: input's home/away overrides ("": the fixture's)
@@ -49,10 +52,13 @@ typedef struct Job {
 
 // Parses a job's key=value lines (modifying `text`); logs and returns false if it is malformed.
 bool job_parse(char *text, Job *job);
+// Parses and runs one job message (modifying `text`); its outcome is left for job_takeResult. Jobs
+// other than status are refused while the game is loading or processing.
+void job_execute(char *text);
 void job_free(Job *job);
 
 // Sets the job's one-line outcome (must start with "ok" or "error"); a later call replaces it.
-void job_writeResult(const char *format, ...) __attribute__((format(gnu_printf, 1, 2)));
+void job_writeResult(const char *format, ...) PLATFORM_PRINTF(1, 2);
 // The outcome set since the last call ("" if none), for the reply to the runner.
 const char *job_takeResult(void);
 
@@ -64,3 +70,4 @@ void jobs_replaceTeam(const Job *job);
 void jobs_listTeams(const Job *job);
 void jobs_listPlayers(const Job *job);
 void jobs_getPlayer(const Job *job);
+void jobs_status(const Job *job);

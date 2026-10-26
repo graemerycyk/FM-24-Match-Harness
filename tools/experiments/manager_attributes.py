@@ -1,6 +1,6 @@
 """Set each of a manager's attributes in turn to its maximum or to 1, over seeds 1-20.
 
-Run from bin/ on Windows, with the harness built there
+Run from bin/ on Windows or macOS, with the harness built there
 and FM24 idle after "Simulate Match", before "Continue":
 
     python -I ../tools/experiments/manager_attributes.py
@@ -10,7 +10,9 @@ and FM24 idle after "Simulate Match", before "Continue":
     python -I ../tools/experiments/manager_attributes.py --opponent "Aston Villa" --side both --both
     python -I ../tools/experiments/manager_attributes.py --help
 
-The script looks for fm24ctl.exe in the working directory, then in ../bin/.
+On macOS, use python3 and start the game with the harness (docs/MACOS.md).
+The script looks for fm24ctl (fm24ctl.exe on Windows) in the working
+directory, then in ../bin/.
 
 The next fixture is exported with seed 42; with --opponent, the game then
 builds it against that team (fm24ctl replace-away), which may be your own team
@@ -64,11 +66,11 @@ def main():
     )
     args = parser.parse_args()
     started = time.perf_counter()
-    fm24ctl = Path("fm24ctl.exe").resolve()
+    fm24ctl = Path(staff.FM24CTL).resolve()
     if not fm24ctl.is_file():
-        fm24ctl = Path("../bin/fm24ctl.exe").resolve()
+        fm24ctl = Path("../bin", staff.FM24CTL).resolve()
     if not fm24ctl.is_file():
-        raise FileNotFoundError("fm24ctl.exe not found in the working directory or ../bin/")
+        raise FileNotFoundError(f"{staff.FM24CTL} not found in the working directory or ../bin/")
     count = staff.seed_count(args.seeds)
     name = "manager_attributes" + ("-minimum" if args.minimum else "")
     if args.opponent:

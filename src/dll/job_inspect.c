@@ -33,9 +33,11 @@ void jobs_inspect(const Job *job) {
 			job->output,
 			&serialised,
 			"Decoded binary fixture (date annotation unavailable)",
+			NULL, // a binary fixture's save and date are not known
+			NULL,
 			&people,
 			NULL,
-			false
+			job->full
 		);
 		database_freePeople(&people);
 	}

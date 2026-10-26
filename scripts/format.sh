@@ -12,7 +12,7 @@ if [ -z "$version" ] || [ "$version" -lt 22 ]; then
 fi
 
 if [ "$1" = "--check" ]; then
-	sources | xargs -d '\n' "$CLANG_FORMAT" --dry-run --Werror
+	sources | tr '\n' '\0' | xargs -0 "$CLANG_FORMAT" --dry-run --Werror
 else
-	sources | xargs -d '\n' "$CLANG_FORMAT" -i
+	sources | tr '\n' '\0' | xargs -0 "$CLANG_FORMAT" -i
 fi

@@ -1,11 +1,13 @@
-"""Run the goalkeeper league and knockout tournament on Windows with FM24 idle.
+"""Run the goalkeeper league and knockout tournament with FM24 idle.
 
 From the repository root:
     python -I tools/experiments/player-swap/gk-tournament/gk_tournament.py
 
-Paths are independent of the working directory. The runner is bin/fm24ctl.exe;
-goalkeepers.txt and the read-only villas-souped.json live beside this script.
-Outputs default to results/gk-tournament/; --output-dir changes that directory.
+On macOS, use python3 and start the game with the harness (docs/MACOS.md).
+Paths are independent of the working directory. The runner is bin/fm24ctl
+(bin/fm24ctl.exe on Windows); goalkeepers.txt and the read-only
+villas-souped.json live beside this script. Outputs default to
+results/gk-tournament/; --output-dir changes that directory.
 
 Each group's four keepers meet twice, swapping home/away (96 fixtures), over
 seeds 1-500 with --detailed. Player values are fetched once per keeper per invocation, with
@@ -35,6 +37,7 @@ import csv
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -43,7 +46,7 @@ from tempfile import TemporaryDirectory
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
 BASE = HERE / "villas-souped.json"
-RUNNER = ROOT / "bin" / "fm24ctl.exe"
+RUNNER = ROOT / "bin" / ("fm24ctl.exe" if sys.platform == "win32" else "fm24ctl")
 LAST_SEED = 500
 WELLBEING = {
     "condition": ("u16", 10000),
@@ -161,7 +164,7 @@ class Tournament:
 
     def command(self, log, *args):
         if not RUNNER.is_file():
-            raise FileNotFoundError(f"{RUNNER} not found; build the harness on Windows first")
+            raise FileNotFoundError(f"{RUNNER} not found; build the harness first")
         command = [str(RUNNER), *map(str, args)]
         log.write("$ " + subprocess.list2cmdline(command) + "\n")
         log.flush()

@@ -46,6 +46,8 @@ static bool readMember(Encoder *encoder, const char *key, FieldState *field);
 static bool readField(Encoder *encoder);
 static bool readFields(Encoder *encoder);
 static bool readTopLevel(Encoder *encoder, bool *formatOk, bool *haveFields);
+static bool isKey(const ByteBuffer *key, const char *name);
+static bool readOriginText(JsonReader *reader, ByteBuffer *text, char *out, size_t size);
 
 static const char configFormat[] = "fm24-match-config/1";
 
@@ -74,6 +76,35 @@ bool matchConfig_visit(
 	size_t errorSize
 ) {
 	return matchConfig_visitFormat(json, length, configFormat, visitor, error, errorSize);
+}
+
+bool matchConfig_readOrigin(const char *json, size_t length, ConfigOrigin *origin) {
+	JsonReader reader;
+	ByteBuffer key = {0};
+	ByteBuffer text = {0};
+	jsonReader_init(&reader, json, length);
+	*origin = (ConfigOrigin){0};
+	bool ok = jsonReader_consume(&reader, '{');
+	if (ok && !jsonReader_consume(&reader, '}')) {
+		do {
+			ok = jsonReader_readString(&reader, &key) && jsonReader_consume(&reader, ':');
+			bool isSave = ok && isKey(&key, "save");
+			origin->hasSave = origin->hasSave || isSave;
+			if (isSave || (ok && isKey(&key, "game_date"))) {
+				ok = isSave ? readOriginText(&reader, &text, origin->save, sizeof origin->save)
+										: readOriginText(&reader, &text, origin->gameDate, sizeof origin->gameDate);
+			} else if (ok) {
+				ok = jsonReader_skipValue(&reader);
+			}
+		} while (ok && jsonReader_consume(&reader, ','));
+		ok = ok && jsonReader_consume(&reader, '}');
+	}
+	buffer_free(&key);
+	buffer_free(&text);
+	if (!ok) {
+		*origin = (ConfigOrigin){0};
+	}
+	return ok;
 }
 
 bool matchConfig_visitFormat(
@@ -371,4 +402,31 @@ static bool readTopLevel(Encoder *encoder, bool *formatOk, bool *haveFields) {
 		ok = reader->position == reader->end || jsonReader_fail(reader, "trailing data");
 	}
 	return ok;
+}
+
+static bool isKey(const ByteBuffer *key, const char *name) {
+	size_t length = strlen(name);
+	return key->length == length && memcmp(key->data, name, length) == 0;
+}
+
+// An origin key's value: a string is copied to `out` if it fits without control characters (else
+// `out` is ""); any other value is skipped.
+static bool readOriginText(JsonReader *reader, ByteBuffer *text, char *out, size_t size) {
+	out[0] = 0;
+	if (!jsonReader_consume(reader, '"')) {
+		return jsonReader_skipValue(reader);
+	}
+	--reader->position; // back to the quote, which the string reader expects
+	if (!jsonReader_readString(reader, text)) {
+		return false;
+	}
+	bool usable = text->length > 0 && text->length < size;
+	for (size_t i = 0; i < text->length && usable; ++i) {
+		usable = text->data[i] >= 0x20 && text->data[i] != 0x7F;
+	}
+	if (usable) {
+		memcpy(out, text->data, text->length);
+		out[text->length] = 0;
+	}
+	return true;
 }

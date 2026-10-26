@@ -13,6 +13,7 @@
 enum {
 	CLIENT_SHORT_TIMEOUT_MS = 10 * 60 * 1000, // builds, exports, rebuilds
 	CLIENT_LONG_TIMEOUT_MS = 6 * 3600 * 1000, // batches of matches
+	CLIENT_STATUS_TIMEOUT_MS = 30 * 1000,     // a status query, which only waits for another job
 	CLIENT_RESULT_LENGTH = HARNESS_RESULT_LENGTH,
 };
 

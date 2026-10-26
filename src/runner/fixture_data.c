@@ -780,7 +780,9 @@ static bool readData(
 	char *error,
 	size_t errorSize
 ) {
-	*out = (FixtureData){0};
+	// Not a compound literal, which unoptimised builds put on the stack: FixtureData is too big for
+	// the macOS viewer's worker threads.
+	memset(out, 0, sizeof *out);
 	Reader reader = {.out = out, .playerSpans = spans};
 	ConfigVisitor visitor = {.context = &reader, .field = visitField, .source = visitSource};
 	if (!matchConfig_visit(json, length, &visitor, error, errorSize)) {

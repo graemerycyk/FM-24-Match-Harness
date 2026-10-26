@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Whole-file reads and writes with wide (UTF-16) Windows paths.
+// Whole-file reads and writes with wide paths (see platform.h).
 #pragma once
 
 #include "buffer.h"

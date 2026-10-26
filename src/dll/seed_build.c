@@ -44,6 +44,14 @@ typedef struct Alignment {
 	size_t *source; // per built record: the input record it pairs with, or SIZE_MAX
 } Alignment;
 
+// A possible pair of the input's player `input` with the game's build's player `game`.
+typedef struct Candidate {
+	size_t input;
+	size_t game;
+	size_t shared; // records with the same bytes
+	bool sameId;
+} Candidate;
+
 static bool addSwap(
 	Swap *swaps,
 	size_t *count,
@@ -88,18 +96,71 @@ static bool mirrorSide(Serialised *built, unsigned from);
 static bool
 buildSerialised(const SeedBuilder *builder, uint32_t seed, Serialised *out, bool traced);
 static bool roundTrip(const ByteBuffer *bytes, Serialised *out);
+static bool findEdits(
+	const Side *reference,
+	const Side *input,
+	bool *edited,
+	SeedPlayers players[2],
+	char *why,
+	size_t whySize
+);
+static bool comparePlayers(
+	const Side *reference,
+	const Side *input,
+	size_t ends[2],
+	bool *edited,
+	SeedPlayers *players,
+	char *why,
+	size_t whySize
+);
+static bool pairPlayers(
+	const Serialised *reference,
+	const SeedPlayer *game,
+	const Serialised *input,
+	const SeedPlayer *list,
+	size_t count,
+	size_t *pairs,
+	const char *team,
+	char *why,
+	size_t whySize
+);
+static size_t groupOf(
+	const Serialised *reference,
+	const SeedPlayer *game,
+	size_t count,
+	const Serialised *serialised,
+	const SeedPlayer *player
+);
+static size_t firstUnpaired(const size_t *gameGroups, const size_t *inputGroups, size_t count);
+static int compareCandidates(const void *a, const void *b);
+static uint32_t playerPart(const Side *side, size_t record);
+static bool startsPlayer(const Side *side, size_t record);
+static bool splitPlayers(const Side *side, size_t start, SeedPlayer **players, size_t *count);
+static uint32_t personAt(const Serialised *serialised, size_t record);
+static bool
+sameWrites(const Serialised *a, const SeedPlayer *x, const Serialised *b, const SeedPlayer *y);
+static size_t
+sharedRecords(const Serialised *a, const SeedPlayer *x, const Serialised *b, const SeedPlayer *y);
+static bool editsPlayers(const SeedBuilder *builder, unsigned team);
+static bool samePlayers(const SeedBuilder *builder, const Serialised *built, const bool teams[2]);
+static size_t countObservers(const Side *side);
 static bool sameLayout(const Serialised *a, const Serialised *b);
-static bool sameRecord(const Serialised *a, const Serialised *b, size_t i);
+static bool sameRecord(const Serialised *a, size_t i, const Serialised *b, size_t j);
 static bool appendRecord(ByteBuffer *out, const Serialised *from, size_t i);
 static bool parseChains(const Serialised *serialised, Chains *chains);
 static void freeChains(Chains *chains);
 static uint32_t chainKey(const Side *side, size_t record, size_t depth);
+static bool isObserver(const Side *side, size_t record);
+static size_t skipObservers(const Side *side, size_t from, size_t to);
 static bool sameSites(const Alignment *a, size_t i0, size_t i1, size_t j0, size_t j1);
 static size_t runEnd(const Side *side, size_t from, size_t to, size_t depth, uint32_t key);
 static bool sameRuns(const Alignment *a, size_t i0, size_t i1, size_t j0, size_t j1, size_t depth);
 static void alignEnds(const Alignment *a, size_t i0, size_t i1, size_t j0, size_t j1);
 static void align(const Alignment *a, size_t i0, size_t i1, size_t j0, size_t j1, size_t depth);
-static bool alignEdits(Alignment *alignment, const bool *edited, uint32_t seed);
+static bool
+alignPlayers(const Alignment *a, const SeedBuilder *builder, unsigned team, uint32_t seed);
+static bool
+alignEdits(Alignment *alignment, const SeedBuilder *builder, const bool teams[2], uint32_t seed);
 static bool
 mergeEdits(const SeedBuilder *builder, const Serialised *built, uint32_t seed, ByteBuffer *out);
 
@@ -121,38 +182,69 @@ bool seedBuilder_open(
 	// serialiser's own differences (a header flag the deserialiser sets) cancel out.
 	Serialised built = {0};
 	Serialised reference = {0};
+	Side sides[2] = {{.serialised = &reference}, {.serialised = &builder->input}};
 	bool ok = buildSerialised(builder, inputSeed, &built, false) &&
-						roundTrip(&built.bytes, &reference) && roundTrip(input, &builder->input);
+						roundTrip(&built.bytes, &reference) && roundTrip(input, &builder->input) &&
+						parseChains(&reference, &sides[0].chains) &&
+						parseChains(&builder->input, &sides[1].chains);
 	trace_free(&built);
+	bool *edited = NULL; // set in the builder once it opens: seedBuilder_close() then has a lock
 	if (!ok) {
 		(void)snprintf(error, errorSize, "building or loading the match failed; see harness.log");
-	} else if (!sameLayout(&reference, &builder->input)) {
-		(void)snprintf(
-			error,
-			errorSize,
-			"the input is not the game's next fixture (%s%s) or its layout was edited",
-			builder->next.description,
-			builder->teams[0] || builder->teams[1] ? ", with its team overrides" : ""
-		);
-		ok = false;
-	}
-	if (ok) {
-		builder->edited = calloc(builder->input.recordCount, sizeof *builder->edited);
-		ok = builder->edited != NULL;
+	} else {
+		edited = calloc(builder->input.recordCount, sizeof *edited);
+		ok = edited != NULL;
 		if (!ok) {
 			(void)snprintf(error, errorSize, "out of memory recording the input's edits");
 		}
 	}
-	for (size_t i = 0; ok && i < builder->input.recordCount; ++i) {
-		builder->edited[i] = !sameRecord(&reference, &builder->input, i);
-		builder->editCount += builder->edited[i];
+	char reason[192] = "";
+	if (ok && !findEdits(&sides[0], &sides[1], edited, builder->players, reason, sizeof reason)) {
+		(void)snprintf(
+			error,
+			errorSize,
+			"the input is not the game's next fixture (%s%s) or its layout was edited%s%s",
+			builder->next.description,
+			builder->teams[0] || builder->teams[1] ? ", with its team overrides" : "",
+			reason[0] ? ": " : "",
+			reason
+		);
+		ok = false;
 	}
+	for (size_t i = 0; ok && i < builder->input.recordCount; ++i) {
+		builder->editCount += edited[i];
+	}
+	size_t observers[2] = {0};
+	if (ok) {
+		observers[0] = countObservers(&sides[0]);
+		observers[1] = countObservers(&sides[1]);
+	}
+	freeChains(&sides[0].chains);
+	freeChains(&sides[1].chains);
 	trace_free(&reference);
 	if (!ok) {
+		free(edited);
 		seedBuilder_close(builder);
 		return false;
 	}
-	InitializeCriticalSection(&builder->lock);
+	builder->edited = edited;
+	if (observers[0] != observers[1]) {
+		log_message(
+			"the match's observers differ from the game's build (%zu records in the input, %zu in the "
+			"build); each build keeps its own",
+			observers[1],
+			observers[0]
+		);
+	}
+	size_t moved = builder->players[0].moved + builder->players[1].moved;
+	if (moved) {
+		log_message(
+			"%zu of the input's players are at other places in the game's build (the game can order a "
+			"team differently, as in its first build of a club's match); edits follow each player",
+			moved
+		);
+	}
+	platform_initLock(&builder->lock);
 	log_message(
 		"seed builds: %s%s; %zu fields differ from the game's build",
 		builder->next.description,
@@ -191,9 +283,9 @@ size_t seedBuilder_editCount(const SeedBuilder *builder) {
 bool seedBuilder_build(SeedBuilder *builder, uint32_t seed, ByteBuffer *out) {
 	Serialised built = {0};
 	bool applyEdits = builder->editCount != 0;
-	EnterCriticalSection(&builder->lock);
+	platform_lock(&builder->lock);
 	bool ok = buildSerialised(builder, seed, &built, applyEdits);
-	LeaveCriticalSection(&builder->lock);
+	platform_unlock(&builder->lock);
 	if (ok && applyEdits) {
 		ok = mergeEdits(builder, &built, seed, out);
 	} else if (ok) {
@@ -207,10 +299,12 @@ bool seedBuilder_build(SeedBuilder *builder, uint32_t seed, ByteBuffer *out) {
 
 void seedBuilder_close(SeedBuilder *builder) {
 	if (builder->edited) {
-		DeleteCriticalSection(&builder->lock);
+		platform_destroyLock(&builder->lock);
 	}
 	trace_free(&builder->input);
 	free(builder->edited);
+	free(builder->players[0].list);
+	free(builder->players[1].list);
 	*builder = (SeedBuilder){0};
 }
 
@@ -516,6 +610,372 @@ static bool roundTrip(const ByteBuffer *bytes, Serialised *out) {
 	return ok;
 }
 
+// Marks the input's records that differ from the reference build's (`edited` starts cleared) and
+// lists each team's players in `players` (comparePlayers()). False, with the reason in `why` where
+// there is one, unless both make the same writes in the same order, apart from the match's
+// observers, which are never edits: each build lists its own (isObserver()), and the order of each
+// team's players.
+static bool findEdits(
+	const Side *reference,
+	const Side *input,
+	bool *edited,
+	SeedPlayers players[2],
+	char *why,
+	size_t whySize
+) {
+	size_t referenceCount = reference->serialised->recordCount;
+	size_t inputCount = input->serialised->recordCount;
+	bool compared[2] = {false, false};
+	size_t i = skipObservers(reference, 0, referenceCount);
+	size_t j = skipObservers(input, 0, inputCount);
+	while (i < referenceCount && j < inputCount) {
+		uint32_t part = playerPart(reference, i);
+		unsigned team = part == SITE_PART_AWAY;
+		if (part && !compared[team] && playerPart(input, j) == part) {
+			compared[team] = true;
+			size_t ends[2] = {i, j};
+			if (!comparePlayers(reference, input, ends, edited, &players[team], why, whySize)) {
+				return false;
+			}
+			if (players[team].count) {
+				i = skipObservers(reference, ends[0], referenceCount);
+				j = skipObservers(input, ends[1], inputCount);
+				continue;
+			}
+		}
+		if (reference->serialised->records[i].site != input->serialised->records[j].site) {
+			return false;
+		}
+		edited[j] = !sameRecord(reference->serialised, i, input->serialised, j);
+		i = skipObservers(reference, i + 1, referenceCount);
+		j = skipObservers(input, j + 1, inputCount);
+	}
+	return i == referenceCount && j == inputCount;
+}
+
+// Compares a team's players, which start at reference record ends[0] and input record ends[1],
+// in the pairs pairPlayers() makes, lists the input's in `players` and sets `ends` to the records
+// after them. The game does not always list a team's players in the same order: the AI's line-up
+// for another seed or opponent, and a club's first build after the game starts, can order players
+// it rates alike differently (docs/TECHNICAL.md#known-limits). If the reference's players cannot
+// be split, `players` stays empty and they are compared in order.
+static bool comparePlayers(
+	const Side *reference,
+	const Side *input,
+	size_t ends[2],
+	bool *edited,
+	SeedPlayers *players,
+	char *why,
+	size_t whySize
+) {
+	const char *team = playerPart(reference, ends[0]) == SITE_PART_AWAY ? "away" : "home";
+	SeedPlayer *game = NULL;
+	size_t count = 0;
+	if (!splitPlayers(reference, ends[0], &game, &count)) {
+		log_message("cannot split the %s players of the game's build; pairing them in order", team);
+		return true;
+	}
+	SeedPlayer *list = NULL;
+	size_t listed = 0;
+	size_t *pairs = NULL;
+	bool ok = splitPlayers(input, ends[1], &list, &listed);
+	if (ok && listed != count) {
+		(void)snprintf(
+			why, whySize, "the %s team has %zu players, the game's build %zu", team, listed, count
+		);
+		ok = false;
+	}
+	if (ok) {
+		pairs = malloc(count * sizeof *pairs);
+		if (!pairs) {
+			(void)snprintf(why, whySize, "out of memory pairing the %s players", team);
+		}
+		ok = pairs &&
+				 pairPlayers(
+					 reference->serialised, game, input->serialised, list, count, pairs, team, why, whySize
+				 );
+	}
+	for (size_t x = 0; ok && x < count; ++x) {
+		const SeedPlayer *own = &game[pairs[x]];
+		for (size_t k = 0; k < own->end - own->start; ++k) {
+			edited[list[x].start + k] =
+				!sameRecord(reference->serialised, own->start + k, input->serialised, list[x].start + k);
+		}
+		list[x].person = own->person;
+		list[x].occurrence = own->occurrence;
+		players->moved += pairs[x] != x;
+	}
+	if (ok) {
+		ends[0] = game[count - 1].end;
+		ends[1] = list[count - 1].end;
+		players->list = list;
+		players->count = count;
+		list = NULL;
+	}
+	free(pairs);
+	free(list);
+	free(game);
+	return ok;
+}
+
+// Pairs each of the input's players x with a player pairs[x] of the game's build that makes the
+// same writes. Of those, an unedited player shares every record with its own, and an edited or
+// injected one most of them (an injected player keeps the replaced one's familiarity, role ratings
+// and squad number), so pairs sharing more records go first, then those with the same unique ID,
+// then those at the same or a nearer place. False, with the reason, unless every player pairs.
+static bool pairPlayers(
+	const Serialised *reference,
+	const SeedPlayer *game,
+	const Serialised *input,
+	const SeedPlayer *list,
+	size_t count,
+	size_t *pairs,
+	const char *team,
+	char *why,
+	size_t whySize
+) {
+	size_t *gameGroups = malloc(count * sizeof *gameGroups);
+	size_t *inputGroups = malloc(count * sizeof *inputGroups);
+	Candidate *candidates = malloc(count * count * sizeof *candidates);
+	bool *taken = calloc(count, sizeof *taken);
+	bool ok = gameGroups && inputGroups && candidates && taken;
+	if (!ok) {
+		(void)snprintf(why, whySize, "out of memory pairing the %s players", team);
+	}
+	for (size_t k = 0; ok && k < count; ++k) {
+		gameGroups[k] = groupOf(reference, game, count, reference, &game[k]);
+		inputGroups[k] = groupOf(reference, game, count, input, &list[k]);
+	}
+	size_t unpaired = ok ? firstUnpaired(gameGroups, inputGroups, count) : count;
+	if (unpaired < count) {
+		(void)snprintf(
+			why,
+			whySize,
+			"%s.player[%zu] (unique ID %u) matches no player of the game's build",
+			team,
+			unpaired,
+			list[unpaired].person
+		);
+		ok = false;
+	}
+	size_t candidateCount = 0;
+	for (size_t x = 0; ok && x < count; ++x) {
+		pairs[x] = SIZE_MAX;
+		for (size_t y = 0; y < count; ++y) {
+			if (gameGroups[y] == inputGroups[x]) {
+				candidates[candidateCount++] = (Candidate){
+					.input = x,
+					.game = y,
+					.shared = sharedRecords(input, &list[x], reference, &game[y]),
+					.sameId = list[x].person == game[y].person,
+				};
+			}
+		}
+	}
+	if (ok) {
+		qsort(candidates, candidateCount, sizeof *candidates, compareCandidates);
+	}
+	for (size_t c = 0; ok && c < candidateCount; ++c) {
+		const Candidate *candidate = &candidates[c];
+		if (pairs[candidate->input] == SIZE_MAX && !taken[candidate->game]) {
+			pairs[candidate->input] = candidate->game;
+			taken[candidate->game] = true;
+		}
+	}
+	free(gameGroups);
+	free(inputGroups);
+	free(candidates);
+	free(taken);
+	return ok;
+}
+
+// The first of the game's players that makes the same writes as `player`, or `count` if none does.
+static size_t groupOf(
+	const Serialised *reference,
+	const SeedPlayer *game,
+	size_t count,
+	const Serialised *serialised,
+	const SeedPlayer *player
+) {
+	size_t group = 0;
+	while (group < count && !sameWrites(reference, &game[group], serialised, player)) {
+		++group;
+	}
+	return group;
+}
+
+// Each group of players that make the same writes (groupOf()) needs as many of the input's as of
+// the game's. The first input player that has no group, or is one too many for its group, or
+// `count` if every one pairs.
+static size_t firstUnpaired(const size_t *gameGroups, const size_t *inputGroups, size_t count) {
+	for (size_t x = 0; x < count; ++x) {
+		size_t inputs = 0;
+		size_t games = 0;
+		for (size_t k = 0; k < count; ++k) {
+			inputs += k <= x && inputGroups[k] == inputGroups[x];
+			games += gameGroups[k] == inputGroups[x];
+		}
+		if (inputGroups[x] == count || inputs > games) {
+			return x;
+		}
+	}
+	return count;
+}
+
+// More shared records first, then the same unique ID, then the same place, then nearer places.
+static int compareCandidates(const void *a, const void *b) {
+	const Candidate *x = a;
+	const Candidate *y = b;
+	size_t xDistance = x->input > x->game ? x->input - x->game : x->game - x->input;
+	size_t yDistance = y->input > y->game ? y->input - y->game : y->game - y->input;
+	if (x->shared != y->shared) {
+		return x->shared > y->shared ? -1 : 1;
+	}
+	if (x->sameId != y->sameId) {
+		return x->sameId ? -1 : 1;
+	}
+	if (xDistance != yDistance) {
+		return xDistance < yDistance ? -1 : 1;
+	}
+	if (x->input != y->input) {
+		return x->input < y->input ? -1 : 1;
+	}
+	return x->game < y->game ? -1 : x->game > y->game;
+}
+
+// SITE_PART_HOME or SITE_PART_AWAY if `record` is written for one of that team's players, else 0.
+static uint32_t playerPart(const Side *side, size_t record) {
+	uint32_t part = chainKey(side, record, 0);
+	bool team = part == SITE_PART_HOME || part == SITE_PART_AWAY;
+	return team && chainKey(side, record, 1) == SITE_TEAM_PLAYER ? part : 0;
+}
+
+// A player's first write, by MATCH_PLAYER__serialize itself (sites.h).
+static bool startsPlayer(const Side *side, size_t record) {
+	return side->serialised->records[record].site == SITE_PLAYER_FIRST &&
+				 chainKey(side, record, 2) == SITE_PLAYER_FIRST;
+}
+
+// Splits a team's players, whose records start at `start`, into one entry per player, with the
+// first 4-byte SITE_PLAYER_UID write as the player's unique ID (as labels.c names it). False unless
+// each player starts with its first write and no later record belongs to them.
+static bool splitPlayers(const Side *side, size_t start, SeedPlayer **players, size_t *count) {
+	const Serialised *serialised = side->serialised;
+	*players = NULL;
+	*count = 0;
+	uint32_t part = start < serialised->recordCount ? playerPart(side, start) : 0;
+	size_t end = start;
+	size_t total = 0;
+	while (end < serialised->recordCount && playerPart(side, end) == part) {
+		total += startsPlayer(side, end++);
+	}
+	bool ok = part && total && startsPlayer(side, start);
+	for (size_t i = end; ok && i < serialised->recordCount; ++i) {
+		ok = playerPart(side, i) != part;
+	}
+	SeedPlayer *list = ok ? calloc(total, sizeof *list) : NULL;
+	if (!list) {
+		return false;
+	}
+	size_t k = 0;
+	for (size_t i = start; i < end; ++i) {
+		if (startsPlayer(side, i)) {
+			if (k) {
+				list[k - 1].end = i;
+			}
+			list[k++] = (SeedPlayer){.start = i, .uidRecord = SIZE_MAX, .person = UINT32_MAX};
+		}
+		const TraceRecord *record = &serialised->records[i];
+		if (list[k - 1].uidRecord == SIZE_MAX && record->site == SITE_PLAYER_UID &&
+				record->length == sizeof(uint32_t)) {
+			list[k - 1].uidRecord = i;
+			list[k - 1].person = personAt(serialised, i);
+		}
+	}
+	list[k - 1].end = end;
+	for (k = 0; k < total; ++k) {
+		for (size_t earlier = 0; earlier < k; ++earlier) {
+			list[k].occurrence += list[earlier].person == list[k].person;
+		}
+	}
+	*players = list;
+	*count = total;
+	return true;
+}
+
+// The unique ID written by a 4-byte record, or UINT32_MAX.
+static uint32_t personAt(const Serialised *serialised, size_t record) {
+	if (record >= serialised->recordCount || serialised->records[record].length != sizeof(uint32_t)) {
+		return UINT32_MAX;
+	}
+	return memory_loadU32(serialised->bytes.data + serialised->records[record].offset);
+}
+
+// Whether two players make the same writes in the same order.
+static bool
+sameWrites(const Serialised *a, const SeedPlayer *x, const Serialised *b, const SeedPlayer *y) {
+	if (x->end - x->start != y->end - y->start) {
+		return false;
+	}
+	for (size_t k = 0; k < x->end - x->start; ++k) {
+		if (a->records[x->start + k].site != b->records[y->start + k].site) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// How many records two players that make the same writes have in common.
+static size_t
+sharedRecords(const Serialised *a, const SeedPlayer *x, const Serialised *b, const SeedPlayer *y) {
+	size_t shared = 0;
+	for (size_t k = 0; k < x->end - x->start; ++k) {
+		shared += sameRecord(a, x->start + k, b, y->start + k);
+	}
+	return shared;
+}
+
+// Whether the input's edits include one of `team`'s players, paired by person.
+static bool editsPlayers(const SeedBuilder *builder, unsigned team) {
+	const SeedPlayers *players = &builder->players[team];
+	if (players->count == 0) {
+		return false;
+	}
+	for (size_t i = players->list[0].start; i < players->list[players->count - 1].end; ++i) {
+		if (builder->edited[i]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Whether a build with the input's layout lists the players of each team in `teams` in the
+// input's order (with the same layout, its players' unique IDs are where the input's are).
+static bool samePlayers(const SeedBuilder *builder, const Serialised *built, const bool teams[2]) {
+	for (unsigned team = 0; team < 2; ++team) {
+		const SeedPlayers *players = &builder->players[team];
+		for (size_t k = 0; teams[team] && k < players->count; ++k) {
+			uint32_t person = personAt(built, players->list[k].uidRecord);
+			size_t occurrence = 0;
+			for (size_t earlier = 0; earlier < k; ++earlier) {
+				occurrence += personAt(built, players->list[earlier].uidRecord) == person;
+			}
+			if (person != players->list[k].person || occurrence != players->list[k].occurrence) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+static size_t countObservers(const Side *side) {
+	size_t count = 0;
+	for (size_t i = 0; i < side->serialised->recordCount; ++i) {
+		count += isObserver(side, i);
+	}
+	return count;
+}
+
 // The same writes in the same order (values, and so string lengths, may differ).
 static bool sameLayout(const Serialised *a, const Serialised *b) {
 	if (a->recordCount != b->recordCount) {
@@ -529,9 +989,9 @@ static bool sameLayout(const Serialised *a, const Serialised *b) {
 	return true;
 }
 
-static bool sameRecord(const Serialised *a, const Serialised *b, size_t i) {
+static bool sameRecord(const Serialised *a, size_t i, const Serialised *b, size_t j) {
 	const TraceRecord *x = &a->records[i];
-	const TraceRecord *y = &b->records[i];
+	const TraceRecord *y = &b->records[j];
 	return x->length == y->length &&
 				 memcmp(a->bytes.data + x->offset, b->bytes.data + y->offset, x->length) == 0;
 }
@@ -598,6 +1058,22 @@ static uint32_t chainKey(const Side *side, size_t record, size_t depth) {
 	return depth == length ? entry->site : 0;
 }
 
+// A write of the match's observers (sites.h): their count, each entry and each team name.
+static bool isObserver(const Side *side, size_t record) {
+	if (chainKey(side, record, 0) != SITE_PART_MATCH) {
+		return false;
+	}
+	uint32_t key = chainKey(side, record, 1);
+	return key == SITE_OBSERVER_COUNT || key == SITE_OBSERVER_ENTRY || key == SITE_OBSERVER_TEAM;
+}
+
+static size_t skipObservers(const Side *side, size_t from, size_t to) {
+	while (from < to && isObserver(side, from)) {
+		++from;
+	}
+	return from;
+}
+
 static bool sameSites(const Alignment *a, size_t i0, size_t i1, size_t j0, size_t j1) {
 	if (i1 - i0 != j1 - j0) {
 		return false;
@@ -619,17 +1095,17 @@ static size_t runEnd(const Side *side, size_t from, size_t to, size_t depth, uin
 }
 
 // Whether both ranges are the same sequence of runs at `depth` (e.g. the same parts of a team,
-// whatever each part holds).
+// whatever each part holds). The match's observers are not compared.
 static bool sameRuns(const Alignment *a, size_t i0, size_t i1, size_t j0, size_t j1, size_t depth) {
-	size_t i = i0;
-	size_t j = j0;
+	size_t i = skipObservers(&a->input, i0, i1);
+	size_t j = skipObservers(&a->built, j0, j1);
 	while (i < i1 && j < j1) {
 		uint32_t key = chainKey(&a->input, i, depth);
 		if (chainKey(&a->built, j, depth) != key) {
 			return false;
 		}
-		i = runEnd(&a->input, i, i1, depth, key);
-		j = runEnd(&a->built, j, j1, depth, key);
+		i = skipObservers(&a->input, runEnd(&a->input, i, i1, depth, key), i1);
+		j = skipObservers(&a->built, runEnd(&a->built, j, j1, depth, key), j1);
 	}
 	return i == i1 && j == j1;
 }
@@ -655,7 +1131,8 @@ static void alignEnds(const Alignment *a, size_t i0, size_t i1, size_t j0, size_
 // are split into the parts written by each call at `depth` of the serialiser's call chains (the
 // match's blocks, then a team's parts, then a tactic's, ...) and, if both have the same parts in
 // the same order, each pair of parts is aligned one level deeper. Otherwise only the records the
-// two ranges share at their start and end are paired.
+// two ranges share at their start and end are paired. The match's observers are skipped when
+// splitting, so the parts around them still pair; they are never edits, so the build keeps its own.
 static void align(const Alignment *a, size_t i0, size_t i1, size_t j0, size_t j1, size_t depth) {
 	if (sameSites(a, i0, i1, j0, j1)) {
 		for (size_t j = j0; j < j1; ++j) {
@@ -669,19 +1146,79 @@ static void align(const Alignment *a, size_t i0, size_t i1, size_t j0, size_t j1
 		alignEnds(a, i0, i1, j0, j1);
 		return;
 	}
-	size_t i = i0;
-	size_t j = j0;
+	size_t i = skipObservers(&a->input, i0, i1);
+	size_t j = skipObservers(&a->built, j0, j1);
 	while (i < i1 && j < j1) {
 		uint32_t key = chainKey(&a->input, i, depth);
 		size_t iEnd = runEnd(&a->input, i, i1, depth, key);
 		size_t jEnd = runEnd(&a->built, j, j1, depth, key);
 		align(a, i, iEnd, j, jEnd, depth + 1);
-		i = iEnd;
-		j = jEnd;
+		i = skipObservers(&a->input, iEnd, i1);
+		j = skipObservers(&a->built, jEnd, j1);
 	}
 }
 
-static bool alignEdits(Alignment *alignment, const bool *edited, uint32_t seed) {
+// Pairs the build's players of `team` with the input's by person, in place of align()'s pairing,
+// which follows their places: the game can list a team's players in another order
+// (comparePlayers()). Fails if the build leaves out an edited player.
+static bool
+alignPlayers(const Alignment *a, const SeedBuilder *builder, unsigned team, uint32_t seed) {
+	const SeedPlayers *players = &builder->players[team];
+	const char *name = team ? "away" : "home";
+	uint32_t part = team ? SITE_PART_AWAY : SITE_PART_HOME;
+	size_t builtCount = a->built.serialised->recordCount;
+	size_t start = 0;
+	while (start < builtCount && playerPart(&a->built, start) != part) {
+		++start;
+	}
+	SeedPlayer *built = NULL;
+	size_t count = 0;
+	if (!splitPlayers(&a->built, start, &built, &count)) {
+		log_message("seed %u: cannot find the %s players in the game's build", seed, name);
+		return false;
+	}
+	size_t first = players->list[0].start;
+	size_t last = players->list[players->count - 1].end;
+	for (size_t j = 0; j < builtCount; ++j) {
+		size_t i = a->source[j];
+		if ((j >= built[0].start && j < built[count - 1].end) || (i >= first && i < last)) {
+			a->source[j] = SIZE_MAX;
+		}
+	}
+	bool ok = true;
+	for (size_t x = 0; x < players->count; ++x) {
+		const SeedPlayer *player = &players->list[x];
+		size_t b = 0;
+		while (b < count &&
+					 (built[b].person != player->person || built[b].occurrence != player->occurrence)) {
+			++b;
+		}
+		if (b < count) {
+			align(a, player->start, player->end, built[b].start, built[b].end, 2);
+			continue;
+		}
+		bool edited = false;
+		for (size_t i = player->start; i < player->end; ++i) {
+			edited = edited || builder->edited[i];
+		}
+		if (edited) {
+			log_message(
+				"seed %u: the game's build leaves out %s.player[%zu] (unique ID %u), whose fields are "
+				"edited",
+				seed,
+				name,
+				x,
+				player->person
+			);
+			ok = false;
+		}
+	}
+	free(built);
+	return ok;
+}
+
+static bool
+alignEdits(Alignment *alignment, const SeedBuilder *builder, const bool teams[2], uint32_t seed) {
 	size_t inputCount = alignment->input.serialised->recordCount;
 	size_t builtCount = alignment->built.serialised->recordCount;
 	alignment->source = malloc((builtCount ? builtCount : 1) * sizeof *alignment->source);
@@ -696,14 +1233,17 @@ static bool alignEdits(Alignment *alignment, const bool *edited, uint32_t seed) 
 			alignment->source[j] = SIZE_MAX;
 		}
 		align(alignment, 0, inputCount, 0, builtCount, 0);
-		for (size_t j = 0; j < builtCount; ++j) {
+		for (unsigned team = 0; ok && team < 2; ++team) {
+			ok = !teams[team] || alignPlayers(alignment, builder, team, seed);
+		}
+		for (size_t j = 0; ok && j < builtCount; ++j) {
 			if (alignment->source[j] < inputCount) {
 				placed[alignment->source[j]] = true;
 			}
 		}
 	}
 	for (size_t i = 0; ok && i < inputCount; ++i) {
-		if (edited[i] && !placed[i]) {
+		if (builder->edited[i] && !placed[i]) {
 			log_message(
 				"seed %u: the game's build has a different structure around edited field #%zu", seed, i
 			);
@@ -717,13 +1257,16 @@ static bool alignEdits(Alignment *alignment, const bool *edited, uint32_t seed) 
 // The game's build for `seed` with the input's edits re-applied. The build's structure can differ
 // from the input's (the AI manager picks its tactic with the seed, which changes how many player
 // instructions it writes; another away team has another squad), so the two are aligned by
-// align(). An edit that cannot be paired with a record of the build fails the seed.
+// align(), and the players of a team with edited players by person (alignPlayers()). An edit
+// that cannot be paired with a record of the build fails the seed.
 static bool
 mergeEdits(const SeedBuilder *builder, const Serialised *built, uint32_t seed, ByteBuffer *out) {
 	const Serialised *input = &builder->input;
 	size_t builtCount = built->recordCount;
+	const bool teams[2] = {editsPlayers(builder, 0), editsPlayers(builder, 1)};
 	Alignment a = {.input = {.serialised = input}, .built = {.serialised = built}};
-	bool ok = sameLayout(input, built) || alignEdits(&a, builder->edited, seed);
+	bool ok = (sameLayout(input, built) && samePlayers(builder, built, teams)) ||
+						alignEdits(&a, builder, teams, seed);
 	if (ok) {
 		buffer_clear(out);
 	}

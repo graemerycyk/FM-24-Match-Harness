@@ -11,15 +11,22 @@ the values mean. Some of it is still unknown. Where something hasn't been
 tested, this page says so.
 
 To inspect a fixture visually, run `fm24ctl <file>.json` (or `<file>.bin`).
-This opens a read-only Windows viewer, not a match run. JSON is read offline;
-binary inspection requires FM24 running and idle. The viewer shows stored
-tactics, player wellbeing and [tactical
-familiarity](#tactical-familiarity); it does not guess AI starting assignments,
-weather meanings or league/cup type codes. Its date/time comes from the
-export's advisory `source` annotation, converted to `YYYY-MM-DD HH:MM`
-(accounting for leap years), not a decoded date field. Binary dates remain
-unknown when no date annotation is available. See the
-README's [viewer notes](../README.md#view-a-fixture) for the limits.
+This opens the fixture viewer, FM24 Viewer (`FM24Viewer.app`), not a match
+run. It opens JSON fixtures offline and has FM24 decode `.bin` ones, which
+needs FM24 running and idle. The viewer shows stored tactics, player
+wellbeing and [tactical familiarity](#tactical-familiarity); it does not
+guess AI starting assignments, weather meanings or league/cup type codes.
+Its date/time comes from the export's advisory `source` annotation,
+converted to `YYYY-MM-DD HH:MM` (accounting for leap years), not a decoded
+date field. Binary dates remain unknown when no date annotation is
+available. See the README's [viewer notes](../README.md#view-a-fixture) for
+the limits, and the [macOS guide](MACOS.md#the-fixture-viewer) for
+everything the viewer does.
+
+The viewer's player buttons, Venue tab and Simulation tab work as described
+below. Its team picker and swap prompt use the commands under [Changing
+teams](#changing-teams) and [Putting another player in a
+slot](#putting-another-player-in-a-slot).
 
 # The rules
 
@@ -45,8 +52,20 @@ README's [viewer notes](../README.md#view-a-fixture) for the limits.
   counts as edited when it differs from what the game builds with the file's
   own seed. If the game's build for some seed has a different structure where
   you edited (for example another line-up), that seed fails and `harness.log`
-  names the field. `run --keep-build` skips the rebuild and plays your file as
-  it is, changing only the seed.
+  names the field. Edits to a player follow that player: the game doesn't
+  always list a team's players in the same order, so the harness matches
+  each build's players to yours by person. A seed whose build leaves out a
+  player you edited fails. `run --keep-build` skips the rebuild and plays
+  your file as it is, changing only the seed.
+- **Observers are the game's.** The match block lists the people attending to
+  watch players, mostly national-team managers. In a `--full` export they
+  are the fields from the count whose `site` starts with `1a7c16a/` up to,
+  but not including, the field at `1a7c222/`. The game picks them while it
+  builds the match and passes over people it has already booked for a
+  match, so two builds of the same match can list different observers.
+  When `run` rebuilds a seed or a team is replaced, the harness leaves them
+  out of the comparison with the game's build, and each build keeps its own:
+  edits to them are not kept. `run --keep-build` plays them as they are.
 
 To check an edit, run `fm24ctl encode <file>.json <file>.bin`. It fails with
 the field number if a value is invalid.
@@ -58,7 +77,7 @@ The file has a header and a `fields` array:
 ```json
 {
   "format": "fm24-match-config/1",
-  "game_build": 1744804480,
+  "game_build": 2081827,
   "engine_version": "24.2.0.0",
   "source": "Aston Villa vs Bristol City, 2023 day 186 19:30, seed 42",
   "fields": [
@@ -72,8 +91,48 @@ The file has a header and a `fields` array:
 Only `format` and the fields' values are needed to play the file. The
 `home_team` and `away_team` header keys record replacements made by
 `replace-home` and `replace-away` (see [Changing teams](#changing-teams)). The
-rest of the header is information. `game_build` is the PE timestamp of the
-`fm.exe` that wrote it: 1744804480 (Steam) or 1744804949 (Epic Games).
+rest of the header is information. `game_build` is the bundle version of the
+game that wrote it: 2081827 for FM24 24.4.2 from Steam, in both its arm64
+and x86_64 slices. Fixtures exported by the original Windows project carry
+that project's build numbers instead: the PE timestamp of the game's
+`fm.exe`.
+
+Files written by `get-next-fixture`, `replace-home` and `replace-away` also
+have two keys after `source`, each left out when the harness cannot read
+it:
+
+```json
+  "source": "Aston Villa vs Bristol City, 2023 day 186 19:30, seed 42",
+  "save": "LIV_MAIN_FM24",
+  "game_date": "2023 day 180 09:00",
+```
+
+`save` is the name of the save the game had loaded, without `.fm`, and
+`game_date` is the in-game date when the file was written, in the form
+`source` uses. Files from `decode`, and fixtures exported by the original
+Windows project, have neither. Encoding the file ignores them, and they do
+not change the match, but the commands that play or rebuild the file use
+them first:
+
+- `run`, `replace-home`, `replace-away` and `inject-player` with a person
+  ID make sure FM24 has the `save` loaded and idle, and start the game with
+  it if it is not running. They stop if another save is loaded, unless
+  given `--any-save` (see
+  [Commands that check the save](CLI.md#commands-that-check-the-save)).
+- `run` warns when the loaded save is at another date than `game_date`
+  (it has been played on since the export, or is an older copy): the
+  results reflect the save.
+
+To play the file against whichever save is loaded, delete the `save` key or
+pass `--any-save`. Change it to another save's name only for a fixture that
+fits that save. A `save` that cannot be a save's name (empty, a folder, or
+with control characters) stops these commands; only the last part of a path
+counts. FM24 Viewer shows them in its summary
+("Save: LIV_MAIN_FM24, 2023 day 180 09:00") and keeps both in the JSON it
+saves, exports and gives the game; a `.bin` file has neither, so a binary
+copy is played against whichever save is loaded, and the viewer drops both
+once it has saved the fixture as `.bin`. When another save is loaded, its
+**Run Anyway** passes `--any-save`.
 
 Each field has exactly one value key:
 
@@ -103,9 +162,17 @@ out what unnamed fields mean:
 | Key                       | Meaning                                                                                                                                                                                                                  |
 |---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `member`                  | the game object member the value came from, e.g. `MATCH_PLAYER_DATA+0x108`. `(computed)` is a value the game calculated while saving, `(constant)` a fixed byte, `fn_<address>+0xNN` a member of an object not named yet |
-| `site`                    | the addresses (in `fm.exe`) of the code that wrote the value and of its caller                                                                                                                                           |
+| `site`                    | the addresses of the code that wrote the value and of its caller, in the Windows Steam build's `fm.exe` (see below)                                                                                                      |
 | `p`                       | an index into the header's `paths` list: the chain of calls that led to the write                                                                                                                                        |
 | `bytes`, `paths` (header) | the size of the match data the file encodes to, and the call chains `p` refers to                                                                                                                                        |
+
+`site`, `member` and `paths`, like the member names elsewhere on this page,
+name the code and members of the game's Windows Steam build of 24.4.2
+(`fm.exe`), the build the original Windows project supports: the harness
+translates each macOS call stack into that build's frames. A macOS frame
+with no Windows counterpart keeps its own value, `0x80000000` plus its
+macOS offset, such as the caller `84565bf0` in an arm64 export's
+`"site": "1a7fe22/84565bf0"`. See [Build tables](MACOS.md#build-tables).
 
 A few places below refer to a `member`. To find those fields, export with
 `--full`. Fields are in the same order in both kinds of export, so a field's
@@ -161,10 +228,19 @@ For the side you manage, the first 11 players are the starting line-up, in the
 order of the tactic's formation slots: `player[0]` plays `slot[0]`, and so on
 (see [Formation](#formation-positions-roles-and-duties)). The rest are the
 substitutes. This held in the dumps checked so far. The AI side's players are in
-another order.
+another order, and so is your side's until you submit the team. That order can
+change from one build to the next: with another seed or opponent, and between
+the game's first build of a club's match after it starts and later builds (see
+[Known limits](TECHNICAL.md#known-limits)). The order changes how the match
+plays out, so a file exported from such a first build gives other results when
+played as it is (`keep` or `--keep-build`) than when rebuilt.
 
 You can't swap players in or out, or move a player to another slot: players
-write different numbers of fields, so that changes the structure. Pick the
+write different numbers of fields, so another player changes the structure,
+and a rebuild puts each player where the game's build lists that player, so a
+moved block goes back to its place in every rebuilt seed. Played as it is
+(`keep` or `--keep-build`), a moved block keeps its new place, which changes
+the results, and on your submitted side the slot the player plays. Pick the
 line-up in the game and export again. You *can* make a player play like
 another by copying ratings (below), or have the harness copy all of another
 player's database values into the block (see [Putting another player in a
@@ -181,7 +257,10 @@ database with those of the player whose unique ID is 2000040347 (any player
 in the loaded database, at any club), and writes the result to `torre.json`.
 The block keeps its place, so the new player plays the slot's position, role
 and instructions, and `run` rebuilds the file for every seed as usual: the
-copied values count as your edits.
+copied values count as your edits. In each rebuild they go to the replaced
+player's block, wherever the game's build lists it. For your side after you
+submit the team that is the same slot; a seed whose build leaves the replaced
+player out fails.
 
 The values copied are the player's `.ratings`, the [values copied from the
 database](#values-copied-from-the-games-database) (condition, sharpness,
@@ -202,6 +281,15 @@ also changes how matches play out, not only the statistics' names. Not copied:
   player's. The engine doesn't use them to play the match;
 - `.caps` (no database field is known) and `.squad_number` (it belongs to
   the club's contract).
+
+A rebuild puts two of the three copies back. In each seed `run` rebuilds,
+and in the file `replace-home` or `replace-away` writes when it replaces the
+other side, `.person_uid` and the `fn_19ba6e0+0x38` copy (site `19ba773`)
+hold the replaced player's unique ID again. The copied values and the
+`fn_1a7fdc0+0x40` copy (site `1a7fe22`), the one the match identifies the
+player by, stay the injected player's. The replacement's file also names the
+replaced player in the block's `player` note. This was seen with
+`replace-away` on an M1 (arm64) with macOS 27 and FM24 24.4.2 from Steam.
 
 To copy a player's values from a file instead of the running game, save them
 with `fm24ctl get-player 2000040347 torre-values.json` and pass that file in
@@ -363,13 +451,13 @@ defensive to attacking as 1, 3, 7, 10, 13, 16 and very attacking to 20. The
 tackling instruction.
 
 **In the viewer**, the squad tables show each player's value for the seven
-setting categories against their side's `plan[0]`, as a percentage. **Max
-familiarity** sets each category's first entry to the tactic's setting at
-10000, so the selected players show 100% (a category with no entries can't
-gain one, and keeps its floor). Saving or simulating writes these edits into
-the file, like the other player buttons. Position/role/duty isn't shown or
-changed. Exports from before these fields were named show `-` and can't be
-maximised: export the fixture again.
+setting categories against their side's `plan[0]`, as a percentage.
+**Max familiarity** sets each category's first entry to the tactic's
+setting at 10000, so the selected players show 100% (a category with no
+entries can't gain one, and keeps its floor). Saving or simulating writes
+these edits into the file, like the other player buttons.
+Position/role/duty isn't shown or changed. Exports from before these fields
+were named show `-` and can't be maximised: export the fixture again.
 
 **Position/role/duty** compares each entry's `key` with the player's slot in
 the formation. The `key` packs three signed codes: bits 0-5 the position,
@@ -416,6 +504,12 @@ The referee is the exception: the referee block has the same fields, but its
 Whether the engine reads any of them during a match hasn't been tested. As
 with the ratings, editing a field changes only the match, not your save.
 
+The database offsets in the tables on this page are those of the Windows
+build of FM24, as the original Windows project documents them. The macOS
+build lays these records out differently: the offsets the harness reads are
+in `src/dll/game.h`, and the player record's are listed after the players'
+table below.
+
 ## Players
 
 In every `<side>.player[i]` block:
@@ -434,6 +528,13 @@ In every `<side>.player[i]` block:
 | `.last_transfer_fee`             | `u32` | the fee of the player's last transfer, in pounds (0 for a free transfer or academy player)                    | `+0x1E0`                 |
 | `.traits`                        | `u64` | player traits (preferred moves), one bit per trait; the `flags` note names them. See [Traits](#traits)        | person record `+0xF0`    |
 | `.preferred_position`            | `u8`  | where the player prefers to be when he shares a position with teammates; see the table below                  | `+0x266`                 |
+
+In the macOS build the player record has last transfer fee at `+0x1D8`,
+sharpness `+0x1EC`, fatigue `+0x1EE`, condition `+0x1F0`, the three
+reputations `+0x1F2` to `+0x1F6` (in the order above), current ability
+`+0x1F8`, ratings `+0x200` to `+0x244`, morale `+0x257` and preferred
+position `+0x25E`.
+Height and weight ([below](#every-person)) are at `+0x146` and `+0x144`.
 
 `.preferred_position` codes, as the game's position tooltip words them. Codes
 1, 4 and 6 were checked in the game; the others come from FM-Player-Rater's
@@ -456,6 +557,10 @@ adjusted for the match, e.g. 158 for a player whose `.current_ability` is
 Not in the file: potential ability, date of birth (only `.age`),
 international goals, wages, bonuses, contract dates, asking price, injury
 risk and relationships.
+
+The viewer's **Max happiness** button sets the selected players' `.morale`
+to 20, and **Max condition** sets their `.condition`, `.sharpness[0]` and
+`.sharpness[1]` to 10000 and their `.fatigue` to 0.
 
 ### Traits
 
@@ -707,7 +812,7 @@ To check that against a level match, Villa played themselves
 (`manager_attributes.py --opponent "Aston Villa" --side both --both`, seeds
 1-1000, `run --keep-build`). Both managers are Phil Armstead (`motivating` 80,
 `man_management` 50) with the same line-up and tactic; only the away bench
-differs (see [Changing the opponent](#changing-the-opponent)). The baseline,
+differs (see [Changing teams](#changing-teams)). The baseline,
 from the home side, was 298 wins, 210 draws and 492 losses, 2.33-2.72. Each
 attribute was set to its maximum and to 1 for one manager at a time. Seed by
 seed, from the home side:
@@ -744,7 +849,10 @@ exactly as the baseline did, and the unmodified file over seeds 1001-3000 made
 
 In a `--full` export these fields carry a `member`. The table maps each one
 to its database field. A player record starts `0x278` bytes before its person
-record (`0x368` for a player who is also staff).
+record (`0x368` for a player who is also staff). These distances and the
+database fields are the Windows build's, as the original Windows project
+documents them; for the macOS build, see [Values copied from the
+database](#values-copied-from-the-games-database).
 
 | `member`                          | Name                             | Database field                                        |
 |-----------------------------------|----------------------------------|-------------------------------------------------------|
@@ -1102,6 +1210,8 @@ Leave them as they are.
 
 **Marking:** with "mark a specific player" on, a field shortly after `bits[1]`
 (member `fn_1a0fca0+0xc`) holds the opponent's index, and 255 means nobody.
+The index is a place in the opponent's list, which a rebuild can order
+differently, so an edited index can point at another player in some seeds.
 With "mark a specific position" on, the set's last `u32` is the position, as a
 position bit set (see the position table).
 
@@ -1292,10 +1402,15 @@ length, `end[1]` at plus) the `goal` centre, the two goalposts `post[0..1]`
 (±3.66, half of a 7.32 m goal), the two `corner[0..1]` flags (± half the
 width) and the `penalty_spot` (10.97 m, 12 yards, from the goal line). All of
 them follow from the length and width: if you change the pitch size, change
-them too.
+them too, and the half and quarter values. The engine numbers posts and
+corners in opposite directions at the two ends: at `end[0]`, `post[0].x` is
+3.66, `post[1].x` -3.66, `corner[0].x` minus half the width and `corner[1].x`
+plus; at `end[1]` all four signs are reversed. The other `.x` values and
+every `.z` are 0.
 
-The viewer's **Venue** tab does this automatically when saving or simulating,
-including the engine's opposite post/corner numbering at the two ends.
+The viewer's **Venue** tab does this automatically when saving, exporting
+or simulating, including the engine's opposite post/corner numbering at the
+two ends.
 
 **Stadium.**
 
@@ -1323,9 +1438,9 @@ including the engine's opposite post/corner numbering at the two ends.
 `fixture.attendance` and `fixture.away_fans`, and the `fixture_extra` block
 (whose first field is the attendance) with `fixture_extra.home_fans` and
 `fixture_extra.away_fans`. If you edit it, change every copy.
-The Venue tab synchronizes these copies and computes `venue.used_capacity`
-from home fans plus away fans. It rejects attendance or seating capacity
-above the venue capacity.
+The viewer's Venue tab synchronizes these copies and computes
+`venue.used_capacity` from home fans plus away fans. It rejects attendance or
+seating capacity above the venue capacity.
 
 **Stands.** `venue.stand[0..7]` are 8-byte records, going round the ground:
 side, corner, side, corner, ... `.capacity` is the stand's capacity (the four
@@ -1410,8 +1525,11 @@ club's first team. If the name fits more than one club, the command lists them
 with their IDs; use an ID then.
 
 The game builds the new side, picking the squad and tactic as it would for a
-real match. The unchanged side keeps its line-up, tactic and edits. If it is
-your managed team, it keeps the selections you picked in the game.
+real match. The unchanged side keeps its tactic and edits. If it is your
+managed team, it keeps the selections you picked in the game. Otherwise the
+game picks its line-up again, which against another opponent can list its
+players in another order or leave some out: your edits follow each player, and
+the replacement fails if it leaves out a player you edited.
 Your edits to the rest of the file are kept, as `run` keeps them. Edits to the
 replaced team's block are dropped, because those players aren't in the match any more.
 The result line says how many edits were kept and dropped.
@@ -1420,7 +1538,8 @@ The output has `"home_team": <ID>` and/or `"away_team": <ID>` in its header.
 `run` reads both and builds the same teams for every seed. Don't remove them.
 You can replace either side repeatedly; replacing one preserves the other.
 Selecting the fixture's original team clears that side's override.
-The viewer's edit icons use these same commands.
+FM24 Viewer's edit icons (the blue pencils after the team headings) use
+these same commands.
 
 A team can play itself: pick the same team for both sides. The game can't
 build a team against itself (it gives the away side, or once you have
@@ -1499,6 +1618,7 @@ name used above is unique.
 - What most of the unnamed fields are. In a `--full` export many carry a
   `member`, which says where the value lives in the game but not what it
   means.
+- Whether the engine reads the match's observers.
 - Whether the engine reads the position ratings, roles, duties, player
   instructions, set pieces and opposition instructions (not tested yet).
 - Whether the engine reads the [values copied from the
@@ -1519,4 +1639,4 @@ name used above is unique.
   members](#venue).
 
 Found something? Please
-[open an issue](https://github.com/PhilipArmstead/FM-24-Match-Harness/issues).
+[open an issue](https://github.com/graemerycyk/FM-24-Match-Harness/issues).

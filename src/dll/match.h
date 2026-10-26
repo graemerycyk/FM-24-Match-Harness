@@ -23,7 +23,8 @@ typedef struct MatchResult {
 } MatchResult;
 
 // Builds a match from a fixture exactly as MatchBuilder_Create (mode 1) does, with the thread-local
-// RNG seeded from `seed` so the build is reproducible. Free with match_freeBuilt().
+// RNG seeded from `seed` so the build is reproducible, apart from the match's observers (sites.h).
+// Free with match_freeBuilt().
 uint8_t *match_build(uint8_t *fixture, uint32_t seed);
 void match_freeBuilt(uint8_t *match);
 

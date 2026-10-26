@@ -3,13 +3,15 @@
 
 #include "files.h"
 
+#include "platform.h"
+
 #include <stdio.h>
 #include <wchar.h>
 
 
 bool files_read(const wchar_t *path, ByteBuffer *out) {
 	buffer_clear(out);
-	FILE *file = _wfopen(path, L"rb");
+	FILE *file = platform_openFile(path, "rb");
 	if (!file) {
 		return false;
 	}
@@ -24,7 +26,7 @@ bool files_read(const wchar_t *path, ByteBuffer *out) {
 }
 
 bool files_write(const wchar_t *path, const void *bytes, size_t size) {
-	FILE *file = _wfopen(path, L"wb");
+	FILE *file = platform_openFile(path, "wb");
 	if (!file) {
 		return false;
 	}
@@ -35,5 +37,6 @@ bool files_write(const wchar_t *path, const void *bytes, size_t size) {
 bool files_hasExtension(const wchar_t *path, const wchar_t *suffix) {
 	size_t pathLength = wcslen(path);
 	size_t suffixLength = wcslen(suffix);
-	return pathLength >= suffixLength && _wcsicmp(path + pathLength - suffixLength, suffix) == 0;
+	return pathLength >= suffixLength &&
+				 platform_compareWideIgnoringCase(path + pathLength - suffixLength, suffix) == 0;
 }

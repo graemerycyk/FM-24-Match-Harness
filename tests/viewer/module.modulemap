@@ -1,0 +1,6 @@
+// The sample fixtures and save folders, for the viewer's Swift tests.
+module FixtureSamples {
+	header "../fixture_samples.h"
+	header "../save_samples.h"
+	export *
+}

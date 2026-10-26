@@ -18,6 +18,7 @@
 #include "match.h"
 #include "match_stats.h"
 #include "memory.h"
+#include "platform.h"
 #include "profiler.h"
 #include "seed_build.h"
 
@@ -25,7 +26,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 
 typedef struct SeedResult {
@@ -45,15 +45,15 @@ typedef struct Run {
 	atomic_size_t next;
 	atomic_bool failed;
 	SeedResult *results;
-	CRITICAL_SECTION lock; // guards results, counters, progress, the CSV and details
-	size_t written;        // rows written so far (always a prefix of the seed list)
+	PlatformLock lock; // guards results, counters, progress, the CSV and details
+	size_t written;    // rows written so far (always a prefix of the seed list)
 	size_t completed;
 	unsigned homeWins;
 	unsigned draws;
 	uintptr_t progressWindow;
 	FILE *csv;
 	bool outputFailed;
-	LARGE_INTEGER frequency;
+	uint64_t frequency;        // platform_ticks per second
 	Profiler *profiler;        // samples worker 0 (the job thread)
 	MatchStatsTotals *details; // --detailed: player and team statistics summed over the seeds
 	SeedBuilder *seedBuilder;  // rebuilds the input per seed; NULL: patch the seed into the input
@@ -64,7 +64,7 @@ typedef struct Worker {
 	unsigned index;
 } Worker;
 
-static double elapsedMilliseconds(LARGE_INTEGER start, LARGE_INTEGER end, LARGE_INTEGER frequency);
+static double elapsedMilliseconds(uint64_t start, uint64_t end, uint64_t frequency);
 static double threadCpuMilliseconds(void);
 static void
 markPhase(Profiler *profiler, const char *phase, uint32_t seed, double wall, double cpu);
@@ -79,7 +79,7 @@ static bool playSeed(
 );
 static void writeReadyRows(Run *run);
 static void reportProgress(Run *run);
-static DWORD WINAPI worker(LPVOID parameter);
+static void worker(void *parameter);
 static void runWorkers(Run *run, unsigned count);
 static bool openRun(const Job *job, const ByteBuffer *input, Run *run);
 static bool closeRun(Run *run);
@@ -124,9 +124,7 @@ void jobs_run(const Job *job) {
 		run.total,
 		threads
 	);
-	LARGE_INTEGER start;
-	LARGE_INTEGER end;
-	QueryPerformanceCounter(&start);
+	uint64_t start = platform_ticks();
 	run.profiler = job->profile[0] ? profiler_start(job->profile) : NULL;
 	reportProgress(&run);
 	if (job->profile[0] && !run.profiler) {
@@ -135,7 +133,7 @@ void jobs_run(const Job *job) {
 		runWorkers(&run, threads);
 	}
 	profiler_stop(run.profiler);
-	QueryPerformanceCounter(&end);
+	uint64_t end = platform_ticks();
 	bool ok = run.written == run.total && !atomic_load_explicit(&run.failed, memory_order_relaxed);
 	if (ok && run.details && !matchStats_write(run.details, job->output)) {
 		log_message("cannot write the detailed statistics");
@@ -162,22 +160,13 @@ void jobs_run(const Job *job) {
 	);
 }
 
-static double elapsedMilliseconds(LARGE_INTEGER start, LARGE_INTEGER end, LARGE_INTEGER frequency) {
-	return 1000.0 * (double)(end.QuadPart - start.QuadPart) / (double)frequency.QuadPart;
+static double elapsedMilliseconds(uint64_t start, uint64_t end, uint64_t frequency) {
+	return 1000.0 * (double)(end - start) / (double)frequency;
 }
 
 // CPU time the calling thread has used, in milliseconds.
 static double threadCpuMilliseconds(void) {
-	FILETIME created;
-	FILETIME exited;
-	FILETIME kernel;
-	FILETIME user;
-	if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
-		return 0;
-	}
-	ULARGE_INTEGER kernelTime = {.LowPart = kernel.dwLowDateTime, .HighPart = kernel.dwHighDateTime};
-	ULARGE_INTEGER userTime = {.LowPart = user.dwLowDateTime, .HighPart = user.dwHighDateTime};
-	return (double)(kernelTime.QuadPart + userTime.QuadPart) / 10000.0; // 100 ns units
+	return (double)platform_threadCpuTime() / 10000.0; // 100 ns units
 }
 
 // Notes one phase's wall and CPU time in the profile.
@@ -211,12 +200,10 @@ static bool playSeed(
 	} else {
 		memcpy(input->data + run->seedOffset, &seed, sizeof seed);
 	}
-	LARGE_INTEGER start;
-	LARGE_INTEGER loaded;
-	LARGE_INTEGER end;
+	uint64_t loaded = 0;
 	double cpuStart = profiler ? threadCpuMilliseconds() : 0;
 	double cpuLoaded = 0;
-	QueryPerformanceCounter(&start);
+	uint64_t start = platform_ticks();
 	uint8_t *match = match_deserializeOn(slot, bytes);
 	buffer_free(&rebuilt);
 	if (!match) {
@@ -224,14 +211,14 @@ static bool playSeed(
 		return false;
 	}
 	if (profiler) {
-		QueryPerformanceCounter(&loaded);
+		loaded = platform_ticks();
 		cpuLoaded = threadCpuMilliseconds();
 	}
 	if (!run->job->humanControl) {
 		match_handToAssistant(match);
 	}
 	match_play(match);
-	QueryPerformanceCounter(&end);
+	uint64_t end = platform_ticks();
 	if (profiler) {
 		double cpuEnd = threadCpuMilliseconds();
 		double wallLoad = elapsedMilliseconds(start, loaded, run->frequency);
@@ -243,9 +230,9 @@ static bool playSeed(
 	out->match = match_result(match);
 	bool ok = true;
 	if (run->details) {
-		EnterCriticalSection(&run->lock);
+		platform_lock(&run->lock);
 		ok = matchStats_add(run->details, match);
-		LeaveCriticalSection(&run->lock);
+		platform_unlock(&run->lock);
 		if (!ok) {
 			log_message("seed %u: out of memory accumulating player statistics", seed);
 		}
@@ -291,7 +278,9 @@ static void writeReadyRows(Run *run) {
 	}
 }
 
+// Posts a snapshot to the viewer window (Windows only: the macOS runner has no viewer).
 static void reportProgress(Run *run) {
+#ifdef _WIN32
 	if (run->progressWindow &&
 			!PostMessageW(
 				(HWND)run->progressWindow, // NOLINT(performance-no-int-to-ptr): cross-process HWND.
@@ -302,23 +291,26 @@ static void reportProgress(Run *run) {
 		log_message("cannot report simulation progress (Windows error %lu)", GetLastError());
 		run->progressWindow = 0;
 	}
+#else
+	(void)run;
+#endif
 }
 
-static DWORD WINAPI worker(LPVOID parameter) {
+static void worker(void *parameter) {
 	const Worker *self = parameter;
 	Run *run = self->run;
 	game_initThread();
 	if (!match_inputStream(self->index)) {
 		log_message("worker %u: cannot create a stream", self->index);
 		atomic_store_explicit(&run->failed, true, memory_order_relaxed);
-		return 1;
+		return;
 	}
 	ByteBuffer input = {0}; // a private copy: each worker patches its own seed into it
 	SeedBuilder *builder = run->seedBuilder;
 	if (!builder && !buffer_append(&input, run->input->data, run->input->length)) {
 		log_message("worker %u: out of memory copying the input", self->index);
 		atomic_store_explicit(&run->failed, true, memory_order_relaxed);
-		return 1;
+		return;
 	}
 	Profiler *profiler = self->index == 0 ? run->profiler : NULL;
 	while (!atomic_load_explicit(&run->failed, memory_order_relaxed)) {
@@ -330,32 +322,30 @@ static DWORD WINAPI worker(LPVOID parameter) {
 		SeedResult result = {0};
 		result.ok = playSeed(run, self->index, &input, builder, seed, profiler, &result);
 		result.done = true;
-		EnterCriticalSection(&run->lock);
+		platform_lock(&run->lock);
 		run->results[index] = result;
 		writeReadyRows(run);
 		run->completed += result.ok;
 		run->homeWins += result.ok && result.match.homeGoals > result.match.awayGoals;
 		run->draws += result.ok && result.match.homeGoals == result.match.awayGoals;
 		reportProgress(run);
-		LeaveCriticalSection(&run->lock);
+		platform_unlock(&run->lock);
 		if (!result.ok) {
 			atomic_store_explicit(&run->failed, true, memory_order_relaxed);
 			break;
 		}
 	}
 	buffer_free(&input);
-	return 0;
 }
 
 // Runs worker 0 on this thread and the others on new threads; returns once all have finished.
 static void runWorkers(Run *run, unsigned count) {
 	Worker workers[HARNESS_MAX_THREADS];
-	HANDLE threads[HARNESS_MAX_THREADS];
+	PlatformThread threads[HARNESS_MAX_THREADS];
 	unsigned started = 0;
 	for (unsigned i = 1; i < count; ++i) {
 		workers[i] = (Worker){run, i};
-		threads[started] = CreateThread(NULL, 0, worker, &workers[i], 0, NULL);
-		if (!threads[started]) {
+		if (!platform_startThread(&threads[started], worker, &workers[i])) {
 			log_message("cannot start worker %u; continuing with %u", i, started + 1);
 			break;
 		}
@@ -363,12 +353,7 @@ static void runWorkers(Run *run, unsigned count) {
 	}
 	workers[0] = (Worker){run, 0};
 	worker(&workers[0]);
-	if (started > 0) {
-		WaitForMultipleObjects(started, threads, TRUE, INFINITE);
-	}
-	for (unsigned i = 0; i < started; ++i) {
-		CloseHandle(threads[i]);
-	}
+	platform_joinThreads(threads, started);
 }
 
 static bool openRun(const Job *job, const ByteBuffer *input, Run *run) {
@@ -378,7 +363,7 @@ static bool openRun(const Job *job, const ByteBuffer *input, Run *run) {
 		.progressWindow = job->progressWindow};
 	atomic_init(&run->next, 0);
 	atomic_init(&run->failed, false);
-	QueryPerformanceFrequency(&run->frequency);
+	run->frequency = platform_tickFrequency();
 	if (!match_seedOffset(input->data, input->length, &run->seedOffset)) {
 		log_message("the input is not a serialised GAME_MATCH");
 		return false;
@@ -386,7 +371,7 @@ static bool openRun(const Job *job, const ByteBuffer *input, Run *run) {
 	run->fileSeed = memory_loadU32(input->data + run->seedOffset);
 	run->results = calloc(run->total, sizeof *run->results);
 	run->details = job->detailed ? calloc(1, sizeof *run->details) : NULL;
-	run->csv = _wfopen(job->output, L"wb");
+	run->csv = platform_openFile(job->output, "wb");
 	if (!run->results || !run->csv || (job->detailed && !run->details)) {
 		log_message("out of memory, or cannot open the output file");
 		free(run->results);
@@ -396,7 +381,7 @@ static bool openRun(const Job *job, const ByteBuffer *input, Run *run) {
 		}
 		return false;
 	}
-	InitializeCriticalSection(&run->lock);
+	platform_initLock(&run->lock);
 	if (fprintf(run->csv, "seed,home_goals,away_goals,clock_ticks,finished,rng_final,ms\n") < 0) {
 		log_message("cannot write the results CSV header");
 		(void)closeRun(run);
@@ -413,7 +398,7 @@ static bool closeRun(Run *run) {
 	if (!ok) {
 		log_message("cannot finish writing the results CSV");
 	}
-	DeleteCriticalSection(&run->lock);
+	platform_destroyLock(&run->lock);
 	if (run->details) {
 		matchStats_free(run->details);
 	}

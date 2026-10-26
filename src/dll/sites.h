@@ -27,6 +27,16 @@ enum MatchPart {
 	SITE_PART_EXTRA_1872 = 0x1AC781A,
 };
 
+// The match's observers (GAME_MATCH+0x730 on Windows, +0x720 on macOS), written in the match block
+// by GAME_MATCH__serialize_base: national-team managers and others attending to watch players. The
+// game picks them while building the match and books most in its matchday manager, leaving booked
+// people out of later builds, so they may differ between two builds of the same fixture and seed.
+enum ObserverPart {
+	SITE_OBSERVER_COUNT = 0x1A7C16A, // u16 write
+	SITE_OBSERVER_ENTRY = 0x1A7C1B8, // each observer: the person, their team and the watched players
+	SITE_OBSERVER_TEAM = 0x1A7C1F1,  // each observer's team name, after the entry
+};
+
 // Return addresses inside MATCH_TEAM__serialize.
 enum TeamPart {
 	SITE_TEAM_BASE = 0x1B6F27C,

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "edition.h"
 #include "game_state.h"
 #include "job.h"
 #include "log.h"
@@ -18,8 +19,8 @@ void job_execute(char *text) {
 	}
 	char reason[48];
 	if (mustWait(&job, reason, sizeof reason)) {
-		log_message("refusing a job: FM24 is busy (%s)", reason);
-		job_writeResult("error: FM24 is busy (%s); wait until it is idle", reason);
+		log_message("refusing a job: " EDITION_PRODUCT " is busy (%s)", reason);
+		job_writeResult("error: " EDITION_PRODUCT " is busy (%s); wait until it is idle", reason);
 		job_free(&job);
 		return;
 	}
@@ -39,8 +40,9 @@ void job_execute(char *text) {
 }
 
 // Every job but status uses the game's objects, which the game's own threads change while it loads
-// or processes a game, so those jobs wait for it. Windows has no game state yet, so jobs never wait
-// there. A game that starts processing just after this check still races the job.
+// or processes a game, so those jobs wait for it, as they do where the engine is a plugin until the
+// game has loaded and started it. Windows has no game state yet, so jobs never wait there. A game
+// that starts processing just after this check still races the job.
 static bool mustWait(const Job *job, char *reason, size_t size) {
 	GameState state;
 	if (job->command == JOB_STATUS || !gameState_read(&state, false)) {
@@ -51,6 +53,9 @@ static bool mustWait(const Job *job, char *reason, size_t size) {
 		case GAME_PHASE_BUSY:
 			(void)snprintf(reason, size, "processing kind %d", (int)state.processingKind);
 			return true;
+#if EDITION_ENGINE_PLUGIN
+		case GAME_PHASE_STARTING: (void)snprintf(reason, size, "starting"); return true;
+#endif
 		default: return false;
 	}
 }

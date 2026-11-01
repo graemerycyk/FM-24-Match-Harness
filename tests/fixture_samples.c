@@ -3,6 +3,7 @@
 #include "fixture_samples.h"
 
 #include "buffer.h"
+#include "edition.h"
 #include "fixture_data.h"
 
 #include <stdarg.h>
@@ -121,7 +122,7 @@ bool fixtureSamples_config(
 ) {
 	bool ok = fixtureSamples_append(
 		out,
-		"{\"format\":\"fm24-match-config/1\",\"fields\":["
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":["
 		"{\"name\":\"fixture\",\"u8\":24},{\"str\":\"Friendly\"},"
 		"{\"name\":\"venue\",\"u32\":0},{\"str\":\"Villa Park\"},"
 		"{\"name\":\"official[0]\",\"u8\":0},"
@@ -141,6 +142,25 @@ bool fixtureSamples_config(
 		1064960,
 		2048,
 	};
+#if EDITION_TACTIC_PHASES == 2
+	// In possession the positions above, a 4-2-2-2; out of possession a 4-4-2, with the defensive
+	// midfielders in central midfield and the attacking midfielders wide. One role bit each.
+	static const unsigned oopPositions[11] = {
+		1,
+		2097168,
+		1049600,
+		1048592,
+		4,
+		512,
+		2113536,
+		2098176,
+		8,
+		1064960,
+		256,
+	};
+	static const unsigned roles[11] = {0, 3, 9, 3, 6, 14, 22, 9, 6, 20, 14};
+	static const unsigned oopRoles[11] = {1, 4, 11, 4, 7, 16, 25, 12, 7, 25, 16};
+#else
 	static const unsigned long long roles[11] = {
 		2101248,
 		18874368,
@@ -154,6 +174,7 @@ bool fixtureSamples_config(
 		8390656,
 		142606336,
 	};
+#endif
 	for (unsigned side = 0; ok && side < 2; ++side) {
 		const char *name = side ? "away" : "home";
 		ok = fixtureSamples_append(
@@ -170,6 +191,32 @@ bool fixtureSamples_config(
 			name
 		);
 		for (unsigned i = 0; ok && i < 11; ++i) {
+#if EDITION_TACTIC_PHASES == 2
+			// Each slot in two halves, with the role last, and the byte after them.
+			ok = fixtureSamples_append(
+				out,
+				",{\"name\":\"%s.manager.tactic.plan[0].slot[%u].ip.position\","
+				"\"flags\":[\"deliberately wrong\"],\"u32\":%u},"
+				"{\"name\":\"%s.manager.tactic.plan[0].slot[%u].ip.role\",\"u64\":%llu},"
+				"{\"name\":\"%s.manager.tactic.plan[0].slot[%u].oop.position\",\"u32\":%u},"
+				"{\"name\":\"%s.manager.tactic.plan[0].slot[%u].oop.role\",\"u64\":%llu},"
+				"{\"name\":\"%s.manager.tactic.plan[0].slot[%u].unknown_7b4\",\"u8\":0}",
+				name,
+				i,
+				positions[i],
+				name,
+				i,
+				1ULL << roles[i],
+				name,
+				i,
+				oopPositions[i],
+				name,
+				i,
+				1ULL << oopRoles[i],
+				name,
+				i
+			);
+#else
 			ok = fixtureSamples_append(
 				out,
 				",{\"name\":\"%s.manager.tactic.plan[0].slot[%u].position\","
@@ -182,6 +229,7 @@ bool fixtureSamples_config(
 				i,
 				roles[i]
 			);
+#endif
 		}
 		ok = ok && fixtureSamples_append(out, ",{\"name\":\"%s.player_count\",\"u8\":12}", name);
 		for (unsigned i = 0; ok && i < 12; ++i) {
@@ -235,7 +283,7 @@ static const char *const attendanceNames[] = {
 
 bool fixtureSamples_venue(ByteBuffer *json) {
 	bool ok = fixtureSamples_append(
-		json, "{\"format\":\"fm24-match-config/1\",\"home_team\":678,\"away_team\":677,\"fields\":["
+		json, "{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"home_team\":678,\"away_team\":677,\"fields\":["
 	);
 	const uint32_t values[] = {
 		1116156723,
@@ -297,6 +345,32 @@ bool fixtureSamples_venue(ByteBuffer *json) {
 							 );
 }
 
+#if EDITION_TACTIC_PHASES == 2
+// Two players' {setting, amount} entries, made up, and the best amount of each category (0 for
+// none), which the viewer shows.
+static const struct {
+	unsigned count[FIXTURE_FAMILIARITY_CATEGORIES];
+	unsigned entries[FIXTURE_FAMILIARITY_CATEGORIES][3][2];
+	unsigned shown[FIXTURE_FAMILIARITY_CATEGORIES];
+} familiarityPlayers[] = {
+	{{2, 1, 0, 2, 1, 2},
+		{{{10, 8200}, {12, 6100}},
+			{{9, 7300}},
+			{{0}},
+			{{10, 5000}, {15, 9100}},
+			{{5, 3000}},
+			{{10, 8500}, {13, 4400}}},
+		{8200, 7300, 0, 9100, 3000, 8500}},
+	{{3, 3, 3, 3, 2, 3},
+		{{{10, 10000}, {15, 9000}, {12, 8000}},
+			{{9, 6000}, {3, 6500}, {8, 9900}},
+			{{8, 4000}, {7, 4500}, {9, 2000}},
+			{{9, 10000}, {15, 1000}, {10, 9000}},
+			{{20, 7700}, {0, 1500}},
+			{{10, 5000}, {3, 5100}, {13, 7000}}},
+		{10000, 9900, 4500, 10000, 7700, 7000}},
+};
+#else
 // Two Aston Villa players' {setting, amount} entries, read from the game, and the values its tactic
 // familiarity panel showed for them against a tactic with settings {16, 5, 10, 20, 10, 15, 5}.
 static const struct {
@@ -323,6 +397,7 @@ static const struct {
 			{{0, 10000}, {7, 10000}, {14, 3000}}},
 		{9000, 8000, 8000, 5000, 1500, 5000, 8000}},
 };
+#endif
 
 unsigned fixtureSamples_familiarityShown(unsigned player, unsigned category) {
 	return player < 2 && category < FIXTURE_FAMILIARITY_CATEGORIES
@@ -351,9 +426,30 @@ static bool insertBefore(ByteBuffer *json, const char *marker, const ByteBuffer 
 
 // Appends player `player`'s familiarity fields from familiarityPlayers[p].
 static bool appendFamiliarity(ByteBuffer *text, unsigned player, unsigned p) {
+#if EDITION_TACTIC_PHASES == 2
+	static const char *const categories[] = {
+		"category_0", "category_1", "category_2", "category_3", "category_4", "category_5"};
+	// The version and a position and role entry, which maximum familiarity leaves alone.
+	bool ok = fixtureSamples_append(
+		text,
+		",{\"name\":\"home.player[%u].tactical_familiarity.version\",\"u8\":1},"
+		"{\"name\":\"home.player[%u].tactical_familiarity.position_role.count\",\"u32\":1},"
+		"{\"name\":\"home.player[%u].tactical_familiarity.position_role[0].key\",\"u16\":%u},"
+		"{\"name\":\"home.player[%u].tactical_familiarity.position_role[0].positions\","
+		"\"hex\":\"f0f0f0f0f0f0f0f0f0f0f0\"},"
+		"{\"name\":\"home.player[%u].tactical_familiarity.position_role[0].amount\",\"u32\":7000}",
+		player,
+		player,
+		player,
+		100 + p,
+		player,
+		player
+	);
+#else
 	static const char *const categories[] = {
 		"mentality", "passing_style", "creative_freedom", "trigger_press", "marking", "tempo", "width"};
 	bool ok = true;
+#endif
 	for (unsigned k = 0; ok && k < FIXTURE_FAMILIARITY_CATEGORIES; ++k) {
 		ok = fixtureSamples_append(
 			text,
@@ -434,7 +530,7 @@ char *fixtureSamples_json(int sample, size_t *length) {
 }
 
 char *fixtureSamples_savedJson(int sample, size_t *length) {
-	static const char format[] = "{\"format\":\"fm24-match-config/1\",";
+	static const char format[] = "{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",";
 	size_t prefix = sizeof format - 1;
 	size_t plainLength = 0;
 	char *plain = fixtureSamples_json(sample, &plainLength);

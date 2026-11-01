@@ -3,6 +3,8 @@
 
 #include "save_samples.h"
 
+#include "edition.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,8 +16,8 @@
 enum { PATH_SIZE = 2048 };
 
 static const char usualFolder[] =
-	"Library/Application Support/Sports Interactive/Football Manager 2024";
-static const char launcherPath[] = "Library/Application Support/fm24-harness/launch-fm24.sh";
+	"Library/Application Support/" EDITION_DATA_FOLDER;
+static const char launcherPath[] = "Library/Application Support/" EDITION_HARNESS "/" EDITION_LAUNCHER;
 
 // The saves, newest first; "Linked" is a link to "Career Two", whose time it shows.
 const SaveSample saveSamples_saves[SAVE_SAMPLES_SAVES] = {
@@ -85,7 +87,7 @@ static bool writeSaves(const char *data) {
 static bool writeSteam(const char *home, const char *option) {
 	static const char config[] = "\"UserLocalConfigStore\"\n{\n\t\"Software\"\n\t{"
 															 "\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n"
-															 "\t\t\t\t\"apps\"\n\t\t\t\t{\n\t\t\t\t\t\"2252570\"\n\t\t\t\t\t{"
+															 "\t\t\t\t\"apps\"\n\t\t\t\t{\n\t\t\t\t\t\"" EDITION_STEAM_APP_ID "\"\n\t\t\t\t\t{"
 															 "\n\t\t\t\t\t\t\"LaunchOptions\"\t\t"
 															 "\"%s\"\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n";
 	static const char logins[] =
@@ -98,7 +100,7 @@ static bool writeSteam(const char *home, const char *option) {
 	for (int account = 42; ok && account <= 43; ++account) {
 		const char *given = account == 42
 													? option
-													: "/bin/sh \"/x/launch-fm24.sh\" %command% --user_data_location=/Wrong";
+													: "/bin/sh \"/x/" EDITION_LAUNCHER "\" %command% --user_data_location=/Wrong";
 		size_t length = 0;
 		for (const char *c = given; *c && length + 2 < sizeof escaped; ++c) {
 			if (*c == '"' || *c == '\\') {
@@ -156,7 +158,7 @@ bool saveSamples_make(const char *home, int option) {
 			(void)snprintf(
 				launch,
 				sizeof launch,
-				"/bin/sh \"/elsewhere/launch-fm24.sh\" %%command%% --user_data_location=\"%s\"",
+				"/bin/sh \"/elsewhere/" EDITION_LAUNCHER "\" %%command%% --user_data_location=\"%s\"",
 				moved
 			);
 			return writeSaves(usual) && makeData(moved) &&

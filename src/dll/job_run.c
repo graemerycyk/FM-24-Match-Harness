@@ -11,6 +11,7 @@
 // with its own copy of the input and its own game stream. Rows are still written in seed order.
 
 #include "database.h"
+#include "edition.h"
 #include "files.h"
 #include "game.h"
 #include "job.h"
@@ -314,6 +315,13 @@ static void worker(void *parameter) {
 	}
 	Profiler *profiler = self->index == 0 ? run->profiler : NULL;
 	while (!atomic_load_explicit(&run->failed, memory_order_relaxed)) {
+#if defined(__APPLE__) && EDITION_ENGINE_PLUGIN
+		if (!game_loaded()) { // the game is quitting, and waits for the job to stop
+			log_message("worker %u: the game is unloading its engine; stopping", self->index);
+			atomic_store_explicit(&run->failed, true, memory_order_relaxed);
+			break;
+		}
+#endif
 		size_t index = atomic_fetch_add_explicit(&run->next, 1, memory_order_relaxed);
 		if (index >= run->total) {
 			break;

@@ -5,6 +5,8 @@
 // copy that dyld inserts adds its own path to FM24_TEST_LOADED, which macos_stand_in_game.c
 // records.
 
+#include "edition.h"
+
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,12 +16,12 @@ __attribute__((constructor)) static void recordLoad(void) {
 	if (!dladdr((const void *)recordLoad, &image) || !image.dli_fname) {
 		return;
 	}
-	const char *before = getenv("FM24_TEST_LOADED");
+	const char *before = getenv(EDITION_ENV_PREFIX "TEST_LOADED");
 	char loaded[4096];
 	int written = snprintf(
 		loaded, sizeof loaded, "%s%s%s", before ? before : "", before ? ":" : "", image.dli_fname
 	);
 	if (written > 0 && (size_t)written < sizeof loaded) {
-		(void)setenv("FM24_TEST_LOADED", loaded, 1);
+		(void)setenv(EDITION_ENV_PREFIX "TEST_LOADED", loaded, 1);
 	}
 }

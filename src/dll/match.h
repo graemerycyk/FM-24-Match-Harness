@@ -6,6 +6,7 @@
 #pragma once
 
 #include "buffer.h"
+#include "edition.h"
 #include "stream.h"
 
 #include <stdbool.h>
@@ -51,5 +52,13 @@ void match_play(uint8_t *match);
 MatchResult match_result(const uint8_t *match);
 
 // Where the seed (a u32) sits in serialised match bytes: after a 13-byte header, a u32-length label
-// and 8 more bytes. Returns false if the bytes do not look like a serialised match.
+// and 8 more bytes. Returns false if the bytes do not look like a serialised match. Where the
+// engine is a plugin (EDITION_ENGINE_PLUGIN), the header is 12 bytes, the second two of them the
+// running build's format version (game_formatVersion), and 4 bytes follow the label.
 bool match_seedOffset(const uint8_t *bytes, size_t size, size_t *offset);
+
+#if EDITION_ENGINE_PLUGIN
+// The serialisation context that the engine plugin's serialise and deserialise take: the engine's
+// own, once it has set it up; NULL, logged, before.
+void *match_context(void);
+#endif

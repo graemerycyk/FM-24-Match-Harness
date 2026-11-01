@@ -27,12 +27,36 @@ typedef struct ValueSpan {
 	size_t length;
 } ValueSpan;
 
+#if EDITION_TACTIC_PHASES == 2
+// Where a player's editable values are in the JSON: the five wellbeing values, then the amount of
+// each familiarity category's entries.
+typedef struct PlayerSpans {
+	ValueSpan wellbeing[5];
+	ValueSpan familiarity[FIXTURE_FAMILIARITY_CATEGORIES][FIXTURE_FAMILIARITY_ENTRIES];
+} PlayerSpans;
+
+// The patches maximum familiarity may make to a player: every entry's amount.
+enum { FAMILIARITY_PATCHES = FIXTURE_FAMILIARITY_CATEGORIES * FIXTURE_FAMILIARITY_ENTRIES };
+
+// A player's familiarity categories as labels.c names them, in file order.
+static const char *const familiarityNames[FIXTURE_FAMILIARITY_CATEGORIES] = {
+	"category_0",
+	"category_1",
+	"category_2",
+	"category_3",
+	"category_4",
+	"category_5",
+};
+#else
 // Where a player's editable values are in the JSON: the five wellbeing values, then each
 // familiarity category's first entry (setting, amount).
 typedef struct PlayerSpans {
 	ValueSpan wellbeing[5];
 	ValueSpan familiarity[FIXTURE_FAMILIARITY_CATEGORIES][2];
 } PlayerSpans;
+
+// The patches maximum familiarity may make to a player: each category's first entry.
+enum { FAMILIARITY_PATCHES = 2 * FIXTURE_FAMILIARITY_CATEGORIES };
 
 // A player's familiarity categories as labels.c names them, in file order.
 static const char *const familiarityNames[FIXTURE_FAMILIARITY_CATEGORIES] = {
@@ -44,6 +68,7 @@ static const char *const familiarityNames[FIXTURE_FAMILIARITY_CATEGORIES] = {
 	"tempo",
 	"width",
 };
+#endif
 
 typedef struct Reader {
 	FixtureData *out;
@@ -138,6 +163,28 @@ static void setSection(Reader *reader, Section section) {
 	reader->noted = false;
 }
 
+// A plan's "slot[index]<suffix>": its position or role, with two phases in either half.
+static void
+slotField(FixtureTeam *team, const ConfigField *field, unsigned index, const char *suffix) {
+	FixtureSlot *slot = &team->slots[index];
+#if EDITION_TACTIC_PHASES == 2
+	// Each slot in two halves: in possession, then out of possession.
+	if (strncmp(suffix, ".ip.", 4) == 0) {
+		suffix += 3;
+	} else if (strncmp(suffix, ".oop.", 5) == 0) {
+		slot = &team->oopSlots[index];
+		suffix += 4;
+	} else {
+		return;
+	}
+#endif
+	if (strcmp(suffix, ".position") == 0) {
+		(void)scalar(field, CONFIG_U32, &slot->position);
+	} else if (strcmp(suffix, ".role") == 0) {
+		(void)scalar(field, CONFIG_U64, &slot->role);
+	}
+}
+
 static void teamField(Reader *reader, const ConfigField *field, const char *name) {
 	static const char planPrefix[] = "manager.tactic.plan[0].";
 	const size_t prefixLength = sizeof planPrefix - 1;
@@ -159,11 +206,7 @@ static void teamField(Reader *reader, const ConfigField *field, const char *name
 	} else if (strncmp(name, planPrefix, prefixLength) == 0) {
 		const char *planField = name + prefixLength;
 		if (indexed(planField, "slot[", &index, &suffix) && index < FIXTURE_SLOTS) {
-			if (strcmp(suffix, ".position") == 0) {
-				(void)scalar(field, CONFIG_U32, &team->slots[index].position);
-			} else if (strcmp(suffix, ".role") == 0) {
-				(void)scalar(field, CONFIG_U64, &team->slots[index].role);
-			}
+			slotField(team, field, index, suffix);
 		} else if (strcmp(planField, "mentality") == 0) {
 			// The unnamed byte before it is the plan's +0x18 (fn_11ee0e10+0x18 in a --full export).
 			if (scalar(field, CONFIG_U8, &team->mentality)) {
@@ -506,10 +549,17 @@ static void familiarityValue(Reader *reader, const ConfigField *field, const cha
 	} else {
 		familiarity->amount[entry] = (uint16_t)number.value;
 	}
+#if EDITION_TACTIC_PHASES == 2
+	if (!setting && reader->playerSpans) {
+		reader->playerSpans[reader->side][reader->player].familiarity[category][entry] =
+			(ValueSpan){field->valueOffset, field->valueLength};
+	}
+#else
 	if (entry == 0 && reader->playerSpans) {
 		reader->playerSpans[reader->side][reader->player].familiarity[category][setting ? 0 : 1] =
 			(ValueSpan){field->valueOffset, field->valueLength};
 	}
+#endif
 }
 
 static void playerValue(Reader *reader, const ConfigField *field) {
@@ -680,19 +730,21 @@ static void visitSource(void *context, const char *source) {
 	copyText(reader, reader->out->source, sizeof reader->out->source, source, strlen(source));
 }
 
-static void describeFormation(FixtureTeam *team) {
+// The formation of `slots` ("4-2-3-1") into `formation`, which stays "" unless the eleven slots
+// hold one known position each, ten of them outfield.
+static void describeFormation(const FixtureSlot *slots, char *formation, size_t size) {
 	unsigned lines[5] = {0};
 	unsigned count = 0;
 	for (unsigned i = 0; i < FIXTURE_SLOTS; ++i) {
-		if (!team->slots[i].position.known) {
+		if (!slots[i].position.known) {
 			return;
 		}
 		char position[16];
-		fixtureData_position(team->slots[i].position.value, position, sizeof position);
+		fixtureData_position(slots[i].position.value, position, sizeof position);
 		if (strcmp(position, "Unknown") == 0) {
 			return;
 		}
-		uint64_t mask = team->slots[i].position.value & 0xFFFF;
+		uint64_t mask = slots[i].position.value & 0xFFFF;
 		if (!mask || (mask & (mask - 1))) {
 			return;
 		}
@@ -713,9 +765,7 @@ static void describeFormation(FixtureTeam *team) {
 	size_t used = 0;
 	for (unsigned i = 0; i < 5; ++i) {
 		if (lines[i]) {
-			int written = snprintf(
-				team->formation + used, sizeof team->formation - used, "%s%u", used ? "-" : "", lines[i]
-			);
+			int written = snprintf(formation + used, size - used, "%s%u", used ? "-" : "", lines[i]);
 			used += (size_t)written;
 		}
 	}
@@ -805,7 +855,10 @@ static bool readData(
 			}
 		}
 		team->lineupKnown = team->managerFlags.known && !(team->managerFlags.value & 0x14000);
-		describeFormation(team);
+		describeFormation(team->slots, team->formation, sizeof team->formation);
+#if EDITION_TACTIC_PHASES == 2
+		describeFormation(team->oopSlots, team->oopFormation, sizeof team->oopFormation);
+#endif
 	}
 	if (strcmp(out->competition, "Friendly") == 0) {
 		(void)snprintf(out->matchType, sizeof out->matchType, "Friendly");
@@ -850,9 +903,44 @@ static int comparePlayerPatches(const void *a, const void *b) {
 	return (left->span.offset > right->span.offset) - (left->span.offset < right->span.offset);
 }
 
+#if EDITION_TACTIC_PHASES == 2
+// Appends a patch for every familiarity entry's amount, to 10000: the tactic's settings are not
+// known, so every setting the player knows becomes fully known. A category with no entries can't
+// gain one (the file's structure is fixed), so it is left alone.
+static bool addFamiliarityPatches(
+	const FixturePlayer *player,
+	const PlayerSpans *spans,
+	const char *sideName,
+	unsigned i,
+	PlayerPatch *patches,
+	size_t *count,
+	char *error,
+	size_t errorSize
+) {
+	for (unsigned k = 0; k < FIXTURE_FAMILIARITY_CATEGORIES; ++k) {
+		const FixtureFamiliarity *familiarity = &player->familiarity[k];
+		bool known = familiarity->known;
+		for (unsigned e = 0; known && e < familiarity->count; ++e) {
+			known = spans->familiarity[k][e].length != 0;
+		}
+		if (!known) {
+			(void)snprintf(
+				error, errorSize, "Missing familiarity fields for %s.player[%u].", sideName, i
+			);
+			return false;
+		}
+		for (unsigned e = 0; e < familiarity->count; ++e) {
+			patches[(*count)++] = (PlayerPatch){spans->familiarity[k][e], 10000U};
+		}
+	}
+	return true;
+}
+#endif
+
 // Checks one player's edit flags and appends a patch for each wellbeing field they set and, for
-// maximum familiarity, each category's first entry: the tactic's setting at amount 10000. A
-// category with no entries can't gain one (the file's structure is fixed), so it is left alone.
+// maximum familiarity, each category's first entry: the tactic's setting at amount 10000 (with two
+// phases, see addFamiliarityPatches). A category with no entries can't gain one (the file's
+// structure is fixed), so it is left alone.
 static bool addPlayerPatches(
 	const FixtureTeam *team,
 	const PlayerSpans *spans,
@@ -888,6 +976,9 @@ static bool addPlayerPatches(
 	if (!(flags & FIXTURE_MAX_FAMILIARITY)) {
 		return true;
 	}
+#if EDITION_TACTIC_PHASES == 2
+	return addFamiliarityPatches(player, spans, sideName, i, patches, count, error, errorSize);
+#else
 	int settings[FIXTURE_FAMILIARITY_CATEGORIES];
 	if (!fixtureData_familiaritySettings(team, settings)) {
 		(void)snprintf(error, errorSize, "Missing %s tactic values for familiarity.", sideName);
@@ -908,6 +999,7 @@ static bool addPlayerPatches(
 		}
 	}
 	return true;
+#endif
 }
 
 // Copies the JSON to `out` with each patch's span replaced by its value. False when out of memory.
@@ -944,7 +1036,7 @@ bool fixtureData_writePlayers(
 	struct {
 		FixtureData data;
 		PlayerSpans spans[2][FIXTURE_PLAYERS];
-		PlayerPatch patches[2 * FIXTURE_PLAYERS * (5 + 2 * FIXTURE_FAMILIARITY_CATEGORIES)];
+		PlayerPatch patches[2 * FIXTURE_PLAYERS * (5 + FAMILIARITY_PATCHES)];
 	} *work = calloc(1, sizeof *work);
 	if (!work) {
 		(void)snprintf(error, errorSize, "Out of memory editing players.");
@@ -979,6 +1071,7 @@ bool fixtureData_writePlayers(
 	return ok;
 }
 
+#if EDITION_TACTIC_PHASES == 1
 #define BIT(value, n) (((value) >> (n)) & 1)
 
 // Tempo: from the mentality, within 5 of the passing style, then the tempo instructions.
@@ -1029,8 +1122,8 @@ static int widthSetting(uint64_t words, unsigned mentality) {
 	return BIT(words, 48) ? 5 : width;
 }
 
-// Ports the game's sub_141BF1160 (FM24 24.2): each category's setting from the plan's mentality,
-// team instruction bits (word 0 low, word 1 high, then word 2) and its byte +0x18.
+// Ports sub_141BF1160 of the Windows game, version 24.2: each category's setting from the plan's
+// mentality, team instruction bits (word 0 low, word 1 high, then word 2) and its byte +0x18.
 bool fixtureData_familiaritySettings(
 	const FixtureTeam *team,
 	int settings[FIXTURE_FAMILIARITY_CATEGORIES]
@@ -1089,6 +1182,7 @@ bool fixtureData_familiarity(
 	*value = (unsigned)best;
 	return true;
 }
+#endif
 
 void fixtureData_position(uint64_t mask, char *out, size_t size) {
 	uint64_t base = mask & ~((UINT64_C(1) << TACTIC_LEFT_BIT) | (UINT64_C(1) << TACTIC_RIGHT_BIT));

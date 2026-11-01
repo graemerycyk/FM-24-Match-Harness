@@ -6,6 +6,9 @@
 #include "memory.h"
 #include "site_members.h"
 #include "sites.h"
+#if EDITION_ENGINE_PLUGIN
+#include "sites_fm27.h"
+#endif
 #include "tactic_flags.h"
 #include "tactic_names.h"
 
@@ -33,6 +36,9 @@ static const SiteName matchParts[] = {
 	{SITE_PART_AWAY, "away"},
 	{SITE_PART_EXTRA_53952, "extra_53952"},
 	{SITE_PART_EXTRA_1872, "extra_1872"},
+#if EDITION_ENGINE_PLUGIN
+	{SITE27_PART_EXTRA_1776, "extra_1776"},
+#endif
 };
 
 static const SiteName teamParts[] = {
@@ -252,6 +258,7 @@ static const char *const traitNames[] = {
 	"plays ball with feet",
 };
 
+#if !EDITION_ENGINE_PLUGIN
 // A player's tactical familiarity categories, in the order they are written (the game's tactic
 // familiarity panel shows them in another order).
 static const char *const familiarityCategoryNames[] = {
@@ -263,6 +270,7 @@ static const char *const familiarityCategoryNames[] = {
 	"tempo",
 	"width",
 };
+#endif
 
 typedef struct MemberName {
 	const char *member;
@@ -430,7 +438,9 @@ static const char *lookup(const SiteName *table, size_t count, uint32_t site);
 static int pathHead(const char *path, uint32_t *outer, uint32_t *next);
 static void appendBlock(Walk *walk, const char *text);
 static void appendIndexedBlock(Walk *walk, const char *text, int index);
+#if !EDITION_ENGINE_PLUGIN
 static void roleText(unsigned role, char *out, size_t size);
+#endif
 static void roleEntryName(const Walk *walk, size_t first, char *out, size_t size);
 static void labelDerivedField(Walk *walk, size_t i, const TraceRecord *record);
 static void labelFamiliarityField(Walk *walk, size_t i, const TraceRecord *record);
@@ -446,7 +456,9 @@ static void labelTeamField(
 static const char *tacticPart(uint32_t address, int *slot);
 static bool insideTactic(uint32_t address);
 static unsigned lowestBit(uint64_t mask);
+#if !EDITION_ENGINE_PLUGIN
 static void labelPlanField(Walk *walk, size_t i, const TraceRecord *record);
+#endif
 static void labelMemberField(const Walk *walk, FieldLabel *label);
 static void labelPersonField(const Walk *walk, FieldLabel *label, const TraceRecord *record);
 static void labelOfficialField(const Walk *walk, FieldLabel *label, const TraceRecord *record);
@@ -551,6 +563,7 @@ static void appendIndexedBlock(Walk *walk, const char *text, int index) {
 	(void)snprintf(walk->block + length, sizeof walk->block - length, ".%s[%d]", text, index);
 }
 
+#if !EDITION_ENGINE_PLUGIN
 // The role's name, or "role<id>" if it has none.
 static void roleText(unsigned role, char *out, size_t size) {
 	const char *name = tactic_roleName(role);
@@ -560,6 +573,7 @@ static void roleText(unsigned role, char *out, size_t size) {
 		(void)snprintf(out, size, "role%u", role);
 	}
 }
+#endif
 
 // "winger@AMR" for the role rating entry whose rating is record `first`.
 static void roleEntryName(const Walk *walk, size_t first, char *out, size_t size) {
@@ -653,12 +667,19 @@ static void labelFamiliarityField(Walk *walk, size_t i, const TraceRecord *recor
 		default: return;
 	}
 	FieldLabel *label = &walk->labels[i];
-	size_t categories = sizeof familiarityCategoryNames / sizeof familiarityCategoryNames[0];
 	int category = walk->familiarityCategory;
+#if EDITION_ENGINE_PLUGIN
+	// The engine plugin's entries have no duty, and its six categories are not named yet.
+	char categoryName[16];
+	(void)snprintf(categoryName, sizeof categoryName, "category_%d", category);
+	const char *list = roles ? "position_role" : category >= 0 ? categoryName : "unknown";
+#else
+	size_t categories = sizeof familiarityCategoryNames / sizeof familiarityCategoryNames[0];
 	const char *list = roles ? "position_role_duty"
 										 : category >= 0 && (size_t)category < categories
 											 ? familiarityCategoryNames[category]
 											 : "unknown";
+#endif
 	if (record->site == SITE_FAMILIARITY_VERSION) {
 		(void)snprintf(label->name, sizeof label->name, "%s.tactical_familiarity.version", walk->block);
 	} else if (strcmp(field, "count") == 0) {
@@ -758,11 +779,20 @@ static const char *tacticPart(uint32_t address, int *slot) {
 		case SITE_TACTIC_PLAN_0: return "plan[0]";
 		case SITE_TACTIC_PLAN_1: return "plan[1]";
 		case SITE_TACTIC_SET_PIECES: return "set_pieces";
+#if EDITION_ENGINE_PLUGIN
+		case SITE27_TACTIC_PLAN_2: return "plan[2]";
+		case SITE27_TACTIC_EXTRA: return "extra";
+#endif
 		default: return NULL;
 	}
 }
 
 static bool insideTactic(uint32_t address) {
+#if EDITION_ENGINE_PLUGIN
+	if (address == SITE27_TACTIC_PLAN_2 || address == SITE27_TACTIC_EXTRA) {
+		return true;
+	}
+#endif
 	return address > SITE_TACTIC_START && address <= SITE_TACTIC_END;
 }
 
@@ -775,6 +805,7 @@ static unsigned lowestBit(uint64_t mask) {
 	return bit;
 }
 
+#if !EDITION_ENGINE_PLUGIN
 // Names the fields of a tactic plan whose meaning is known (docs/PLAN.md Phase 15).
 static void labelPlanField(Walk *walk, size_t i, const TraceRecord *record) {
 	FieldLabel *label = &walk->labels[i];
@@ -834,6 +865,97 @@ static void labelPlanField(Walk *walk, size_t i, const TraceRecord *record) {
 		default: break;
 	}
 }
+#endif
+
+#if EDITION_ENGINE_PLUGIN
+// The half of a formation slot (the engine plugin's) a plan's call writes: its first ("ip",
+// presumably in possession) or second ("oop"), with the slot's index; NULL for another frame.
+static const char *slotHalf(uint32_t address, int *slot) {
+	if (address >= SITE27_TACTIC_SLOT_IP_FIRST && address <= SITE27_TACTIC_SLOT_IP_LAST) {
+		*slot = (int)(address - SITE27_TACTIC_SLOT_IP_FIRST);
+		return "ip";
+	}
+	if (address >= SITE27_TACTIC_SLOT_OOP_FIRST && address <= SITE27_TACTIC_SLOT_OOP_LAST) {
+		*slot = (int)(address - SITE27_TACTIC_SLOT_OOP_FIRST);
+		return "oop";
+	}
+	return NULL;
+}
+
+// Names the fields of the engine plugin's tactic plans: mentality and team instructions as in the
+// Windows build, and in each slot half its position, role and player instructions. Its role and
+// instruction bits are not named yet, so only positions have flags.
+static void labelPlanHalves(Walk *walk, size_t i, const TraceRecord *record, const char *path) {
+	FieldLabel *label = &walk->labels[i];
+	if (record->site >= SITE27_TACTIC_SLOT_BYTE_FIRST &&
+			record->site <= SITE27_TACTIC_SLOT_BYTE_LAST) {
+		(void)snprintf(
+			label->name,
+			sizeof label->name,
+			"%s.slot[%u].unknown_7b4",
+			walk->block,
+			(unsigned)(record->site - SITE27_TACTIC_SLOT_BYTE_FIRST)
+		);
+		return;
+	}
+	const char *half = NULL;
+	int slot = -1;
+	for (const char *token = path; *token && !half;) {
+		char *end = NULL;
+		half = slotHalf((uint32_t)strtoul(token, &end, 16), &slot);
+		if (end == token) {
+			break;
+		}
+		token = *end == '>' ? end + 1 : end;
+	}
+	if (!half) {
+		if (record->site == SITE_TACTIC_MENTALITY) {
+			(void)snprintf(label->name, sizeof label->name, "%s.mentality", walk->block);
+		} else if (record->site == SITE_TACTIC_TEAM_INSTRUCTIONS) {
+			label->flagWord = (unsigned)(i - walk->siteRunStart);
+			(void)snprintf(
+				label->name, sizeof label->name, "%s.team_instructions[%u]", walk->block, label->flagWord
+			);
+		}
+		return;
+	}
+	appendIndexedBlock(walk, "slot", slot);
+	appendBlock(walk, half);
+	switch (record->site) {
+		case SITE_TACTIC_SLOT_POSITION:
+			label->flags = FLAGS_POSITION;
+			(void)snprintf(label->name, sizeof label->name, "%s.position", walk->block);
+			break;
+		case SITE_TACTIC_SLOT_ROLE:
+			(void)snprintf(label->name, sizeof label->name, "%s.role", walk->block);
+			break;
+		case SITE_TACTIC_INSTRUCTIONS_ROLE:
+			walk->planRole = record->length == 8
+												 ? lowestBit(memory_loadU64(walk->serialised->bytes.data + record->offset))
+												 : 64;
+			(void)snprintf(
+				label->name,
+				sizeof label->name,
+				"%s.player_instructions[role%u]",
+				walk->block,
+				walk->planRole
+			);
+			break;
+		case SITE_TACTIC_INSTRUCTIONS_BITS:
+			label->flagWord = (unsigned)(i - walk->siteRunStart);
+			(void)snprintf(
+				label->name,
+				sizeof label->name,
+				"%s.player_instructions[role%u].bits[%u]",
+				walk->block,
+				walk->planRole,
+				label->flagWord
+			);
+			break;
+		default: break;
+	}
+}
+#endif
 
 // Names a field whose member holds a known database value. A player block already names its
 // person_uid (SITE_PLAYER_UID), so the person's copy of it is left unnamed there.
@@ -931,7 +1053,11 @@ static void appendTacticPart(Walk *walk, size_t index, const TraceRecord *record
 		appendBlock(walk, part);
 	}
 	if (part && strncmp(part, "plan", 4) == 0) {
+#if EDITION_ENGINE_PLUGIN
+		labelPlanHalves(walk, index, record, path);
+#else
 		labelPlanField(walk, index, record);
+#endif
 	}
 }
 

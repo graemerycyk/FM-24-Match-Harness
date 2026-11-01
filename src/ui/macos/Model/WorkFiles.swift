@@ -1,17 +1,19 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import Foundation
 
-/// The files FM24 reads and writes for the viewer, all in the user's temporary directory, which
-/// the game can always use: temp-fixture.json, the next fixture's export (as on Windows), and the
-/// viewer's own folder, fm24-viewer-<pid>, for copies of fixtures to decode and what the game
-/// writes back. The game never touches the user's own folders, where macOS would ask whether FM24
-/// may (docs/MACOS.md); the viewer reads and moves the files itself.
+/// The files FMNN reads and writes for the viewer, all in the user's temporary directory, which
+/// the game can always use: the edition's EDITION_TEMPORARY_FIXTURE, the next fixture's export
+/// (temp-fixture.json on Windows), and the viewer's own folder, fmNN-viewer-<pid>, for copies of
+/// fixtures to decode and what the game writes back. The game never touches the user's own
+/// folders, where macOS would ask whether FMNN may (docs/MACOS.md); the viewer reads and moves the
+/// files itself.
 @MainActor
 final class WorkFiles {
-	nonisolated static let temporaryFixtureName = "temp-fixture.json"
-	nonisolated static let folderPrefix = "fm24-viewer-"
+	nonisolated static let temporaryFixtureName = EDITION_TEMPORARY_FIXTURE
+	nonisolated static let folderPrefix = "\(EDITION_LOWER)-viewer-"
 	/// Another viewer's folder is removed once its viewer has gone and it is this old.
 	nonisolated static let staleAge: TimeInterval = 24 * 60 * 60
 
@@ -32,7 +34,7 @@ final class WorkFiles {
 		)
 	}
 
-	/// Where the next fixture is exported to, as `fm24ctl` with no arguments also does.
+	/// Where the next fixture is exported to, as `fmNNctl` with no arguments also does.
 	var temporaryFixture: URL {
 		directory.appendingPathComponent(WorkFiles.temporaryFixtureName)
 	}
@@ -99,7 +101,7 @@ final class WorkFiles {
 		kill(pid, 0) == 0 || errno == EPERM
 	}
 
-	/// The user's temporary directory, as fm24ctl and the harness find it
+	/// The user's temporary directory, as fmNNctl and the harness find it
 	/// (_CS_DARWIN_USER_TEMP_DIR), not TMPDIR, which may differ.
 	nonisolated static func userTemporaryDirectory() -> URL {
 		let size = confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)

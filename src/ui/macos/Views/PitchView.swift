@@ -3,11 +3,12 @@
 
 import SwiftUI
 
-/// The stored formation on a pitch, drawn as the Windows viewer draws it: a numbered circle for
-/// each slot whose position is known.
+/// A stored formation on a pitch, drawn as the Windows viewer draws it: a numbered circle for each
+/// slot whose position in the phase is known.
 struct PitchView: View {
 	let fixture: FixtureHandle
 	let side: Int
+	var phase = 0
 
 	private static let grass = Color(red: 32 / 255, green: 100 / 255, blue: 65 / 255)
 	private static let lines = Color(red: 220 / 255, green: 236 / 255, blue: 224 / 255)
@@ -15,7 +16,7 @@ struct PitchView: View {
 
 	private var slots: [(slot: Int, x: Double, y: Double)] {
 		(0..<FixtureHandle.slotCount).compactMap { slot in
-			fixture.slotSpot(side: side, slot: slot).map { (slot, $0.x, $0.y) }
+			fixture.slotSpot(side: side, phase: phase, slot: slot).map { (slot, $0.x, $0.y) }
 		}
 	}
 
@@ -24,12 +25,20 @@ struct PitchView: View {
 			draw(in: &context, size: size)
 		}
 		.accessibilityElement(children: .contain)
-		.accessibilityLabel("Stored formation")
+		.accessibilityLabel(label)
 		.accessibilityChildren {
 			ForEach(slots, id: \.slot) { spot in
-				Text("Slot \(spot.slot), \(fixture.cell(side: side, row: spot.slot, column: 2))")
+				Text(
+					"Slot \(spot.slot), \(fixture.slotPosition(side: side, phase: phase, slot: spot.slot))"
+				)
 			}
 		}
+	}
+
+	/// "Stored formation", with the phase's name when there are two.
+	private var label: String {
+		let name = FixtureHandle.phaseName(phase)
+		return name.isEmpty ? "Stored formation" : "Stored formation, \(name.lowercased())"
 	}
 
 	private func draw(in context: inout GraphicsContext, size: CGSize) {

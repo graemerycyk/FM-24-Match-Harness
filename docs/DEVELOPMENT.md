@@ -4,7 +4,8 @@ This repository, [graemerycyk/FM-24-Match-Harness](https://github.com/graemerycy
 is a fork of
 [PhilipArmstead/FM-24-Match-Harness](https://github.com/PhilipArmstead/FM-24-Match-Harness),
 the original Windows project by Philip Armstead, and adds the macOS port,
-FM24 Viewer and macOS releases. It supports macOS only; for Windows, use
+FM24 Viewer and macOS releases, and an edition for Football Manager 27 (see
+[Editions](#editions)). It supports macOS only; for Windows, use
 the [original project](https://github.com/PhilipArmstead/FM-24-Match-Harness).
 Work on `main`, and report problems and open pull requests in
 [this repository](https://github.com/graemerycyk/FM-24-Match-Harness/issues).
@@ -37,21 +38,24 @@ Only the clone and the installs above need the network:
 ```sh
 git clone https://github.com/graemerycyk/FM-24-Match-Harness.git
 cd FM-24-Match-Harness
-scripts/build.sh
+FM_EDITION=24 scripts/build.sh
 ```
 
 This builds the C17 project in Release mode, with its regression tests, as
-universal (arm64 and x86_64) binaries for macOS 11 and newer. `bin/`
+universal (arm64 and x86_64) binaries for macOS 11 and newer, for FM24
+(see [Editions](#editions)). `bin/`
 holds `fm24ctl`, with the harness dylib embedded, `fm24_tests` and
 `FM24Viewer.app`, the fixture viewer (macOS 13 and newer); all are stripped
 and ad-hoc signed. Use `bin/fm24ctl`, from `bin/` (`cd bin`): it opens the
 `FM24Viewer.app` beside it. `fm24_tests` needs the two stand-ins
 next to it (`fm24_stand_in_game` and `libfm24_stand_in_library.dylib`),
 which its launcher test starts in place of the game, the harness and Steam's
-overlay. `build/` also holds the unstripped
-`fm24-harness-<version>.dylib`, which `build/fm24ctl install` prefers to the
-embedded copy, for working on the harness; unlike the embedded copy, its
-x86_64 slice is not signed.
+overlay; `fm27_tests` also needs those of its plugin test
+(`fm27_stand_in_plugin`, `fm27_stand_in_other_plugin` and
+`libfm27_stand_in_harness.dylib`; see [Editions](#editions)). `build/`
+also holds the unstripped `fm24-harness-<version>.dylib`, which
+`build/fm24ctl install` prefers to the embedded copy, for working on the
+harness; unlike the embedded copy, its x86_64 slice is not signed.
 
 The first build takes one to three minutes, most of them in the configure
 step: it checks that Swift can build the viewer for each slice, which first
@@ -82,6 +86,189 @@ out tests by name, for example `ctest --test-dir build -E '^x86_64$'`.
 
 The generator (Ninja or Makefiles) is chosen when `build/` is first
 configured; delete `build/` to switch.
+
+### Editions
+
+The same sources build the harness for two editions of the game, chosen
+by `FM_EDITION` when `build/` is first configured:
+
+- `24`, the FM24 version this guide describes, which the
+  [releases](https://github.com/graemerycyk/FM-24-Match-Harness/releases)
+  are built from: `FM_EDITION=24 scripts/build.sh`;
+- `27`, for Football Manager 27 from Steam, the default on macOS on the
+  `fm27` branch, where it is being developed. Its build names everything
+  after FM27 (`fm27ctl`, `FM27Viewer.app`, `fm27_tests`, the
+  `fm27-harness` folder, `launch-fm27.sh` and the `fm27-match-config/1`
+  format), so it can be installed beside FM24's. Its harness finds the
+  game's match engine as the game loads it, carries build tables for both
+  slices of 27.0.0.2486716, the free preview, builds, loads and plays
+  matches with that engine's calls, and names the fields of its exports
+  ([Editing an FM27 fixture file](FIXTURE-FM27.md)). `fm27ctl` installs
+  the harness and launcher for Steam's app 4530370, starts the game and
+  loads saves with them as `fm24ctl` does for FM24, its `probe` reads
+  the engine, and `FM27Viewer.app` shows FM27's tactics (see below).
+  Nothing of this has run with the game yet. The [README](../README.md),
+  the [FM27 guide](MACOS-FM27.md), [FM27 CLI differences](CLI-FM27.md),
+  [Editing an FM27 fixture file](FIXTURE-FM27.md) and the
+  [technical notes on FM27](TECHNICAL-FM27.md) describe it; the
+  [FM24 README](../README-FM24.md) and the other guides describe FM24's.
+
+FM27 keeps its match engine in a plugin bundle, `game_plugin.bundle` in
+the app's `Contents/PlugIns`, which the game loads a few seconds after it
+starts and unloads as it quits (`EDITION_ENGINE_PLUGIN` in `edition.h`).
+So the FM27 harness serves jobs at once, reporting the game as `starting`
+and refusing other jobs until it has found and checked the plugin, and
+identifies the build by the plugin's `LC_UUID`. When the game unloads the
+plugin, a job in progress is told to stop at its next seed, and the
+unloading waits for it, for ten seconds at most; jobs are refused from
+then on (`src/dll/game_macos.c`). `fm27ctl install --log-only` installs a
+harness that only logs to `harness.log` how the game loads, identifies and
+unloads its engine, and serves no jobs, for a first check with a game
+build; any other install of the harness turns that off. Nothing of this
+has run with the game yet.
+
+FM27 is a Unity app whose executable, `Football Manager 27` in the
+preview, has spaces in its name. `fm27ctl`, the launcher and the harness
+take the game's executable to be the one its `Info.plist` names
+(`CFBundleExecutable`, in a bundle with the game's identifier;
+`src/common/info_plist.c`), and the edition's name where it names none, so
+a build that renames it is refused for its build rather than left without
+the harness. `fm27ctl probe` reads the engine plugin in the app's
+`Contents/PlugIns`, given the app, its executable, the plugin's bundle or
+the plugin itself, and prints the app's version, which a report of a build
+it does not support needs too; every build `src/common/macos_builds.c`
+lists has build tables, as the `macos` suite checks, so a slice it calls
+supported is one the harness has tables for. The game's own code passes
+its command line to the engine, which reads the auto-play file
+`launch --save` gives it as the engine starts. If the started game reaches
+its menu without the save, because the engine did not get the file or did
+not load the save, `fm27ctl` says so and waits, within `--timeout`, for
+the save to be loaded by hand; the commands that start the game for a
+fixture's save do the same. The harness cannot read the loaded save's name
+in FM27 (`GAME_UNLOCATED_SAVE_NAME`), so `fm27ctl` takes a loaded game to
+have the save it asked for, and says so; and as FM27's exports have no
+`save`, a command for a fixture without one waits while the running game
+loads or works, then uses the save it has loaded, stopping if the game is
+at its start screen or not running; it never starts the game for it
+(`SessionNeed.unrecorded`). It looks for saves as `fm24ctl`
+does, as `.fm` files in `cloud/games` and `games` of
+`~/Library/Application Support/Sports Interactive/Football Manager 27`,
+which has not been checked with the game either.
+
+FM27's build tables (`src/dll/game_macos_tables_fm27.c`) hold a set per
+mapped build and slice, which the harness picks by the plugin's UUID, and
+its object layouts are in `src/dll/game_layout_fm27.h`;
+[tools/macos](../tools/macos/README.md) describes the mapping they come
+from, with the instructions that show each layout, what has not been
+located in it, and how `tools/macos/remap.py` maps a new build from the last
+one through that build's fingerprints. Where the edition's layouts lack something FM24's have
+(`GAME_UNLOCATED_*`, `GAME_WEIGHT_FROM_BODY_TYPE`), the harness's code
+does without it. The `macos` suite checks it with stand-ins: a
+stand-in game (an executable named as FM27's, in a folder with spaces)
+loads the harness, built with tables for a stand-in engine plugin, and
+loads and unloads that plugin, another build of it and an unrelated
+bundle as the test tells it. The stand-in plugin also stands in for the
+engine's calls a run with `keep_build` makes, and notes how it is called,
+so the test plays matches through the harness's own code: the seed
+patched after FM27's header, the serialisation context, the manager flags
+handed to the assistant, and the results and detailed statistics read in
+FM27's layout. (A bundle with thread-local variables is never unloaded, so
+the stand-in has none.) The stand-in engine loads a save in steps, as
+FM24's load does and FM27's may: a game in progress at once, then the
+people, on a thread of its own; and as in the game's builds, the stand-in
+harness's start screen is the engine's `GAME` object, which exists before
+any load. So the suite checks that the harness reports a load as
+`loading`, and refuses jobs, until the load has settled, also when nothing
+asks it meanwhile (`gameState_settled` in `src/dll/game_state.c`); the
+`dll` suite checks that a gap between samples, or the engine's unloading,
+starts the wait again, and that a game without people never settles. The
+`match` suite checks the same calls, and the builder's, against fakes for
+each edition.
+
+The `macos` suite also drives `fm27ctl`'s own code against the stand-in
+game from start to finish. In a home folder of its own, with the game in a
+Steam library and the launcher in Steam's launch option: `install`; then
+`launch --save`, whose start through Steam runs the launcher on the
+stand-in game's app, so that the launcher inserts the stand-in harness
+`install` put in place and hands the game the auto-play file, and the
+stand-in engine, which the stand-in game loads as it starts, loads the
+save the file names; then `status`, `list-teams`, `list-players`,
+`get-player`, `inject-player`, `get-next-fixture` (the stand-in save has no
+fixture, which the harness says), `encode` and `run`, keeping the build;
+`run` on a fixture without a `save`, as FM27's exports are, once the game
+is idle and again while it loads the save afresh, which `run` waits for;
+and `replace-away` with a club's name, which the harness refuses, and with
+an unknown team ID. Started again with its command line kept from its
+engine, the game stays at its menu, `fm27ctl` asks for the save to be
+loaded by hand, and the test has the stand-in game load it. Once the game
+has quit, `run` on that fixture stops, saying to start FM27 and load the
+save, and starts nothing. The stand-in engine stands in for neither
+the match builder nor the serialiser, so exports, team replacement and
+`decode` are checked against fakes only (the `runner`, `dll` and `match`
+suites).
+
+FM27's serialiser frames translate its write stacks into FM24's Windows
+frames wherever it writes a field as FM24 does, so the labels, members,
+per-seed rebuilds and team replacement work as in FM24; its own writes and
+calls get synthetic IDs (`src/dll/sites_fm27.h` names the ones the labels
+use), and a frame may depend on its two outer frames, not only the next.
+`tools/macos/align/frames.py` makes the frames from FM24's by aligning the
+two builds' serialisers ([tools/macos](../tools/macos/README.md#how-the-27002486716-frames-were-made)),
+and needs both games' binaries, so it is not part of the tests. The `dll`
+suite checks FM27's own labels (its new match part, its plans' slot
+halves and its familiarity) on synthetic traces, `macos` checks that the
+tables give every site of `sites.h` but those FM27 has not, and its own
+named ones, and
+`ctest`'s `align` test runs the Python tests of the frame derivation, of
+what `gen_tables.py` refuses and of `remap.py`, which build two versions of
+a small bundle with `clang++` for both slices and remap a mapping of the
+first onto the second, and check that every FM27 mapping has fingerprints
+that cover it.
+
+FM27's tactics have two phases (`EDITION_TACTIC_PHASES` in `edition.h`):
+each formation slot has a position and a role in possession and others out
+of possession, and roles have no duties. So `FM27Viewer.app` draws two
+pitches for each side, **In possession** and **Out of possession**, its
+squad lists show each phase's position and role (**IP Position**, **IP
+Role**, **OOP Position** and **OOP Role**) where FM24's show the position,
+role and duty, and its headings give both formations, as `[IP 4-2-3-1, OOP
+4-4-2]`. Which half of a slot is in possession is the labels' guess, and
+FM27's role bits are not named yet, so a role shows as its bit (`Role 5`)
+and positions as FM24's bits name them (see [Editing an FM27 fixture
+file](FIXTURE-FM27.md#tactics)). Its six familiarity categories are not
+named either, and how the game works out a tactic's setting for each is
+not known, so the six familiarity columns (**Familiarity 0** to **5**)
+show each category's best entry, how well the player knows the setting
+they know best (`None` for a category with no entries), not the game's bar
+against the tactic, and **Max familiarity** sets every entry's amount to
+10000. Everything else in the viewer is FM24's, on the same labels: the
+other Max buttons, the venue, the summary, simulation and replacements.
+The C core holds these rules (`src/ui/fixture_view.c` and
+`src/runner/fixture_data.c`, under `EDITION_TACTIC_PHASES`), and the
+viewer's Swift asks it how many phases there are, so the same Swift builds
+both viewers. `tests/fixture_samples.c` makes FM27's sample fixtures in its
+label schema, with two phases and made-up familiarity, for the C suites and
+the Swift tests. None of this has been compared with the game's screens.
+
+The Windows build is FM24's only. `build/` keeps the edition it was first
+configured for: to switch, delete it or configure another folder (`cmake
+-S . -B build-24 -DFM_EDITION=24 -DFM24_BUILD_TESTS=ON`). The `FM24_*`
+build settings keep their names in both editions.
+
+Every name that tells the editions apart is in
+[`cmake/edition.cmake`](../cmake/edition.cmake), which writes them into
+`build/generated/edition.h` (from `src/common/edition.h.in`). The C
+sources use its `EDITION_*` macros, the viewer's Swift imports the same
+header as the module `Edition`, and CMake and the tests use the same
+names. Sources never spell the names out, and their comments write
+`fmNNctl`, `FMNN` and so on: `ctest`'s `edition` test fails on an edition
+name anywhere under `src/`, `cmake/`, `scripts/` or `.github/` outside
+the files that need one (it lists them), as well as on two editions
+sharing a name. The tests themselves use the macros wherever the edition's
+names appear in what they check, and the stand-ins' environment variables
+carry the edition's prefix (`FM24_` or `FM27_`, as in
+`FM27_ROSETTA_TESTS=OFF bin/fm27_tests`). The FM24 edition built from
+these sources is the same, byte for byte, as before the editions existed.
 
 `scripts/format.sh` formats the C sources under `src/` (`--check` only
 reports), and `scripts/tidy.sh`, which needs the build's compilation
@@ -159,7 +346,7 @@ xcrun swift-format format -i -r --configuration .swift-format \
 Rosetta; `build/fm24viewer_tests`), which use its models without a window,
 and `viewer_release`, which installs the bundle and checks its slices,
 minimum macOS versions, signatures, libraries and document types. The Swift
-tests run `build/fm24_stand_in_fm24ctl` (`tests/viewer_stand_in_fm24ctl.c`)
+tests run `build/fm24_stand_in_fm24ctl` (`tests/viewer_stand_in_cli.c`)
 in place of `fm24ctl`, which never contacts the game (its `run` writes a
 results CSV row by row, as slowly as a test asks; its `replace-home`,
 `replace-away` and `inject-player` write a sample fixture, and its
@@ -222,16 +409,25 @@ the tab bar come out as the window shows them.
 
 ### Making a macOS release
 
-`scripts/release_macos.sh` makes `dist/FM24-Harness-macOS-<version>.zip`,
-with `fm24ctl`, `FM24Viewer.app` and a short `READ ME.txt`, and a SHA-256
-file beside it. It builds afresh in `build/release-macos` (both slices, the
-viewer for both), runs the `release` and `viewer_release` checks, signs the
-viewer's own `fm24ctl`, the app and the loose `fm24ctl` with your Developer
-ID and the hardened runtime, has Apple notarize them, and staples the
-ticket to the app. A loose executable cannot hold a ticket, so Gatekeeper
-checks `fm24ctl`'s online the first time it runs. The harness that
-`fm24ctl` carries keeps its ad-hoc signature: it is data in `fm24ctl`, and
-`fm24ctl` writes it to disk itself, so it is never quarantined.
+`scripts/release_macos.sh` makes a release of the edition that
+`FM_EDITION` names, as for `scripts/build.sh` (27 by default, or 24):
+`dist/FM27-Harness-macOS-<version>.zip`, with `fm27ctl`, `FM27Viewer.app`
+and a short `READ ME.txt`, or for FM24 `dist/FM24-Harness-macOS-<version>.zip`
+with `fm24ctl` and `FM24Viewer.app`, and a SHA-256 file beside it. It builds
+afresh in `build/release-macos` (both slices, the viewer for both), runs the
+`release` and `viewer_release` checks, signs the viewer's own CLI, the app
+and the loose CLI with your Developer ID and the hardened runtime, has
+Apple notarize them, and staples the ticket to the app. A loose executable
+cannot hold a ticket, so Gatekeeper checks the CLI's online the first time
+it runs. The harness that the CLI carries keeps its ad-hoc signature: it is
+data in the CLI, which writes it to disk itself, so it is never
+quarantined. `READ ME.txt` points to the quick start of the edition's
+README: `README-<product>.md` if there is one, as `README-FM24.md` is for
+FM24, otherwise `README.md`.
+
+Do not release the FM27 edition until the [checks with the
+game](MACOS-FM27.md#checks-with-the-game) have passed on the build it is
+for.
 
 You need a Developer ID Application certificate in your keychain
 (`security find-identity -v -p codesigning` lists it) and, once, a notary
@@ -244,27 +440,39 @@ xcrun notarytool store-credentials fm24-notary --apple-id <your Apple ID> --team
 Then, from a clean checkout of the commit you release:
 
 ```sh
-scripts/release_macos.sh --version v1.1.0-macos.1 \
+scripts/release_macos.sh --version v1.0.0 \
+  --identity "Developer ID Application: <Your Name> (<TEAMID>)" --notary-profile fm24-notary
+FM_EDITION=24 scripts/release_macos.sh --version v1.1.0-macos.2 \
   --identity "Developer ID Application: <Your Name> (<TEAMID>)" --notary-profile fm24-notary
 ```
 
 `--identity -` signs ad hoc and skips notarizing, for a dry run of the
-packaging. Before publishing, download the zip as a user would (for
-example from a draft release), unzip it, and check that `FM24Viewer.app`
-opens and `./fm24ctl status` runs without a Gatekeeper warning. Then
-publish it with the zip and its `.sha256`:
+packaging. A dry run can also package a build you already have, as it is,
+instead of building afresh: `--build build` names it (configured with
+`FM24_VIEWER=ON`), and `--dist` another folder for the zip.
+`ctest`'s `release_package` test makes such a dry run of its own build and
+checks the zip: its name and contents, both slices, the signatures and the
+`READ ME.txt`.
+
+Before publishing, download the zip as a user would (for example from a
+draft release), unzip it, and check that the viewer opens and `./fm27ctl
+status` (or `./fm24ctl status`) runs without a Gatekeeper warning. Then
+publish it with the zip and its `.sha256`, tagged `fm27-v<version>` for
+FM27 and `v<version>-macos.<n>` for FM24:
 
 ```sh
-gh release create v1.1.0-macos.1 dist/FM24-Harness-macOS-v1.1.0-macos.1.zip* \
-  --target main --title "macOS v1.1.0-macos.1"
+gh release create fm27-v1.0.0 dist/FM27-Harness-macOS-v1.0.0.zip* \
+  --target <the released commit> --title "FM27 macOS v1.0.0"
+gh release create v1.1.0-macos.2 dist/FM24-Harness-macOS-v1.1.0-macos.2.zip* \
+  --target main --title "macOS v1.1.0-macos.2"
 ```
 
 ## Continuous integration
 
 `.github/workflows/ci.yml` builds and tests on every push and pull request,
-without the game. On macOS it runs `scripts/build.sh` with
-`FM24_VIEWER=ON`, both slices' tests, `ctest`, `format.sh --check` and
-`tidy.sh`.
+without the game. On macOS it runs, for each [edition](#editions),
+`scripts/build.sh` with `FM24_VIEWER=ON`, both slices' tests, `ctest`,
+`format.sh --check` and `tidy.sh`.
 
 The repository still contains the original project's Windows code, which
 keeps the shared code mergeable with that project. It is not supported
@@ -304,18 +512,22 @@ unchanged and check CI's Windows jobs on your push or pull request.
   documentation when behaviour changes.
 
 Before you open a pull request, run the checks, then the tests for both
-slices:
+slices, for each [edition](#editions) your change affects (shown for FM24;
+for FM27, build in a clone of its own, or another build folder, and run
+`bin/fm27_tests`):
 
 ```sh
 scripts/format.sh            # Apply formatting; use --check to verify only
-scripts/build.sh
+FM_EDITION=24 scripts/build.sh
 scripts/tidy.sh              # Requires the build's compilation database
 bin/fm24_tests
 arch -x86_64 bin/fm24_tests  # Apple silicon with Rosetta: the x86_64 slice
 ctest --test-dir build --output-on-failure
 ```
 
-`ctest` also runs the release check.
+`ctest` also runs the release checks (`release`, and with the viewer
+`viewer_release` and `release_package`), the `edition` check and, with
+Python 3, the `tables` and `align` checks.
 
 To run a single test suite, pass its name, for example:
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Combine
+import Edition
 import FixtureCore
 import Foundation
 
@@ -11,8 +12,14 @@ import Foundation
 final class TeamEditor: ObservableObject {
 	/// The most characters the picker takes, as the Windows field's limit.
 	static let textLimit = 255
-	static let placeholder = "Team ID or club short name"
-	static let problem = "Enter a team ID or club short name (up to 255 UTF-8 bytes)."
+	/// The harness finds a team by its unique ID only where the game's clubs' names have not been
+	/// located (in the engine plugin's builds, so far): the picker then takes an ID, typed or picked,
+	/// and not a club's name, as fmNNctl's prompt says (commands.h).
+	static let idOnly = EDITION_ENGINE_PLUGIN != 0
+	static let placeholder = idOnly ? "Team unique ID" : "Team ID or club short name"
+	static let problem =
+		idOnly
+		? "Enter a team's unique ID." : "Enter a team ID or club short name (up to 255 UTF-8 bytes)."
 
 	let side: Int
 	@Published private(set) var text: String
@@ -25,10 +32,10 @@ final class TeamEditor: ObservableObject {
 	let teams: ChoiceList
 	private var watcher: AnyCancellable?
 
-	/// Starts with the side's team, listed by it.
+	/// Starts with the side's team, listed by it; empty where the picker takes IDs only.
 	init(side: Int, team: String, teams: ChoiceList) {
 		self.side = side
-		text = VenueForm.limited(team, to: TeamEditor.textLimit)
+		text = TeamEditor.idOnly ? "" : VenueForm.limited(team, to: TeamEditor.textLimit)
 		self.teams = teams
 		// The list, once it arrives, filtered by what has been typed meanwhile.
 		watcher = teams.$state.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
@@ -62,7 +69,8 @@ final class TeamEditor: ObservableObject {
 	}
 
 	/// What replace-home or replace-away is given: a listed label's ID, or the text as it is. Nil
-	/// for text that is blank, holds a line break or takes more than 255 UTF-8 bytes.
+	/// for text that is blank, holds a line break or takes more than 255 UTF-8 bytes, and, where the
+	/// picker takes IDs only, for text that is not a label or digits alone.
 	var team: String? {
 		let blank = text.unicodeScalars.allSatisfy { $0 == " " || $0 == "\t" }
 		let breaks = text.unicodeScalars.contains { $0 == "\r" || $0 == "\n" || $0 == "\0" }
@@ -70,7 +78,11 @@ final class TeamEditor: ObservableObject {
 			return nil
 		}
 		let choices = teams.state == .loaded ? teams.choices : []
-		return ChoiceSearch.listedID(choices, text).map(String.init) ?? text
+		if let id = ChoiceSearch.listedID(choices, text) {
+			return String(id)
+		}
+		let digits = text.unicodeScalars.allSatisfy { ("0"..."9").contains($0) }
+		return !TeamEditor.idOnly || digits ? text : nil
 	}
 }
 
@@ -227,7 +239,7 @@ enum ReplacementJob: Equatable {
 		"\(side == 0 ? "home" : "away").player[\(block)]"
 	}
 
-	/// What fm24ctl's refusal of a player already in the fixture says, pointed at the prompt's
+	/// What fmNNctl's refusal of a player already in the fixture says, pointed at the prompt's
 	/// checkbox rather than the command line option; anything after it is dropped, as on Windows.
 	static func swapProblem(_ problem: String) -> String {
 		guard let hint = problem.range(of: "use --allow-duplicate to inject anyway") else {
@@ -238,7 +250,7 @@ enum ReplacementJob: Equatable {
 	}
 }
 
-/// The files of a replacement or swap, in the viewer's temporary folder: the fixture fm24ctl is
+/// The files of a replacement or swap, in the viewer's temporary folder: the fixture fmNNctl is
 /// given and the one the game writes back.
 enum ReplacementFiles {
 	/// Writes what the job is given to `url`: the fixture's JSON (a binary fixture's decoded JSON)

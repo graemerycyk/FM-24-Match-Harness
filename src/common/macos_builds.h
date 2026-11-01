@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// The macOS builds of Football Manager 2024 the harness supports, one per architecture slice of
-// the universal executable, identified by the slice's LC_UUID (Mach-O has no link timestamp).
+// The macOS builds of the game the harness supports, one per architecture slice of the universal
+// image that holds the match engine (the executable, or the engine plugin: EDITION_ENGINE_PLUGIN),
+// identified by the slice's LC_UUID (Mach-O has no link timestamp).
 #pragma once
 
 #include <stdbool.h>
@@ -13,8 +14,8 @@
 typedef struct MacosBuild {
 	const char *architecture; // "arm64" or "x86_64"
 	uint8_t uuid[16];
-	const char *version;    // CFBundleShortVersionString (CFBundleVersion)
-	uint32_t bundleVersion; // CFBundleVersion, written to configs as their game_build
+	const char *version;    // CFBundleShortVersionString, with any CFBundleVersion in brackets
+	uint32_t bundleVersion; // the build number, written to configs as their game_build
 } MacosBuild;
 
 extern const MacosBuild macosBuilds[];

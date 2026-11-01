@@ -4,8 +4,10 @@ FM24 match-engine harness for macOS: technical notes
 These notes describe how the macOS version works: `fm24ctl`, the launcher
 that loads the harness into Football Manager 2024 24.4.2 from Steam, the
 harness dylib and its job protocol, the build tables, the build and
-FM24Viewer.app. For setting up and using it, see the [README](../README.md),
-the [macOS guide](MACOS.md) and the [CLI reference](CLI.md).
+FM24Viewer.app. For setting up and using it, see the [README](../README-FM24.md),
+the [macOS guide](MACOS.md) and the [CLI reference](CLI.md). The FM27
+edition, built from the same sources, has its own
+[technical notes](TECHNICAL-FM27.md) on what differs.
 
 The harness's job, match, fixture and seed-building code comes from the
 original Windows project,
@@ -22,11 +24,12 @@ original project.
 src/common/  protocol (the job socket, the dylib's name), byte buffer, files,
              shared tactic role/position names, platform (threads, locks,
              clocks, files and UTF-8; platform_posix on macOS), channel (the
-             socket path and its lock), macos_builds (supported macOS slices)
+             socket path and its lock), macos_builds (supported macOS slices),
+             info_plist (FM27: an app's names, from its Info.plist)
 src/dll/     the harness: game.h (addresses, layouts, signatures), memory,
              stream, match, rng, database, fixture, trace, seed_build
-             (per-seed rebuilds), sites/site_lookup/site_members, labels
-             (rating names), config_writer, output, profiler, log, job,
+             (per-seed rebuilds), sites/site_lookup/site_members (and FM27's
+             generated sites_fm27.h), labels (rating names), config_writer, output, profiler, log, job,
              job_run/build/inspect/replace/teams/players/player/execute/
              status, game_state (what the game is doing, read only),
              match_stats, tactic_flags (generated); macOS: game_macos
@@ -57,14 +60,26 @@ tests/       custom test runner, fixture reader, job, runner startup and viewer
              checks; fixture_samples (synthetic fixtures); macos_test (tables,
              socket round trip, Steam discovery, launcher, launch --save,
              the save check before a job), with macos_stand_in_game and
-             macos_stand_in_library for the launcher tests; viewer/: the
-             viewer's Swift tests, with viewer_stand_in_fm24ctl in place of
-             fm24ctl
-cmake/       macos_viewer.cmake (FM24Viewer.app), viewer_probe.swift
+             macos_stand_in_library for the launcher tests, and, for FM27,
+             macos_stand_in_plugin, macos_stand_in_harness and
+             macos_stand_in_offsets.cmake for the plugin test and for the
+             commands from start to finish; viewer/: the
+             viewer's Swift tests, with viewer_stand_in_cli in place of
+             fm24ctl; edition_test.cmake (the editions' names);
+             release_package_test.cmake (a dry run of release_macos.sh)
+cmake/       edition.cmake (FM_EDITION and its names, written into
+               edition.h from src/common/edition.h.in), macos_viewer.cmake
+               (FM24Viewer.app), viewer_probe.swift
 scripts/     build.sh, format.sh, tidy.sh (env.sh: tool locations),
              release_macos.sh (the release zip)
-tools/       macos/: the build mapping (steam-24.4.2.json), its generator
-               gen_tables.py -> src/dll/game_macos_tables.c, check_mapping.py
+tools/       macos/: the build mappings (steam-24.4.2.json; FM27's
+               steam-27.0.0.2486716.json), their generator gen_tables.py
+               -> src/dll/game_macos_tables.c (FM27: game_macos_tables_fm27.c,
+               whose layouts are src/dll/game_layout_fm27.h), check_mapping.py,
+               remap.py (FM27: a new build's mapping from the last);
+               align/: FM27's serialiser frames from FM24's (frames.py), each
+               FM27 build's fingerprints for remap.py (fingerprint.py), with
+               the tests of these and of gen_tables.py
              experiments/: team instruction analysis and ability experiments
                (those that run the harness look for fm24ctl in the working
                directory or ../bin/; running them on macOS has not been
@@ -186,7 +201,10 @@ all its logic and adds per-architecture tables
   into a jump). The write trace translates each macOS stack this way, so
   the labels, member names, per-seed alignment and team replacement work
   unchanged. A frame without a Windows counterpart keeps its own identity
-  (`0x80000000 | macOS offset`).
+  (`0x80000000 | macOS offset`). FM27's frames are made from FM24's (see
+  [tools/macos](../tools/macos/README.md)): an entry may depend on the next
+  two outer frames, and FM27's own writes and calls translate into
+  synthetic IDs (`0x7E000000` and up) instead.
 - `signatures`: the first bytes of each function the harness calls,
   checked at startup.
 - The thread-local PCG32 the pre-match setup draws from.
@@ -205,13 +223,15 @@ clang-tidy 22 or newer from Homebrew's LLVM (`brew install llvm`). See
 [Development](DEVELOPMENT.md#macos) and `scripts/env.sh`.
 
 ```sh
-scripts/build.sh     # build into build/, install fm24ctl, the viewer and tests into bin/
+FM_EDITION=24 scripts/build.sh  # build FM24's into build/; install fm24ctl, the viewer
+                                # and tests into bin/
 scripts/format.sh    # apply .clang-format (--check to only verify)
 scripts/tidy.sh      # clang-tidy with .clang-tidy per architecture (warnings are errors)
 ```
 
 The build script always configures Release mode and C17, including all
-regression checks in `fm24_tests`. It builds universal (arm64 and x86_64)
+regression checks in `fm24_tests`. `FM_EDITION` chooses the game edition
+(see [Editions](DEVELOPMENT.md#editions)); this document describes FM24's. It builds universal (arm64 and x86_64)
 binaries for macOS 11 and newer with Apple clang, and the viewer for macOS
 13 and newer (see [The fixture viewer](DEVELOPMENT.md#the-fixture-viewer)).
 CMake defaults Release builds to `-O2 -DNDEBUG`, with link-time
@@ -236,10 +256,12 @@ loaded, see the protocol-version notes below.
 
 Run `bin/fm24_tests` for the application regression checks, or pass a suite
 name (`job`, `dll`, `fixture_data`, `runner`, `runner_main`,
-`fixture_export`, `fixture_view`, `player_inject` or `macos`) to run only
-that suite. On Apple silicon with Rosetta, `arch -x86_64 bin/fm24_tests`
+`fixture_export`, `fixture_view`, `player_inject`, `macos` or `match`) to
+run only that suite. On Apple silicon with Rosetta, `arch -x86_64 bin/fm24_tests`
 runs the x86_64 slice's. `fm24_tests` needs its two stand-ins next to it
-(`fm24_stand_in_game` and `libfm24_stand_in_library.dylib`). Each named
+(`fm24_stand_in_game` and `libfm24_stand_in_library.dylib`; the FM27
+edition's tests need three more, as
+[Development](DEVELOPMENT.md#editions) says). Each named
 test prints `[PASS]` or `[FAIL]`, followed by a test/failure count; failures
 return a nonzero exit code. Assertions report the source location,
 expression and expected and actual values without stopping the remaining
@@ -251,7 +273,11 @@ and UTF-8 exports without loading FM24. It also reads a synthetic game's
 state: the status line, the save name's checks, the refusal of jobs while
 the game is busy, and the save and date in exports but not in decoded
 fixtures. The `job` suite also covers repeated seed keys, malformed or
-overflowing seed values and status jobs.
+overflowing seed values and status jobs. The `match` suite checks what
+`src/dll/match.c` hands the game's engine through fakes of its functions:
+the builder's arguments, loading bytes into a new `GAME_MATCH`, where the
+seed sits after the edition's header, and the result and managers' flags
+in the edition's layout.
 
 The `runner` suite checks single-read config preparation, CLI and CSV numbers,
 result-file failures, `status`'s exit codes, configs with and without `save`
@@ -340,7 +366,9 @@ CMake re-configures by itself.
 `sites.h` or `site_members.c`, update its macOS counterpart in
 `tools/macos/steam-24.4.2.json` and run
 `python3 -I tools/macos/gen_tables.py tools/macos/steam-24.4.2.json src/dll/game_macos_tables.c`
-(see [tools/macos](../tools/macos/README.md)).
+(see [tools/macos](../tools/macos/README.md)). FM27's tables come from all
+its mappings:
+`python3 -I tools/macos/gen_tables.py tools/macos/steam-27.*.json src/dll/game_macos_tables_fm27.c`.
 
 # The viewer
 
@@ -355,6 +383,12 @@ by running its own copy of `fm24ctl` (`get-next-fixture`, `decode`, `run`,
 `list-players`, `launch` and `install`), with every path the game reads or
 writes in your temporary directory, and takes the first line of `fm24ctl`'s
 explanation when no harness serves the job socket.
+
+In the FM27 edition, whose tactics have a formation in possession and one
+out of possession, each side has a pitch for each, the squad lists show
+both phases' positions and roles, and the familiarity columns and **Max
+familiarity** work without the tactic's settings (see
+[Editions](DEVELOPMENT.md#editions)).
 
 Opening a fixture does not change its source;
 `fm24ctl <fixture.json|fixture.bin>` opens it in the `FM24Viewer.app`
@@ -678,8 +712,9 @@ in `docs/FIXTURE.md`.
   write as Windows Steam build RVAs, after the
   [build tables](#build-tables)' translation (named parts are in
   `src/dll/sites.h`); a frame without a Windows counterpart appears as
-  `0x80000000 | macOS offset`. `p` indexes the `paths` table of serialiser
-  call chains.
+  `0x80000000 | macOS offset`, or in FM27 as its synthetic ID
+  ([FIXTURE-FM27.md](FIXTURE-FM27.md#research-keys)). `p` indexes the
+  `paths` table of serialiser call chains.
 - **Seed:** the seed field has `"role": "seed"`.
 - **Labels:** blocks carry a `"name"` (`match`, `referee`, `venue`, `fixture`,
   `home.player[3]`, `away.manager`, `home.backroom[2]`, ...), and player

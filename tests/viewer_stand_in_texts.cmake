@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The texts of fm24ctl and the harness that the stand-in prints for the viewer's tests
-# (tests/viewer_stand_in_fm24ctl.c, its `static const char <name>Text[]` strings) must be the real
-# ones: each must be a whole string literal in the sources that print it, once adjacent literals are
-# joined as the compiler joins them. Both must also line-buffer their standard output.
-set(stand_in_file "${SOURCE_DIR}/tests/viewer_stand_in_fm24ctl.c")
+# The texts of the CLI and the harness that the stand-in prints for the viewer's tests
+# (tests/viewer_stand_in_cli.c, its `static const char <name>Text[]` strings) must be the real
+# ones: each must be a whole string literal in the sources that print it, once the edition's names
+# (EDITION_HEADER, the build's edition.h) are put in and adjacent literals are joined as the
+# compiler joins them. Both must also line-buffer their standard output.
+set(stand_in_file "${SOURCE_DIR}/tests/viewer_stand_in_cli.c")
 set(real_files
 	src/dll/job_execute.c
 	src/runner/client_posix.c
@@ -11,10 +12,20 @@ set(real_files
 	src/runner/macos_game.c
 	src/runner/session.c
 )
-# Adjacent literals as one, and the characters CMake lists treat specially as others: only whole
-# strings are compared.
+file(STRINGS "${EDITION_HEADER}" edition_lines REGEX "^#define EDITION_[A-Z_]+ \"[^\"]*\"")
+if(NOT edition_lines)
+	message(FATAL_ERROR "no edition names in ${EDITION_HEADER}")
+endif()
+# The edition's names as the literals they stand for, adjacent literals as one, and the characters
+# CMake lists treat specially as others: only whole strings are compared.
 macro(read_joined file out)
 	file(READ "${file}" ${out})
+	foreach(line IN LISTS edition_lines)
+		string(REGEX MATCH "^#define (EDITION_[A-Z_]+) (\"[^\"]*\")" edition_match "${line}")
+		string(REGEX REPLACE "([^A-Za-z0-9_])${CMAKE_MATCH_1}([^A-Za-z0-9_])" "\\1${CMAKE_MATCH_2}\\2"
+			${out} "${${out}}"
+		)
+	endforeach()
 	string(REGEX REPLACE "\"[ \t\r\n]*\"" "" ${out} "${${out}}")
 	string(REPLACE ";" "<semicolon>" ${out} "${${out}}")
 	string(REPLACE "[" "<open>" ${out} "${${out}}")
@@ -44,10 +55,10 @@ foreach(text IN LISTS texts)
 		list(APPEND missing "${name}: ${literal}")
 	endif()
 endforeach()
-# Its standard output is buffered as fm24ctl's is, a line at a time, so that the viewer's tests see
-# progress arrive as it would from fm24ctl.
+# Its standard output is buffered as the CLI's is, a line at a time, so that the viewer's tests see
+# progress arrive as it would from the CLI.
 set(buffering "setvbuf(stdout, NULL, _IOLBF, 0)")
-foreach(file IN ITEMS tests/viewer_stand_in_fm24ctl.c src/runner/main.c)
+foreach(file IN ITEMS tests/viewer_stand_in_cli.c src/runner/main.c)
 	file(READ "${SOURCE_DIR}/${file}" text)
 	string(FIND "${text}" "${buffering}" at)
 	if(at EQUAL -1)
@@ -59,6 +70,6 @@ if(missing)
 	string(REPLACE "<semicolon>" ";" missing "${missing}")
 	string(REPLACE "<open>" "[" missing "${missing}")
 	string(REPLACE "<close>" "]" missing "${missing}")
-	message(FATAL_ERROR "The stand-in does not print as fm24ctl does:\n${missing}")
+	message(FATAL_ERROR "The stand-in does not print as the CLI does:\n${missing}")
 endif()
-message(STATUS "${count} stand-in texts are fm24ctl's own, and both buffer standard output alike")
+message(STATUS "${count} stand-in texts are the CLI's own, and both buffer standard output alike")

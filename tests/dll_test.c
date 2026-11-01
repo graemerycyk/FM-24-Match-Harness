@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "edition.h"
 #include "test.h"
 #include "tests.h"
 
@@ -71,8 +72,16 @@ static JobCommand dispatched;              // the last job the jobs_* stubs belo
 #ifdef __APPLE__
 // The game's objects that game_state.c reads (game_address() returns them).
 static uint8_t fakeGameOptions[GAME_OPTIONS_IN_PROGRESS + 1];
+#ifdef GAME_UNLOCATED_PROCESSING
+static uint8_t fakeGame[GAME_AUTO_PLAY_FILE + sizeof(void *)];
+#else
 static uint8_t fakeGame[GAME_PROCESSING_KIND + sizeof(int32_t)];
+#endif
+#ifdef GAME_UNLOCATED_SAVE_NAME
+static uint8_t fakeSaveSystem[sizeof(void *)];
+#else
 static uint8_t fakeSaveSystem[SAVE_SYSTEM_NAME + sizeof(void *)];
+#endif
 static uint8_t fakeSaveName[sizeof(uint32_t) + GAME_STATE_SAVE_LENGTH + 8]; // a game string object
 static uint8_t *fakeSingletons[3]; // the GAME and SAVE_SYSTEM pointers, the start screen's
 static uint16_t fakeDate[2];
@@ -178,8 +187,23 @@ static bool writeFakePlayers(StreamWriteFn write, void *handle, unsigned seriali
 	return ok && (!third || writeFakePlayer(write, handle, 'C', 'c', 2));
 }
 
+#if EDITION_ENGINE_PLUGIN
+static int engineContext;      // the engine's serialisation context
+static bool noEngineContext;   // match_context() finds none
+static unsigned contextMisses; // serialisations handed another context
+
+void *match_context(void) {
+	return noEngineContext ? NULL : &engineContext;
+}
+#endif
+
 // NOLINTBEGIN(readability-non-const-parameter): test doubles retain the game's signatures.
+#if EDITION_ENGINE_PLUGIN
+static char engineSerialise(uint8_t *match, void **handle, void *context, unsigned flags) {
+	contextMisses += context != &engineContext;
+#else
 static char engineSerialise(uint8_t *match, void **handle, unsigned flags) {
+#endif
 	(void)match;
 	(void)flags;
 	void **vtable = *(void ***)*handle;
@@ -263,6 +287,14 @@ size_t game_translateFrames(void *const *frames, size_t count, uint32_t *out, si
 uint32_t game_timestamp(void) {
 	return GAME_PE_TIMESTAMP_STEAM;
 }
+
+#if defined(__APPLE__) && EDITION_ENGINE_PLUGIN
+static GameEngineState fakeEngine = GAME_ENGINE_ACCEPTED; // as game_update found the plugin
+
+GameEngineState game_engineState(void) {
+	return fakeEngine;
+}
+#endif
 
 DataBuffer *stream_create(void) {
 	StreamWriteFn write = engineWrite;
@@ -813,15 +845,19 @@ static void setFakeGame(const FakeGame *fake) {
 	memset(fakeGame, 0, sizeof fakeGame);
 	memset(fakeSaveSystem, 0, sizeof fakeSaveSystem);
 	fakeGameOptions[GAME_OPTIONS_IN_PROGRESS] = fake->inProgress;
+#ifndef GAME_UNLOCATED_PROCESSING
 	fakeGame[GAME_PROCESSING] = fake->processing;
 	memcpy(fakeGame + GAME_PROCESSING_KIND, &fake->kind, sizeof fake->kind);
+#endif
 	fakeGame[GAME_AUTO_PLAY] = fake->autoPlay;
 	storePointer(fakeGame, GAME_AUTO_PLAY_FILE, fake->autoPlayRead ? fakeSaveName : NULL);
 	if (fake->save) {
 		uint32_t length = (uint32_t)strlen(fake->save);
 		memcpy(fakeSaveName, &length, sizeof length);
 		memcpy(fakeSaveName + sizeof length, fake->save, length);
+#ifndef GAME_UNLOCATED_SAVE_NAME
 		storePointer(fakeSaveSystem, SAVE_SYSTEM_NAME, fakeSaveName);
+#endif
 	}
 	fakeSingletons[0] = fake->created ? fakeGame : NULL;
 	fakeSingletons[1] = fakeSaveSystem;
@@ -830,14 +866,22 @@ static void setFakeGame(const FakeGame *fake) {
 	fakeDate[1] = fake->year;
 	fakePeople = fake->people;
 	fakeHumanTeam = fake->humanTeam ? fakeGame : NULL;
+#if EDITION_ENGINE_PLUGIN
+	// As if the game had been like this for a while, sampled until now: settled (gameState_settled).
+	samples = (GameSettle){
+		.sampled = true, .inProgress = fake->inProgress, .people = fake->people, .lastMs = sampleTimeMs()
+	};
+#endif
 }
 
+#ifndef GAME_UNLOCATED_SAVE_NAME
 // A game string object in `out`: a u32 byte length (`length`), then the bytes of `text`.
 static uint8_t *gameString(uint8_t *out, uint32_t length, const char *text) {
 	memcpy(out, &length, sizeof length);
 	memcpy(out + sizeof length, text, strlen(text));
 	return out;
 }
+#endif
 #endif
 
 // writeHeader's text for a config with a home team override and this save and game date.
@@ -854,6 +898,31 @@ static bool headerText(const char *save, const char *gameDate, char *text, size_
 	size_t length = ok ? fread(text, 1, size - 1, file) : 0;
 	text[length] = 0;
 	return fclose(file) == 0 && length > 0;
+}
+
+// The game's version, as the match block's header gives it: FM24's after the block's u16 tag, and in
+// an engine plugin's builds the first four bytes, before the format version.
+TEST(writes_the_game_version_of_the_match_header) {
+#if EDITION_ENGINE_PLUGIN
+	uint8_t bytes[] = {27, 0, 1, 5, 0x4C, 0x00, 0x00, 0x02};
+	static const char expected[] = "\"engine_version\": \"27.0.1.5\",\n";
+#else
+	uint8_t bytes[] = {0x09, 0x08, 24, 2, 0, 0, '!'};
+	static const char expected[] = "\"engine_version\": \"24.2.0.0\",\n";
+#endif
+	Serialised serialised = {.bytes = {.data = bytes, .length = sizeof bytes}};
+	FILE *file = tmpfile();
+	ASSERT_BOOL_EQ(file != NULL, true);
+	if (!file) {
+		return;
+	}
+	writeHeader(file, &serialised, "test", NULL, NULL, NULL, false);
+	ASSERT_INT_EQ(fflush(file), 0);
+	ASSERT_INT_EQ(fseek(file, 0, SEEK_SET), 0);
+	char text[512] = {0};
+	ASSERT_BOOL_EQ(fread(text, 1, sizeof text - 1, file) > 0, true);
+	ASSERT_BOOL_EQ(strstr(text, expected) != NULL, true);
+	ASSERT_INT_EQ(fclose(file), 0);
 }
 
 TEST(writes_both_team_overrides) {
@@ -931,7 +1000,7 @@ TEST(names_what_the_game_is_doing_and_formats_its_dates) {
 	ASSERT_INT_EQ(strcmp(date, "65535 day 511 13:30"), 0);
 }
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(GAME_UNLOCATED_SAVE_NAME)
 TEST(reads_save_names_only_as_short_utf8_text) {
 	uint8_t string[sizeof(uint32_t) + GAME_STATE_SAVE_LENGTH + 8] = {0};
 	char name[GAME_STATE_SAVE_LENGTH];
@@ -983,7 +1052,19 @@ TEST(reads_save_names_only_as_short_utf8_text) {
 	// NOLINTNEXTLINE(performance-no-int-to-ptr): an address nothing is mapped at.
 	ASSERT_BOOL_EQ(readSaveName((const uint8_t *)(uintptr_t)16, name, sizeof name), false);
 }
+#endif
 
+// The save name the game state reads for a save called `save`, and what the status job says of it:
+// nothing where the save's name has not been located in the edition's builds.
+#ifdef GAME_UNLOCATED_SAVE_NAME
+#define READ_SAVE(save) ""
+#define STATUS_SAVE(save) ""
+#else
+#define READ_SAVE(save) save
+#define STATUS_SAVE(save) " save=" save
+#endif
+
+#ifdef __APPLE__
 TEST(reads_the_game_state_from_its_objects) {
 	GameState state;
 	teamSearches = 0;
@@ -993,7 +1074,7 @@ TEST(reads_the_game_state_from_its_objects) {
 	ASSERT_BOOL_EQ(state.people == 3 && state.humanTeam && state.startScreenSeen, true);
 	ASSERT_BOOL_EQ(state.autoPlay && state.autoPlayRead, true);
 	ASSERT_INT_EQ(strcmp(state.date, "2024 day 123 15:00"), 0);
-	ASSERT_INT_EQ(strcmp(state.save, "LIV_MAIN_FM24"), 0);
+	ASSERT_INT_EQ(strcmp(state.save, READ_SAVE("LIV_MAIN_FM24")), 0);
 	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_READY);
 	ASSERT_INT_EQ((int)teamSearches, 1);
 	// The human manager is looked for only when asked.
@@ -1009,7 +1090,7 @@ TEST(reads_the_game_state_from_its_objects) {
 	setFakeGame(&(FakeGame){.created = true, .kind = -1, .startScreen = true, .save = "old.fm"});
 	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
 	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_MENU);
-	ASSERT_INT_EQ(strcmp(state.save, "old"), 0);
+	ASSERT_INT_EQ(strcmp(state.save, READ_SAVE("old")), 0);
 	// Loading (the database is there, the game not yet in progress), then processing.
 	FakeGame game = readyGame;
 	game.inProgress = false;
@@ -1022,9 +1103,17 @@ TEST(reads_the_game_state_from_its_objects) {
 	game.kind = 7;
 	setFakeGame(&game);
 	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+#ifdef GAME_UNLOCATED_PROCESSING
+	// Where the processing state has not been located, the game is never read as busy.
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_READY);
+	ASSERT_INT_EQ(state.processingKind, -1);
+	ASSERT_INT_EQ((int)teamSearches, 2);
+	teamSearches = 1;
+#else
 	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_BUSY);
 	ASSERT_INT_EQ(state.processingKind, 7);
 	ASSERT_INT_EQ((int)teamSearches, 1);
+#endif
 	// In progress before the start screen's first entry has ended, as during its auto-play load:
 	// still loading, and the people are not searched.
 	game = readyGame;
@@ -1045,6 +1134,213 @@ TEST(reads_the_game_state_from_its_objects) {
 	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_NO_TEAM);
 	ASSERT_BOOL_EQ(state.date[0] == 0 && state.save[0] == 0, true);
 	setFakeGame(&(FakeGame){0});
+}
+#endif
+
+#if EDITION_ENGINE_PLUGIN
+TEST(settles_a_game_in_progress_once_its_samples_hold) {
+	GameSettle settle = {0};
+	static const struct {
+		bool inProgress;
+		size_t people;
+		uint64_t atMs;
+		bool settled;
+	} cases[] = {
+		// Samples a second or so apart, as the job thread takes them.
+		{false, 0, 1000, false},  // at the menu: never settled, as no game is in progress
+		{false, 0, 2000, false},  // ...
+		{true, 0, 2500, false},   // a load sets "in progress" first
+		{true, 1, 3000, false},   // then adds people
+		{true, 2, 4000, false},   // ...
+		{true, 2, 5000, false},   // which have held for less than GAME_STATE_SETTLE_MS
+		{true, 2, 6999, false},   // ...
+		{true, 2, 7000, true},    // and now for that long
+		{true, 2, 8000, true},    // ...
+		{false, 2, 8500, false},  // another load
+		{true, 2, 9000, false},   // in progress again, with as many people
+		{true, 2, 10000, false},  // ...
+		{true, 2, 11000, false},  // ...
+		{true, 2, 12000, true},   // ...
+		{true, 3, 12500, false}, // a day's processing adds someone
+	};
+	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+		bool settled =
+			gameState_settled(&settle, cases[i].inProgress, cases[i].people, cases[i].atMs);
+		if (settled != cases[i].settled) {
+			fprintf(stderr, "sample %zu\n", i);
+		}
+		ASSERT_BOOL_EQ(settled, cases[i].settled);
+	}
+	// The first sample counts as a change, whatever it shows.
+	settle = (GameSettle){0};
+	ASSERT_BOOL_EQ(gameState_settled(&settle, true, 3, 100000), false);
+	ASSERT_BOOL_EQ(gameState_settled(&settle, true, 3, 101500), false);
+	ASSERT_BOOL_EQ(gameState_settled(&settle, true, 3, 103000), true);
+}
+
+// Nothing is sampled during a job, while the Mac sleeps or while the engine is gone, and the game
+// may load another save meanwhile with as many people: a sample after such a gap is a change.
+TEST(settles_afresh_after_a_gap_between_samples) {
+	GameSettle settle = {0};
+	for (uint64_t atMs = 1000; atMs < 4000; atMs += GAME_STATE_SAMPLE_MS) {
+		ASSERT_BOOL_EQ(gameState_settled(&settle, true, 5, atMs), false);
+	}
+	ASSERT_BOOL_EQ(gameState_settled(&settle, true, 5, 4000), true);
+	// Samples GAME_STATE_GAP_MS apart are not a gap; any further apart are.
+	ASSERT_BOOL_EQ(gameState_settled(&settle, true, 5, 4000 + GAME_STATE_GAP_MS), true);
+	uint64_t atMs = 4000 + 2 * GAME_STATE_GAP_MS + 1;
+	ASSERT_BOOL_EQ(gameState_settled(&settle, true, 5, atMs), false);
+	ASSERT_BOOL_EQ(settle.sinceMs == atMs && settle.lastMs == atMs, true);
+	ASSERT_BOOL_EQ(gameState_settled(&settle, true, 5, atMs + 1500), false);
+	ASSERT_BOOL_EQ(gameState_settled(&settle, true, 5, atMs + GAME_STATE_SETTLE_MS), true);
+	// After a long job, through the game state: loading until it has settled again.
+	GameState state;
+	setFakeGame(&readyGame);
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_READY);
+	samples.lastMs -= GAME_STATE_GAP_MS + 1;
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_LOADING);
+	// The engine unloaded and loaded again, however quickly: the samples before count for nothing.
+	setFakeGame(&readyGame);
+	fakeEngine = GAME_ENGINE_GONE;
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_STARTING);
+	fakeEngine = GAME_ENGINE_ACCEPTED;
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_LOADING);
+	setFakeGame(&(FakeGame){0});
+}
+
+// A game in progress has people once it has loaded: one without any is still loading, however long
+// it stays so.
+TEST(never_settles_a_game_in_progress_without_people) {
+	GameSettle settle = {0};
+	for (uint64_t atMs = 1000; atMs <= 10000; atMs += GAME_STATE_SAMPLE_MS) {
+		ASSERT_BOOL_EQ(gameState_settled(&settle, true, 0, atMs), false);
+	}
+	GameState state;
+	FakeGame empty = readyGame;
+	empty.people = 0;
+	setFakeGame(&empty);
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_LOADING);
+	ASSERT_BOOL_EQ(state.inProgress && !state.startScreenSeen, true);
+	setFakeGame(&(FakeGame){0});
+}
+
+// The engine makes GAME, which its builds' mappings give as the start screen, before it reads the
+// auto-play file and loads the save, and it sets "in progress" before it has loaded the people: a
+// game in progress is loading until it settles, and its people are not searched meanwhile.
+TEST(waits_for_a_game_in_progress_to_settle) {
+	char text[128];
+	GameState state;
+	teamSearches = 0;
+	setFakeGame(&readyGame);
+	samples = (GameSettle){0}; // just seen, as the harness first sees a load's end
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_LOADING);
+	ASSERT_BOOL_EQ(state.inProgress && !state.startScreenSeen && !state.humanTeam, true);
+	ASSERT_INT_EQ((int)teamSearches, 0);
+	(void)snprintf(text, sizeof text, "command=run\ninput=/in.bin\noutput=/out.csv\nseeds=1\n");
+	dispatched = JOB_NONE;
+	dllTest_execute(text);
+	ASSERT_INT_EQ(
+		strcmp(job_takeResult(), "error: " EDITION_PRODUCT " is busy (loading); wait until it is idle"),
+		0
+	);
+	ASSERT_INT_EQ((int)dispatched, JOB_NONE);
+	(void)snprintf(text, sizeof text, "command=status\n");
+	dllTest_execute(text);
+	ASSERT_INT_EQ(
+		strcmp(
+			job_takeResult(),
+			"ok: loading in_progress=1 processing=0 kind=-1 people=3 human_team=0 menu_seen=0 autoplay=1 "
+			"autoplay_read=1 date=2024 day 123 15:00"
+		),
+		0
+	);
+	// Settled: ready, and the human manager's team is found.
+	samples.sinceMs = 0;
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_READY);
+	ASSERT_BOOL_EQ(state.startScreenSeen && state.humanTeam, true);
+	ASSERT_INT_EQ((int)teamSearches, 1);
+	// More people: loading again, until they have held.
+	++fakePeople;
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_LOADING);
+	ASSERT_INT_EQ((int)teamSearches, 1);
+	// At the menu, with GAME made, nothing waits: the menu is the menu.
+	setFakeGame(&(FakeGame){.created = true, .kind = -1, .startScreen = true});
+	samples = (GameSettle){0};
+	ASSERT_BOOL_EQ(gameState_read(&state, true), true);
+	ASSERT_INT_EQ((int)gameState_phase(&state), GAME_PHASE_MENU);
+	// gameState_sample is such a read.
+	setFakeGame(&readyGame);
+	samples = (GameSettle){0};
+	gameState_sample();
+	ASSERT_BOOL_EQ(samples.sampled && samples.inProgress && samples.people == 3, true);
+	setFakeGame(&(FakeGame){0});
+}
+#endif
+
+#ifdef GAME_WEIGHT_FROM_BODY_TYPE
+// A player's weight in a match, from their body type and height, as the game's builder computes
+// it in single precision and truncates.
+TEST(computes_weights_as_the_match_builder_does) {
+	ASSERT_INT_EQ(game_playerWeight(1, 180), 61);  // 19.0 * 1.8^2 = 61.56
+	ASSERT_INT_EQ(game_playerWeight(3, 180), 76);  // 23.5 * 1.8^2 = 76.14
+	ASSERT_INT_EQ(game_playerWeight(3, 200), 94);  // 23.5 * 4 exactly
+	ASSERT_INT_EQ(game_playerWeight(5, 212), 132); // 29.5 * 2.12^2 = 132.58
+	ASSERT_INT_EQ(game_playerWeight(2, 150), 46);  // 20.5 * 1.5^2 = 46.125
+	ASSERT_INT_EQ(game_playerWeight(4, 175), 81);  // 26.5 * 1.75^2 = 81.16
+	// A body type outside 1-5 has no BMI, and no height no weight.
+	ASSERT_INT_EQ(game_playerWeight(0, 180), 0);
+	ASSERT_INT_EQ(game_playerWeight(6, 180), 0);
+	ASSERT_INT_EQ(game_playerWeight(3, 0), 0);
+}
+#endif
+
+#if EDITION_ENGINE_PLUGIN
+// Serialise takes the engine's serialisation context, and is not called before there is one.
+TEST(serialises_with_the_engines_context) {
+	Serialised serialised = {0};
+	unsigned before = serialisations;
+	contextMisses = 0;
+	ASSERT_BOOL_EQ(trace_serialize((uint8_t *)&builtSeed, &serialised, true), true);
+	ASSERT_BOOL_EQ(serialisations == before + 1 && contextMisses == 0, true);
+	trace_free(&serialised);
+	noEngineContext = true;
+	Serialised none = {0};
+	ASSERT_BOOL_EQ(trace_serialize((uint8_t *)&builtSeed, &none, false), false);
+	noEngineContext = false;
+	ASSERT_BOOL_EQ(serialisations == before + 1 && none.bytes.length == 0, true);
+	trace_free(&none);
+}
+
+// The seed an export takes from the clock is the one the engine's builder would pick: the uptime
+// clock in whole milliseconds, rounded half away from zero, folded into 32 bits.
+TEST(picks_the_export_seed_as_the_engines_builder_does) {
+	const double ticksPerMs = 24000.0; // Apple silicon: 24 MHz
+	ASSERT_INT_EQ((int)clockSeedAt(24000ULL * 1000 + 11999, ticksPerMs), 1000);
+	ASSERT_INT_EQ((int)clockSeedAt(24000ULL * 1000 + 12000, ticksPerMs), 1001);
+	ASSERT_BOOL_EQ(clockSeedAt(24000ULL * 0xFFFFFFFEULL, ticksPerMs) == 0xFFFFFFFEU, true);
+	ASSERT_BOOL_EQ(clockSeedAt(24000ULL * 0xFFFFFFFFULL, ticksPerMs) == 0, true);
+	ASSERT_BOOL_EQ(clockSeedAt(24000ULL * 0x100000000ULL, ticksPerMs) == 1, true);
+	ASSERT_BOOL_EQ(clockSeedAt(24000ULL * 0x100000005ULL, ticksPerMs) == 6, true);
+	// The timebase as the builder works it out: whole ticks per second, over 1000.
+	mach_timebase_info_data_t timebase;
+	ASSERT_INT_EQ(mach_timebase_info(&timebase), 0);
+	double perMs = ticksPerMillisecond();
+	ASSERT_BOOL_EQ(fabs(perMs * (double)timebase.numer / (double)timebase.denom - 1e6) < 1.0, true);
+	// The clock's seed now: the uptime clock's milliseconds while it is taken.
+	uint64_t before = mach_absolute_time();
+	uint32_t seed = clockSeed();
+	uint64_t after = mach_absolute_time();
+	uint32_t low = clockSeedAt(before, perMs);
+	uint32_t high = clockSeedAt(after, perMs);
+	ASSERT_BOOL_EQ(low <= high ? low <= seed && seed <= high : seed >= low || seed <= high, true);
 }
 #endif
 
@@ -1087,7 +1383,7 @@ TEST(decodes_binary_fixtures_as_exports) {
 		ByteBuffer json = {0};
 		ASSERT_BOOL_EQ(files_read(output, &json), true);
 		const char *text = buffer_string(&json);
-		ASSERT_BOOL_EQ(strstr(text, "\"format\": \"fm24-match-config/1\"") != NULL, true);
+		ASSERT_BOOL_EQ(strstr(text, "\"format\": \"" EDITION_MATCH_CONFIG_FORMAT "\"") != NULL, true);
 		ASSERT_BOOL_EQ(strstr(text, "\"bytes\": ") != NULL, full != 0);
 		ASSERT_BOOL_EQ(strstr(text, "\"paths\": [") != NULL, full != 0);
 		ASSERT_BOOL_EQ(strstr(text, "\"site\": ") != NULL, full != 0);
@@ -1130,8 +1426,14 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 	processing.kind = 7;
 	FakeGame autoPlayLoad = readyGame; // in progress before the start screen's first entry has ended
 	autoPlayLoad.startScreen = false;
+#ifdef GAME_UNLOCATED_PROCESSING
+	// The game is never read as processing where that state has not been located.
+	static const char *const reasons[] = {"loading", "loading"};
+	const FakeGame *busy[] = {&loading, &autoPlayLoad};
+#else
 	static const char *const reasons[] = {"loading", "processing kind 7", "loading"};
 	const FakeGame *busy[] = {&loading, &processing, &autoPlayLoad};
+#endif
 	for (size_t i = 0; i < sizeof busy / sizeof busy[0]; ++i) {
 		const char *jobs[] = {build, run};
 		for (size_t k = 0; k < 2; ++k) {
@@ -1141,7 +1443,7 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 			dllTest_execute(text);
 			char expected[128];
 			(void)snprintf(
-				expected, sizeof expected, "error: FM24 is busy (%s); wait until it is idle", reasons[i]
+				expected, sizeof expected, "error: " EDITION_PRODUCT " is busy (%s); wait until it is idle", reasons[i]
 			);
 			ASSERT_INT_EQ(strcmp(job_takeResult(), expected), 0);
 			ASSERT_INT_EQ((int)dispatched, JOB_NONE);
@@ -1153,10 +1455,11 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 		strcmp(
 			job_takeResult(),
 			"ok: loading in_progress=1 processing=0 kind=-1 people=3 human_team=0 menu_seen=0 autoplay=1 "
-			"autoplay_read=1 date=2024 day 123 15:00 save=LIV_MAIN_FM24"
+			"autoplay_read=1 date=2024 day 123 15:00" STATUS_SAVE("LIV_MAIN_FM24")
 		),
 		0
 	);
+#ifndef GAME_UNLOCATED_PROCESSING
 	setFakeGame(&processing);
 	(void)snprintf(text, sizeof text, "command=status\n");
 	dllTest_execute(text);
@@ -1168,6 +1471,7 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 		),
 		0
 	);
+#endif
 	FakeGame idle = readyGame;
 	idle.save = "LIV MAIN (v02).fm";
 	setFakeGame(&idle);
@@ -1177,7 +1481,7 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 		strcmp(
 			job_takeResult(),
 			"ok: ready in_progress=1 processing=0 kind=-1 people=3 human_team=1 menu_seen=1 autoplay=1 "
-			"autoplay_read=1 date=2024 day 123 15:00 save=LIV MAIN (v02)"
+			"autoplay_read=1 date=2024 day 123 15:00" STATUS_SAVE("LIV MAIN (v02)")
 		),
 		0
 	);
@@ -1202,7 +1506,13 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 	ASSERT_INT_EQ(strncmp(job_takeResult(), "ok: ", 4), 0);
 	ByteBuffer json = {0};
 	ASSERT_BOOL_EQ(files_read(output, &json), true);
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(GAME_UNLOCATED_SAVE_NAME)
+	ASSERT_BOOL_EQ(
+		strstr(buffer_string(&json), "\",\n  \"game_date\": \"2024 day 123 15:00\",\n") != NULL, true
+	);
+	ASSERT_BOOL_EQ(strstr(buffer_string(&json), "\"save\"") == NULL, true);
+	setFakeGame(&(FakeGame){0});
+#elif defined(__APPLE__)
 	ASSERT_BOOL_EQ(
 		strstr(
 			buffer_string(&json),
@@ -1220,6 +1530,61 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 	seedFound = false;
 	(void)platform_removeFile(output);
 }
+
+#ifdef __APPLE__
+// Where the engine is a plugin, the game is starting until the plugin is loaded and accepted, and
+// until the game has then started up: status says so, and other jobs wait. A game with its engine
+// in its executable runs them while starting, as it did before.
+TEST(waits_while_the_game_starts) {
+	static const char run[] = "command=run\ninput=/in.bin\noutput=/out.csv\nseeds=1\n";
+	static const char starting[] =
+		"ok: starting in_progress=0 processing=0 kind=-1 people=0 human_team=0 menu_seen=0 autoplay=0 "
+		"autoplay_read=0";
+	char text[sizeof run];
+	setFakeGame(&(FakeGame){.created = true, .kind = -1}); // the start screen has not been reached
+#if EDITION_ENGINE_PLUGIN
+	FakeGame menu = {.created = true, .kind = -1, .startScreen = true};
+	static const GameEngineState states[] = {GAME_ENGINE_STARTING, GAME_ENGINE_ACCEPTED};
+	for (size_t i = 0; i < sizeof states / sizeof states[0]; ++i) {
+		fakeEngine = states[i];
+		(void)snprintf(text, sizeof text, "command=status\n");
+		dllTest_execute(text);
+		ASSERT_INT_EQ(strcmp(job_takeResult(), starting), 0);
+		dispatched = JOB_NONE;
+		(void)snprintf(text, sizeof text, "%s", run);
+		dllTest_execute(text);
+		ASSERT_INT_EQ(
+			strcmp(
+				job_takeResult(), "error: " EDITION_PRODUCT " is busy (starting); wait until it is idle"
+			),
+			0
+		);
+		ASSERT_INT_EQ((int)dispatched, JOB_NONE);
+	}
+	// Before the engine is accepted, the game's objects are not read, whatever they hold.
+	setFakeGame(&menu);
+	fakeEngine = GAME_ENGINE_STARTING;
+	(void)snprintf(text, sizeof text, "command=status\n");
+	dllTest_execute(text);
+	ASSERT_INT_EQ(strcmp(job_takeResult(), starting), 0);
+	fakeEngine = GAME_ENGINE_ACCEPTED;
+	(void)snprintf(text, sizeof text, "%s", run);
+	dllTest_execute(text);
+	ASSERT_INT_EQ(strcmp(job_takeResult(), "ok: stub"), 0);
+	ASSERT_INT_EQ((int)dispatched, JOB_RUN);
+#else
+	(void)snprintf(text, sizeof text, "command=status\n");
+	dllTest_execute(text);
+	ASSERT_INT_EQ(strcmp(job_takeResult(), starting), 0);
+	dispatched = JOB_NONE;
+	(void)snprintf(text, sizeof text, "%s", run);
+	dllTest_execute(text);
+	ASSERT_INT_EQ(strcmp(job_takeResult(), "ok: stub"), 0);
+	ASSERT_INT_EQ((int)dispatched, JOB_RUN);
+#endif
+	setFakeGame(&(FakeGame){0});
+}
+#endif
 
 TEST(skips_tracing_unedited_builds) {
 	SeedBuilder builder = {0};
@@ -2081,6 +2446,15 @@ typedef struct TestPlayer {
 	uint8_t stats[256];
 } TestPlayer;
 
+// Bytes enough for a synthetic MATCH_TEAM: its goals, players and their count.
+enum {
+	TEST_MATCH_TEAM_SIZE = ((int)TEAM_PLAYER_COUNT > (int)MATCH_TEAM_GOALS ? (int)TEAM_PLAYER_COUNT
+																																				 : (int)MATCH_TEAM_GOALS) +
+												 1,
+};
+_Static_assert(TEAM_PLAYERS + 3 * sizeof(void *) <= TEST_MATCH_TEAM_SIZE, "room for 3 players");
+_Static_assert(MATCH_RESULT + sizeof(void *) <= MATCH_TEAM_AWAY, "the match holds the result");
+
 static void setPointer(uint8_t *bytes, size_t offset, const void *value) {
 	memcpy(bytes + offset, &value, sizeof value);
 }
@@ -2101,9 +2475,9 @@ TEST(keeps_statistics_with_player_identity) {
 	setPlayer(&players[0], 10, 1);
 	setPlayer(&players[1], 20, 2);
 	setPlayer(&players[2], 5, 5);
-	_Alignas(void *) uint8_t home[1024] = {0};
-	_Alignas(void *) uint8_t away[1024] = {0};
-	_Alignas(void *) uint8_t result[160] = {0};
+	_Alignas(void *) uint8_t home[TEST_MATCH_TEAM_SIZE] = {0};
+	_Alignas(void *) uint8_t away[TEST_MATCH_TEAM_SIZE] = {0};
+	_Alignas(void *) uint8_t result[RESULT_MATCH_LENGTH + sizeof(uint16_t)] = {0};
 	_Alignas(void *) uint8_t match[MATCH_TEAM_AWAY + sizeof(void *)] = {0};
 	home[TEAM_PLAYER_COUNT] = 2;
 	setPointer(home, TEAM_PLAYERS, players[0].object);
@@ -2410,6 +2784,25 @@ TEST(labels_tactical_familiarity) {
 	if (!labels) {
 		return;
 	}
+#if EDITION_ENGINE_PLUGIN
+	// The engine plugin's entries have no duty, and its six categories are numbered.
+	static const char *const expected[] = {
+		"home.player[0]",
+		"home.player[0].tactical_familiarity.version",
+		"home.player[0].tactical_familiarity.position_role.count",
+		"home.player[0].tactical_familiarity.position_role[0].key",
+		"home.player[0].tactical_familiarity.position_role[0].positions",
+		"home.player[0].tactical_familiarity.position_role[0].amount",
+		"home.player[0].tactical_familiarity.category_0.count",
+		"home.player[0].tactical_familiarity.category_0[0].setting",
+		"home.player[0].tactical_familiarity.category_0[0].amount",
+		"home.player[0].tactical_familiarity.category_0[1].setting",
+		"home.player[0].tactical_familiarity.category_0[1].amount",
+		"home.player[0].tactical_familiarity.category_1.count",
+		"home.player[0].tactical_familiarity.category_2.count",
+		"home.player[0].tactical_familiarity.category_2[0].setting",
+	};
+#else
 	static const char *const expected[] = {
 		"home.player[0]",
 		"home.player[0].tactical_familiarity.version",
@@ -2426,11 +2819,93 @@ TEST(labels_tactical_familiarity) {
 		"home.player[0].tactical_familiarity.creative_freedom.count",
 		"home.player[0].tactical_familiarity.creative_freedom[0].setting",
 	};
+#endif
 	for (size_t i = 0; i < sizeof expected / sizeof expected[0]; ++i) {
 		ASSERT_BOOL_EQ(strcmp(labels[i].name, expected[i]) == 0, true);
 	}
 	free(labels);
 }
+
+#if EDITION_ENGINE_PLUGIN
+// The engine plugin writes a part of the match the Windows build has not, which its frames give a
+// synthetic ID that tops the chain as GAME_MATCH__serialize's frames do.
+TEST(traces_and_names_the_plugins_own_match_part) {
+	Serialised serialised = {0};
+	active = &serialised;
+	memset(pathBuckets, 0, sizeof pathBuckets);
+	uint32_t frames[] = {0x7E001234, 0x7E001235, SITE27_PART_EXTRA_1776, 0};
+	ASSERT_INT_EQ((int)pathOf(frames, 4), 0);
+	ASSERT_BOOL_EQ(serialised.pathCount == 1, true);
+	if (serialised.pathCount == 1) {
+		ASSERT_BOOL_EQ(strcmp(serialised.paths[0], "7e000001>7e001235") == 0, true);
+	}
+	trace_free(&serialised);
+	active = NULL;
+	TraceRecord records[] = {{.site = 0x7E001234}, {.site = 0x7E001236}};
+	char *paths[] = {"7e000001>7e001235"};
+	Serialised traced = {.records = records, .recordCount = 2, .paths = paths, .pathCount = 1};
+	PeopleIndex people = {0};
+	FieldLabel *labels = labels_compute(&traced, &people);
+	ASSERT_BOOL_EQ(labels != NULL, true);
+	if (labels) {
+		ASSERT_BOOL_EQ(strcmp(labels[0].name, "extra_1776") == 0 && labels[1].name[0] == 0, true);
+	}
+	free(labels);
+}
+
+// The engine plugin's plans: three, each formation slot in two halves with a position, role and
+// player instructions of its own, and a byte per slot.
+TEST(names_the_plugins_tactic_plans_by_slot_half) {
+	uint8_t bytes[8 + 4 + 8 + 4] = {0};
+	bytes[0] = 1 << 5; // the role keying the player instructions: role 5
+	TraceRecord records[] = {
+		{.site = SITE_TACTIC_MENTALITY, .path = 0},
+		{.site = SITE_TACTIC_INSTRUCTIONS_ROLE, .offset = 0, .length = 8, .path = 1},
+		{.site = SITE_TACTIC_INSTRUCTIONS_BITS, .offset = 8, .length = 4, .path = 1},
+		{.site = SITE_TACTIC_INSTRUCTIONS_BITS, .offset = 12, .length = 4, .path = 1},
+		{.site = SITE_TACTIC_SLOT_POSITION, .path = 2},
+		{.site = SITE_TACTIC_SLOT_ROLE, .offset = 16, .length = 8, .path = 2},
+		{.site = SITE27_TACTIC_SLOT_BYTE_FIRST + 4, .path = 3},
+		{.site = 0x7E001240, .path = 4},
+	};
+	char *paths[] = {
+		"1ac77d5>1b6f34b>1ae9d5f>1a8971a",
+		"1ac77d5>1b6f34b>1ae9d5f>1a8971a>7e000023>1191b508",
+		"1ac77d5>1b6f34b>1ae9d5f>1a8971a>7e000012",
+		"1ac77d5>1b6f34b>1ae9d5f>7e000002",
+		"1ac77d5>1b6f34b>1ae9d5f>7e000003",
+	};
+	Serialised serialised = {
+		.bytes = {.data = bytes, .length = sizeof bytes},
+		.records = records,
+		.recordCount = sizeof records / sizeof records[0],
+		.paths = paths,
+		.pathCount = sizeof paths / sizeof paths[0],
+	};
+	PeopleIndex people = {0};
+	FieldLabel *labels = labels_compute(&serialised, &people);
+	ASSERT_BOOL_EQ(labels != NULL, true);
+	if (!labels) {
+		return;
+	}
+	static const char *const expected[] = {
+		"home.manager.tactic.plan[0].mentality",
+		"home.manager.tactic.plan[0].slot[3].oop.player_instructions[role5]",
+		"home.manager.tactic.plan[0].slot[3].oop.player_instructions[role5].bits[0]",
+		"home.manager.tactic.plan[0].slot[3].oop.player_instructions[role5].bits[1]",
+		"home.manager.tactic.plan[0].slot[2].ip.position",
+		"home.manager.tactic.plan[0].slot[2].ip.role",
+		"home.manager.tactic.plan[2].slot[4].unknown_7b4",
+		"home.manager.tactic.extra",
+	};
+	for (size_t i = 0; i < sizeof expected / sizeof expected[0]; ++i) {
+		ASSERT_BOOL_EQ(strcmp(labels[i].name, expected[i]) == 0, true);
+	}
+	ASSERT_BOOL_EQ(labels[4].flags == FLAGS_POSITION && labels[5].flags == FLAGS_NONE, true);
+	ASSERT_BOOL_EQ(labels[1].flags == FLAGS_NONE && labels[3].flagWord == 1, true);
+	free(labels);
+}
+#endif
 
 TEST(only_merges_valid_utf8_text) {
 	static const char *const valid[] = {
@@ -2496,6 +2971,10 @@ void registerDllTests(void) {
 		"DLL builds a team playing itself against the fixture's opponent",
 		test_builds_a_team_playing_itself_against_the_fixtures_opponent
 	);
+	test_run(
+		"DLL writes the game version of the match header",
+		test_writes_the_game_version_of_the_match_header
+	);
 	test_run("DLL writes both team overrides", test_writes_both_team_overrides);
 	test_run(
 		"DLL writes the save and game date after the source, only when known",
@@ -2509,19 +2988,54 @@ void registerDllTests(void) {
 		"DLL names what the game is doing and formats its dates",
 		test_names_what_the_game_is_doing_and_formats_its_dates
 	);
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(GAME_UNLOCATED_SAVE_NAME)
 	test_run(
 		"DLL reads save names only as short UTF-8 text, without .fm",
 		test_reads_save_names_only_as_short_utf8_text
 	);
+#endif
+#ifdef __APPLE__
 	test_run(
 		"DLL reads the game's state from its objects", test_reads_the_game_state_from_its_objects
+	);
+#endif
+#if EDITION_ENGINE_PLUGIN
+	test_run(
+		"DLL settles a game in progress once its samples hold",
+		test_settles_a_game_in_progress_once_its_samples_hold
+	);
+	test_run(
+		"DLL settles afresh after a gap between samples",
+		test_settles_afresh_after_a_gap_between_samples
+	);
+	test_run(
+		"DLL never settles a game in progress without people",
+		test_never_settles_a_game_in_progress_without_people
+	);
+	test_run(
+		"DLL waits for a game in progress to settle", test_waits_for_a_game_in_progress_to_settle
+	);
+#endif
+#ifdef GAME_WEIGHT_FROM_BODY_TYPE
+	test_run(
+		"DLL gives players the weight the match builder gives them",
+		test_computes_weights_as_the_match_builder_does
+	);
+#endif
+#if EDITION_ENGINE_PLUGIN
+	test_run("DLL serialises with the engine's context", test_serialises_with_the_engines_context);
+	test_run(
+		"DLL picks the export seed as the engine's builder does",
+		test_picks_the_export_seed_as_the_engines_builder_does
 	);
 #endif
 	test_run(
 		"DLL refuses jobs but status while the game loads or processes",
 		test_refuses_jobs_but_status_while_the_game_is_busy
 	);
+#ifdef __APPLE__
+	test_run("DLL waits while the game starts", test_waits_while_the_game_starts);
+#endif
 	test_run("DLL interns call chains without repeated text formatting", test_interns_numeric_paths);
 	test_run(
 		"DLL rejects incomplete or invalid serialisation traces", test_rejects_incomplete_traces
@@ -2594,6 +3108,16 @@ void registerDllTests(void) {
 	test_run("DLL names the officials' ratings", test_labels_official_ratings);
 	test_run("DLL names the managers' match focus", test_labels_match_focus);
 	test_run("DLL names the players' tactical familiarity", test_labels_tactical_familiarity);
+#if EDITION_ENGINE_PLUGIN
+	test_run(
+		"DLL traces and names the plugin's own match part",
+		test_traces_and_names_the_plugins_own_match_part
+	);
+	test_run(
+		"DLL names the plugin's tactic plans by slot half",
+		test_names_the_plugins_tactic_plans_by_slot_half
+	);
+#endif
 	test_run("DLL only exports valid UTF-8 as JSON text", test_only_merges_valid_utf8_text);
 	buffer_free(&engineOutput);
 }

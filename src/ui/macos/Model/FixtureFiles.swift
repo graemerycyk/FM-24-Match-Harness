@@ -16,7 +16,7 @@ struct FixtureSource: Equatable {
 	var kind: Kind
 	var json: Data
 	var original: Data?
-	/// An export not yet saved by the user (the Windows viewer's temp-fixture.json).
+	/// An export not yet saved by the user (WorkFiles.temporaryFixture).
 	var temporary: Bool
 
 	var name: String {
@@ -35,7 +35,7 @@ struct FixtureSource: Equatable {
 
 /// Reading and writing fixture files, away from the main actor.
 enum FixtureFiles {
-	/// Paths reach fm24ctl and the harness as text of at most this many characters, NUL included.
+	/// Paths reach fmNNctl and the harness as text of at most this many characters, NUL included.
 	static let pathLimit = 1024
 	static let pathProblem =
 		"Select a .json or .bin fixture with a path shorter than 1024 characters."

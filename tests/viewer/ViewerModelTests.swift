@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureSamples
 import Foundation
 
@@ -41,7 +42,10 @@ enum ViewerModelTests {
 		let (model, prompts) = model()
 		var noted: [URL] = []
 		model.noteFile = { noted.append($0) }
-		checkEqual(model.title, "FM24 Match Harness (protocol \(FixtureHandle.protocolVersion))")
+		checkEqual(
+			model.title,
+			"\(EDITION_PRODUCT) Match Harness (protocol \(FixtureHandle.protocolVersion))"
+		)
 		check(model.fixture == nil && model.heading == nil)
 		model.open(url)
 		checkEqual(model.busy, .file)
@@ -70,7 +74,7 @@ enum ViewerModelTests {
 		let shown = model.fixture
 		open(model, scratch.file("broken.json", Data("{}".utf8)))
 		checkEqual(prompts.errors.count, 1)
-		checkEqual(prompts.errors.first?.title, "FM24 Match Harness")
+		checkEqual(prompts.errors.first?.title, "\(EDITION_PRODUCT) Match Harness")
 		check(prompts.lastError?.isEmpty == false)
 		check(model.fixture === shown)
 		checkEqual(model.heading?.name, "next.json")

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Combine
+import Edition
 import FixtureCore
 import Foundation
 
@@ -86,7 +87,7 @@ final class ViewerModel: ObservableObject {
 		let serial: Int
 	}
 
-	static let errorTitle = "FM24 Match Harness"
+	static let errorTitle = "\(EDITION_PRODUCT) Match Harness"
 	static let busyMessage = "Please wait for the current fixture operation to finish."
 	static let askingMessage = "Please finish with the open dialog first."
 	static let closeBusyMessage = "A fixture file operation is running. Please wait before closing."
@@ -109,19 +110,19 @@ final class ViewerModel: ObservableObject {
 		"Please wait for the team replacement to finish before exporting."
 	static let exportNameTooLong = "Fixture export filename is too long."
 	static let exportFailed =
-		"Cannot export the next fixture; FM24 must be running and idle. See the log and harness.log."
+		"Cannot export the next fixture; \(EDITION_PRODUCT) must be running and idle. See the log and harness.log."
 	static let decodeFailed =
-		"cannot decode binary fixture; FM24 must be running and idle. See the log and harness.log."
+		"cannot decode binary fixture; \(EDITION_PRODUCT) must be running and idle. See the log and harness.log."
 	static let noHarness =
-		"FM24 Viewer's copy of fm24ctl cannot be found, so it cannot reach FM24. Build it again with "
+		"\(EDITION_VIEWER_NAME)'s copy of \(EDITION_CLI) cannot be found, so it cannot reach \(EDITION_PRODUCT). Build it again with "
 		+ "scripts/build.sh."
-	static let exportingActivity = "Exporting the next fixture from FM24…"
+	static let exportingActivity = "Exporting the next fixture from \(EDITION_PRODUCT)…"
 	static let exportCancelled = "Exporting the next fixture was cancelled."
 	static let openCancelled = "Opening the fixture was cancelled."
-	static let decodingActivity = "Decoding the binary fixture with FM24…"
+	static let decodingActivity = "Decoding the binary fixture with \(EDITION_PRODUCT)…"
 	static let waitingActivity = "Waiting for another harness job…"
-	static let startingGameActivity = "Starting FM24 with the fixture's save…"
-	static let idleWaitActivity = "Waiting for FM24 to be idle with the fixture's save…"
+	static let startingGameActivity = "Starting \(EDITION_PRODUCT) with the fixture's save…"
+	static let idleWaitActivity = "Waiting for \(EDITION_PRODUCT) to be idle with the fixture's save…"
 	static let simulatingStatus = "Simulating fixture... Please wait before closing the window."
 	static let simulationFailed = "Simulation failed. Check the log and harness.log for details."
 	static let resultsBeside = "Results are saved beside the fixture, using its filename with .csv."
@@ -133,14 +134,14 @@ final class ViewerModel: ObservableObject {
 		"Simulation complete. Results were saved in the export folder; see the log for paths."
 	static let resultsMissing = "The last simulation's results cannot be found."
 	static let replaceFailed =
-		"Cannot replace team; FM24 must be running and idle. See the log and harness.log."
+		"Cannot replace team; \(EDITION_PRODUCT) must be running and idle. See the log and harness.log."
 	static let swapFailed =
-		"Cannot fetch the player; FM24 must be running and idle. See the log and harness.log."
+		"Cannot fetch the player; \(EDITION_PRODUCT) must be running and idle. See the log and harness.log."
 	static let listTeamsFailed =
-		"Cannot list teams; FM24 must be running and idle. See harness.log."
+		"Cannot list teams; \(EDITION_PRODUCT) must be running and idle. See harness.log."
 	static let listPlayersFailed =
-		"Cannot list players; FM24 must be running and idle. See harness.log."
-	static let swappingActivity = "Swapping the player with FM24…"
+		"Cannot list players; \(EDITION_PRODUCT) must be running and idle. See harness.log."
+	static let swappingActivity = "Swapping the player with \(EDITION_PRODUCT)…"
 	static let saveTitle = "Save fixture as"
 	static let binaryTeamsMessage =
 		"Binary fixtures do not keep the replaced teams (home_team and away_team) that per-seed "
@@ -148,41 +149,41 @@ final class ViewerModel: ObservableObject {
 		+ "JSON for rebuilds. Save as binary anyway?"
 	static let binaryTeamsAction = "Save as Binary"
 	static let runAnywayAction = "Run Anyway"
-	/// What the question about another loaded save says in place of fm24ctl's --any-save.
+	/// What the question about another loaded save says in place of fmNNctl's --any-save.
 	static let runAnywayHint = ", or choose Run Anyway to use the loaded save"
-	static let launchFailed = "Cannot start FM24 with the harness. See the log."
+	static let launchFailed = "Cannot start \(EDITION_PRODUCT) with the harness. See the log."
 	static let launchStopped =
-		"Stopped waiting for FM24, which may still be starting, and may not load the save: check the "
+		"Stopped waiting for \(EDITION_PRODUCT), which may still be starting, and may not load the save: check the "
 		+ "game before launching it again."
-	/// What the sheet says in place of fm24ctl's --user-data, which it cannot pass, when Steam's
-	/// launch option sets the game's data folder in a way fm24ctl does not follow.
+	/// What the sheet says in place of fmNNctl's --user-data, which it cannot pass, when Steam's
+	/// launch option sets the game's data folder in a way fmNNctl does not follow.
 	static let userDataHint = "pass the folder with --user-data"
 	static let launchOptionHint =
-		"give it in Steam's launch option as --user_data_location=<absolute folder>, or launch FM24 "
+		"give it in Steam's launch option as --user_data_location=<absolute folder>, or launch \(EDITION_PRODUCT) "
 		+ "at its start screen and load the save there"
 	/// The log's note of a --rosetta that --launch-save cannot pass on.
 	static let rosettaIgnored =
-		"--rosetta is for Apple silicon: this Mac runs the game's x86_64 slice natively, so FM24 "
+		"--rosetta is for Apple silicon: this Mac runs the game's x86_64 slice natively, so \(EDITION_PRODUCT) "
 		+ "starts without it."
 	static let installFailed = "Cannot install the harness. See the log."
 	static let installUnread =
-		"fm24ctl install did not say where it installed the harness. See the log."
+		"\(EDITION_CLI) install did not say where it installed the harness. See the log."
 	static let installingActivity = "Installing the harness…"
-	/// The error boxes' second button for a job no harness served: Launch FM24… once Steam's launch
-	/// option is set, else Install Harness…, with setOptionFirst, as Launch FM24… would then start
+	/// The error boxes' second button for a job no harness served: Launch FMNN… once Steam's launch
+	/// option is set, else Install Harness…, with setOptionFirst, as Launch FMNN… would then start
 	/// the game directly, which has not been verified.
-	static let launchAction = "Launch FM24…"
+	static let launchAction = "Launch \(EDITION_PRODUCT)…"
 	static let installAction = "Install Harness…"
 	static let setOptionFirst =
-		"Steam's launch option for FM24 is not set, or Steam has not saved it yet: choose Install "
-		+ "Harness… to set it, then start FM24 from Steam. Launch FM24… would open the game without "
+		"Steam's launch option for \(EDITION_PRODUCT) is not set, or Steam has not saved it yet: choose Install "
+		+ "Harness… to set it, then start \(EDITION_PRODUCT) from Steam. Launch \(EDITION_PRODUCT)… would open the game without "
 		+ "the option, which has not been verified: the game crashed in its one attempt."
 
 	static func replacingActivity(side: Int) -> String {
-		"Replacing the \(side == 0 ? "home" : "away") team with FM24…"
+		"Replacing the \(side == 0 ? "home" : "away") team with \(EDITION_PRODUCT)…"
 	}
 
-	/// fm24ctl's refusal of a job for another save than the one loaded, as the question about it
+	/// fmNNctl's refusal of a job for another save than the one loaded, as the question about it
 	/// puts it: with Run Anyway in place of --any-save.
 	static func otherSaveQuestion(_ refusal: String) -> String {
 		guard let hint = refusal.range(of: HarnessResult.anySaveHint) else {
@@ -204,7 +205,7 @@ final class ViewerModel: ObservableObject {
 	@Published private(set) var retry: StartAction?
 	/// What a running harness job is doing, while it runs.
 	@Published private(set) var activity: String?
-	/// fm24ctl's latest line of progress while it starts FM24 with the fixture's save for a job, or
+	/// fmNNctl's latest line of progress while it starts FMNN with the fixture's save for a job, or
 	/// waits for the game to be idle with it.
 	@Published private(set) var activityDetail: String?
 	/// The Venue tab's entries.
@@ -228,9 +229,9 @@ final class ViewerModel: ObservableObject {
 	@Published private(set) var swapPrompt: SwapPrompt?
 	/// A pencil or squad list that should take the keyboard focus, until it has.
 	@Published private(set) var squadFocus: SquadFocus?
-	/// The open Launch FM24 sheet.
+	/// The open Launch FMNN sheet.
 	@Published private(set) var launchPrompt: LaunchPrompt?
-	/// `fm24ctl launch` runs, also once Cancel has asked it to end, until it has.
+	/// `fmNNctl launch` runs, also once Cancel has asked it to end, until it has.
 	@Published private(set) var launchRunning = false
 	/// The open Install Harness sheet.
 	@Published private(set) var installState: InstallState?
@@ -242,7 +243,7 @@ final class ViewerModel: ObservableObject {
 
 	let log: ViewerLog
 	weak var prompts: ViewerPrompts?
-	/// fm24ctl, through which the viewer reaches the game; nil if it cannot be found.
+	/// fmNNctl, through which the viewer reaches the game; nil if it cannot be found.
 	let harness: HarnessService?
 	let work: WorkFiles
 	let settings: ViewerSettings
@@ -265,9 +266,9 @@ final class ViewerModel: ObservableObject {
 	var reveal: ([URL]) -> Void = { _ in }
 	/// How often a simulation's results are read for its progress.
 	var progressInterval: TimeInterval = 0.2
-	/// The home folder, whose FM24 save folders the Launch FM24 sheet lists, as fm24ctl finds them.
+	/// The home folder, whose FMNN save folders the Launch FMNN sheet lists, as fmNNctl finds them.
 	var home = ViewerModel.homeFolder()
-	/// Steam's launch option for FM24 runs the harness's launcher in `home`, so that `fm24ctl
+	/// Steam's launch option for FMNN runs the harness's launcher in `home`, so that `fmNNctl
 	/// launch` starts the game through Steam (the tested route) and not directly.
 	var launchOptionSet: Bool {
 		LaunchSaves.launchOptionSet(home: home)
@@ -276,11 +277,11 @@ final class ViewerModel: ObservableObject {
 	var appleSilicon = ViewerModel.onAppleSilicon()
 	/// Puts text on the clipboard (the Install Harness sheet's Copy).
 	var copyText: (String) -> Void = { _ in }
-	/// `fm24ctl launch`, while it runs, and a count of launches, so that one that was cancelled
+	/// `fmNNctl launch`, while it runs, and a count of launches, so that one that was cancelled
 	/// leaves the sheet alone when it ends.
 	private var launchTask: Task<Void, Never>?
 	private var launchSerial = 0
-	/// fm24ctl is starting FM24 with the fixture's save for the job that runs, or waiting for the
+	/// fmNNctl is starting FMNN with the fixture's save for the job that runs, or waiting for the
 	/// game to be idle with it, after which the job goes on with `resumedActivity`.
 	private var waitingForGame = false
 	private var resumedActivity: String?
@@ -289,7 +290,7 @@ final class ViewerModel: ObservableObject {
 	/// Questions and panels put to the user and not yet answered.
 	private var questions = 0
 	/// The startup export, or an open while no fixture is on show, with what Retry does after it:
-	/// Cancel, closing and quitting stop it, as Ctrl+C stops fm24ctl's export on Windows.
+	/// Cancel, closing and quitting stop it, as Ctrl+C stops fmNNctl's export on Windows.
 	private var starting: (task: Task<Void, Never>, action: StartAction)?
 	/// Counts those jobs, so that one that was cancelled leaves the window alone when it ends.
 	private var startSerial = 0
@@ -314,7 +315,7 @@ final class ViewerModel: ObservableObject {
 	}
 
 	var title: String {
-		"FM24 Match Harness (protocol \(FixtureHandle.protocolVersion))"
+		"\(EDITION_PRODUCT) Match Harness (protocol \(FixtureHandle.protocolVersion))"
 	}
 
 	/// The operation running, a file operation first, as the Windows close checks take them.
@@ -329,7 +330,7 @@ final class ViewerModel: ObservableObject {
 		busy != .none
 	}
 
-	/// A question, panel, the swap prompt or the Launch FM24 or Install Harness sheet waits for the
+	/// A question, panel, the swap prompt or the Launch FMNN or Install Harness sheet waits for the
 	/// user.
 	var isAsking: Bool {
 		questions > 0 || swapPrompt != nil || launchPrompt != nil || installState != nil
@@ -375,7 +376,7 @@ final class ViewerModel: ObservableObject {
 
 	/// Opens a fixture the user chose (the Open panel, Open Recent, a drop or Open With), first asking
 	/// whether to discard the fixture on show if it has unsaved changes. The next fixture's export
-	/// (WorkFiles.temporaryFixture, which `fm24ctl` with no arguments opens) opens as not yet saved.
+	/// (WorkFiles.temporaryFixture, which `fmNNctl` with no arguments opens) opens as not yet saved.
 	func requestOpen(_ url: URL) {
 		guard !refuseWhileBusy() else {
 			return
@@ -429,9 +430,9 @@ final class ViewerModel: ObservableObject {
 		starting = first ? (task, .open(url)) : nil
 	}
 
-	/// Exports the next fixture from the game to temp-fixture.json in the user's temporary
-	/// directory and shows it as not yet saved, as the Windows viewer starts. If that fails, the
-	/// start panel says why and offers Retry.
+	/// Exports the next fixture from the game to WorkFiles.temporaryFixture in the user's
+	/// temporary directory and shows it as not yet saved, as the Windows viewer starts. If that
+	/// fails, the start panel says why and offers Retry.
 	func exportNextFixture() {
 		guard !refuseWhileBusy() else {
 			return
@@ -479,7 +480,7 @@ final class ViewerModel: ObservableObject {
 		starting != nil
 	}
 
-	/// Stops the startup export or first open: its fm24ctl ends, and the start panel offers Retry.
+	/// Stops the startup export or first open: its fmNNctl ends, and the start panel offers Retry.
 	func cancelStart() {
 		guard let start = starting else {
 			return
@@ -601,7 +602,7 @@ final class ViewerModel: ObservableObject {
 			log.add("Opened \(source.temporary ? "the next fixture" : source.name)")
 		case .failure(let failure):
 			let text = message(failure)
-			// The start panel offers Launch FM24… itself.
+			// The start panel offers Launch FMNN… itself.
 			let offersLaunch = fixture != nil && (failure as? ViewerError)?.offersLaunch == true
 			if fixture == nil {
 				status = text
@@ -989,7 +990,7 @@ final class ViewerModel: ObservableObject {
 	}
 
 	/// Checks the venue entries, then runs the job; with `anySave` (Run Anyway), in another save
-	/// than the fixture's if FM24 has one loaded.
+	/// than the fixture's if FMNN has one loaded.
 	private func startReplacement(_ job: ReplacementJob, anySave: Bool = false) {
 		guard let source, let fixture else {
 			return
@@ -1279,7 +1280,7 @@ final class ViewerModel: ObservableObject {
 	/// stores a venue value), shows the progress as the results arrive, and moves them beside the
 	/// fixture as <name>.csv, or into the export folder under the export's name for a fixture not
 	/// yet saved. The fixture's own file is never written. With `anySave` (Run Anyway), a fixture
-	/// for another save than the one FM24 has loaded plays in that one.
+	/// for another save than the one FMNN has loaded plays in that one.
 	func simulate(anySave: Bool = false) {
 		guard !refuseWhileBusy(), let source, let fixture else {
 			return
@@ -1331,7 +1332,7 @@ final class ViewerModel: ObservableObject {
 			"Simulating \(source.temporary ? "the fixture not yet saved" : source.name): seeds \(seeds), "
 				+ "\(options.threads) threads"
 		)
-		let endActivity = beginActivity("Simulating a fixture with FM24")
+		let endActivity = beginActivity("Simulating a fixture with \(EDITION_PRODUCT)")
 		Task {
 			await simulate(run, harness)
 			endActivity()
@@ -1479,7 +1480,7 @@ final class ViewerModel: ObservableObject {
 				files.append(file)
 				kept.append(file)
 				let reason = (error as? ViewerError)?.message ?? error.localizedDescription
-				failure = failure ?? "\(reason) It is in \(file.path) until FM24 Viewer quits."
+				failure = failure ?? "\(reason) It is in \(file.path) until \(EDITION_VIEWER_NAME) quits."
 			}
 		}
 		return (files, kept, failure)
@@ -1525,17 +1526,17 @@ final class ViewerModel: ObservableObject {
 		}
 	}
 
-	// MARK: Launching FM24 and installing the harness
+	// MARK: Launching FMNN and installing the harness
 
-	/// The start panel's status once Launch FM24 has started the game without a save, or found it
+	/// The start panel's status once Launch FMNN has started the game without a save, or found it
 	/// running: it may have none loaded yet, so nothing is exported.
 	static var launchedWithoutSave: String {
-		"FM24 is running with harness \(FixtureHandle.protocolVersion). Once it has a save loaded and "
+		"\(EDITION_PRODUCT) is running with harness \(FixtureHandle.protocolVersion). Once it has a save loaded and "
 			+ "idle, choose Retry to export the next fixture."
 	}
 
-	/// File > Launch FM24…, the start panel's button and the error boxes' Launch FM24…: the sheet
-	/// that starts FM24 with the harness, offering the saves fm24ctl finds and the last choice.
+	/// File > Launch FMNN…, the start panel's button and the error boxes' Launch FMNN…: the sheet
+	/// that starts FMNN with the harness, offering the saves fmNNctl finds and the last choice.
 	func requestLaunch() {
 		guard !refuseWhileBusy() else {
 			return
@@ -1552,8 +1553,8 @@ final class ViewerModel: ObservableObject {
 		)
 	}
 
-	/// --launch-save: starts FM24 with `save` (a save's name or its .fm file) at once, showing its
-	/// progress in the sheet; `rosetta` only on Apple silicon, as fm24ctl refuses it elsewhere.
+	/// --launch-save: starts FMNN with `save` (a save's name or its .fm file) at once, showing its
+	/// progress in the sheet; `rosetta` only on Apple silicon, as fmNNctl refuses it elsewhere.
 	func launch(save: String, rosetta: Bool) {
 		guard let harness else {
 			status = ViewerModel.noHarness
@@ -1603,7 +1604,7 @@ final class ViewerModel: ObservableObject {
 		}
 	}
 
-	/// The sheet's Launch FM24: runs `fm24ctl launch` for the choice, which the sheet remembers.
+	/// The sheet's Launch FMNN: runs `fmNNctl launch` for the choice, which the sheet remembers.
 	func confirmLaunch() {
 		guard let prompt = launchPrompt, !prompt.isLaunching, !launchRunning, let harness else {
 			return
@@ -1648,7 +1649,9 @@ final class ViewerModel: ObservableObject {
 		launchRunning = true
 		launchSerial += 1
 		let serial = launchSerial
-		log.add("Launching FM24 \(prompt.destination)\(prompt.rosetta ? ", under Rosetta" : "")")
+		log.add(
+			"Launching \(EDITION_PRODUCT) \(prompt.destination)\(prompt.rosetta ? ", under Rosetta" : "")"
+		)
 		launchTask = Task {
 			let result = await harness.launch(save: prompt.save, rosetta: prompt.rosetta) { line in
 				self.logLine(line)
@@ -1659,7 +1662,7 @@ final class ViewerModel: ObservableObject {
 			launchRunning = false
 			launchTask = nil
 			guard serial == launchSerial else {
-				log.add("fm24ctl launch ended (status \(result.status))")
+				log.add("\(EDITION_CLI) launch ended (status \(result.status))")
 				return
 			}
 			finishLaunch(prompt, result)
@@ -1684,7 +1687,7 @@ final class ViewerModel: ObservableObject {
 		retry = .export
 	}
 
-	/// Ends `fm24ctl launch`, which stops waiting; the game it started goes on.
+	/// Ends `fmNNctl launch`, which stops waiting; the game it started goes on.
 	private func stopLaunch() {
 		launchSerial += 1
 		launchTask?.cancel()
@@ -1692,7 +1695,7 @@ final class ViewerModel: ObservableObject {
 	}
 
 	/// With no fixture on show, a launch that loaded a save goes on to the startup export; with
-	/// one, the sheet says the game is ready. A failure shows fm24ctl's reason in the sheet.
+	/// one, the sheet says the game is ready. A failure shows fmNNctl's reason in the sheet.
 	private func finishLaunch(_ prompt: LaunchPrompt, _ result: HarnessResult) {
 		monitor?.refresh()
 		guard result.succeeded else {
@@ -1708,7 +1711,7 @@ final class ViewerModel: ObservableObject {
 			return
 		}
 		let ready = result.output.last { !$0.isEmpty } ?? ""
-		log.add("FM24 is ready with the harness")
+		log.add("\(EDITION_PRODUCT) is ready with the harness")
 		guard fixture == nil, !isBusy, launchPrompt === prompt else {
 			prompt.end(.succeeded(ready))
 			return
@@ -1722,7 +1725,7 @@ final class ViewerModel: ObservableObject {
 		}
 	}
 
-	/// File > Install Harness…: runs `fm24ctl install` and shows what it reported in a sheet.
+	/// File > Install Harness…: runs `fmNNctl install` and shows what it reported in a sheet.
 	func requestInstall() {
 		guard !refuseWhileBusy() else {
 			return
@@ -1768,7 +1771,7 @@ final class ViewerModel: ObservableObject {
 		}
 	}
 
-	/// Quitting: the startup export, the first open and `fm24ctl launch` end with the viewer.
+	/// Quitting: the startup export, the first open and `fmNNctl launch` end with the viewer.
 	func stopJobs() {
 		cancelStart()
 		if launchRunning {
@@ -1781,7 +1784,7 @@ final class ViewerModel: ObservableObject {
 			?? NSHomeDirectory()
 	}
 
-	/// Apple silicon, as fm24ctl tells it (saveList_appleSilicon).
+	/// Apple silicon, as fmNNctl tells it (saveList_appleSilicon).
 	nonisolated static func onAppleSilicon() -> Bool {
 		saveList_appleSilicon()
 	}
@@ -1838,16 +1841,16 @@ final class ViewerModel: ObservableObject {
 
 	// MARK: Harness jobs
 
-	/// A line fm24ctl printed, for the log; its notices of waiting for another job, of starting FM24
+	/// A line fmNNctl printed, for the log; its notices of waiting for another job, of starting FMNN
 	/// with the fixture's save and of waiting for the game to be idle with it show as the activity,
-	/// for a simulation until its results arrive. While FM24 starts or stays busy, which can take
-	/// minutes, each line of fm24ctl's progress shows under it, until the save is ready and the job
+	/// for a simulation until its results arrive. While FMNN starts or stays busy, which can take
+	/// minutes, each line of fmNNctl's progress shows under it, until the save is ready and the job
 	/// goes on.
 	private func harnessLine(_ line: HarnessLine) {
 		let simulating = simulation.running && !simulation.started
 		switch line {
 		case .output(let text):
-			log.add("fm24ctl: \(text)")
+			log.add("\(EDITION_CLI): \(text)")
 			let shows = activity != nil || simulating
 			if text.hasPrefix(HarnessResult.startingGamePrefix), shows {
 				beginGameWait(ViewerModel.startingGameActivity, simulating: simulating)
@@ -1861,14 +1864,14 @@ final class ViewerModel: ObservableObject {
 				activityDetail = text
 			}
 		case .error(let text):
-			log.add("fm24ctl: \(text)")
+			log.add("\(EDITION_CLI): \(text)")
 			if text == HarnessResult.waitingNotice, activity != nil || simulating {
 				activity = ViewerModel.waitingActivity
 			}
 		}
 	}
 
-	/// fm24ctl waits for the game before the job: `activity` shows meanwhile.
+	/// fmNNctl waits for the game before the job: `activity` shows meanwhile.
 	private func beginGameWait(_ activity: String, simulating: Bool) {
 		if !waitingForGame {
 			resumedActivity = simulating ? nil : self.activity
@@ -1889,7 +1892,7 @@ final class ViewerModel: ObservableObject {
 	private func logLine(_ line: HarnessLine) {
 		switch line {
 		case .output(let text), .error(let text):
-			log.add("fm24ctl: \(text)")
+			log.add("\(EDITION_CLI): \(text)")
 		}
 	}
 
@@ -1912,8 +1915,8 @@ final class ViewerModel: ObservableObject {
 		return problem
 	}
 
-	/// fm24ctl refused the job because FM24 has another save loaded than the fixture's: asks, in
-	/// fm24ctl's words, whether to run it in that save anyway, which `again` does.
+	/// fmNNctl refused the job because FMNN has another save loaded than the fixture's: asks, in
+	/// fmNNctl's words, whether to run it in that save anyway, which `again` does.
 	private func askRunAnyway(_ result: HarnessResult, again: @escaping () -> Void) {
 		let refusal =
 			result.errors.last { $0.hasSuffix(HarnessResult.anySaveHint + ".") }?
@@ -1927,7 +1930,7 @@ final class ViewerModel: ObservableObject {
 			) { [weak self] run in
 				answered()
 				if run {
-					self?.log.add("Running it anyway in the save FM24 has loaded (--any-save)")
+					self?.log.add("Running it anyway in the save \(EDITION_PRODUCT) has loaded (--any-save)")
 					again()
 				}
 			}
@@ -1942,9 +1945,9 @@ final class ViewerModel: ObservableObject {
 		prompts?.showError(message, title: ViewerModel.errorTitle)
 	}
 
-	/// The same, offering Launch FM24… beside OK if `offeringLaunch`: no harness of this protocol
+	/// The same, offering Launch FMNN… beside OK if `offeringLaunch`: no harness of this protocol
 	/// served the job. While Steam's launch option is not set, Install Harness… instead, after
-	/// setOptionFirst, as Launch FM24… would start the game directly.
+	/// setOptionFirst, as Launch FMNN… would start the game directly.
 	func report(_ message: String, offeringLaunch: Bool) {
 		guard offeringLaunch, prompts != nil else {
 			report(message)

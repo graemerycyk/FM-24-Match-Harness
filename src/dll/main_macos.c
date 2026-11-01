@@ -1,15 +1,26 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// fm24_harness on macOS: runs Football Manager 24's own match engine headless, inside the game.
+// The harness on macOS: runs the game's own match engine headless, inside the game.
 //
 // Loaded when the game starts (DYLD_INSERT_LIBRARIES, see the runner's macos_game.h). Its
 // initialiser starts a thread that checks the game build and serves jobs on the harness socket,
 // one runner at a time (see protocol.h and job.h). Jobs must only be submitted while the game is
 // idle: the engine calls are not otherwise synchronised with the game's own threads.
+//
+// Where the engine is a plugin the game loads once started (EDITION_ENGINE_PLUGIN), the thread
+// serves at once, reporting the game as starting until the plugin is loaded and accepted, and
+// notes the plugin's unloading as the game quits (game.h). Between jobs, it samples the game's
+// state (game_state.h). In log-only mode, which a file next to the dylib sets
+// (HARNESS_LOG_ONLY_FILE), it only logs that, for a first check of a game build.
 
 #include "channel.h"
+#include "edition.h"
 #include "game.h"
+#if EDITION_ENGINE_PLUGIN
+#include "game_state.h"
+#include "info_plist.h"
+#endif
 #include "job.h"
 #include "log.h"
 #include "platform.h"
@@ -19,6 +30,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -41,7 +53,7 @@ enum {
 static wchar_t harnessDirectory[HARNESS_PATH_LENGTH]; // where the dylib and its log live
 static char socketPath[sizeof(((struct sockaddr_un *)0)->sun_path)];
 static atomic_int lockFile = -1; // held (exclusively locked) while this harness serves socketPath
-static bool supported;           // game_init accepted the running build
+static bool supported; // game_init (or, for an engine plugin, game_update) accepted the build
 
 static void harnessLoaded(void) __attribute__((constructor));
 static bool isGame(void);
@@ -54,12 +66,30 @@ static void stopServing(void);
 static void serve(int connection);
 static bool sendAll(int connection, const char *data, size_t size);
 static void setDirectory(void);
+#if EDITION_ENGINE_PLUGIN
+static bool loggingOnly;                             // HARNESS_LOG_ONLY_FILE is next to the dylib
+static GameEngineState noted = GAME_ENGINE_STARTING; // as noteEngine last logged it
 
-// Runs before the game's own initialisers: only start the job thread here.
+static bool hasLogOnlyFile(void);
+static void watchOnly(void);
+static bool awaitConnection(int listener);
+static void sampleGame(void);
+static void noteEngine(GameEngineState engine);
+static void runPluginJob(char *text);
+#endif
+
+// Runs before the game's own initialisers: only start the job thread here (and, for an engine
+// plugin, watch for it).
 static void harnessLoaded(void) {
 	if (!isGame()) {
 		return; // a helper process that inherited DYLD_INSERT_LIBRARIES
 	}
+#if EDITION_ENGINE_PLUGIN
+	if (!game_watch()) {
+		fputs(EDITION_LOWER " harness: cannot watch for the game's engine\n", stderr);
+		return;
+	}
+#endif
 	pthread_attr_t attributes;
 	pthread_t thread;
 	if (pthread_attr_init(&attributes) != 0) {
@@ -68,19 +98,47 @@ static void harnessLoaded(void) {
 	(void)pthread_attr_setstacksize(&attributes, SERVER_STACK_SIZE);
 	(void)pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
 	if (pthread_create(&thread, &attributes, serveJobs, NULL) != 0) {
-		fputs("fm24 harness: cannot start the job thread\n", stderr);
+		fputs(EDITION_LOWER " harness: cannot start the job thread\n", stderr);
 	}
 	pthread_attr_destroy(&attributes);
 }
 
-// True in the game's own process: its executable is an app bundle's Contents/MacOS/fm.
+// True in the game's own process: its executable is an app bundle's Contents/MacOS/<the game's>.
+#if EDITION_ENGINE_PLUGIN
+// Or the executable its bundle's Info.plist names, in a bundle with the game's identifier: a build
+// that renamed it is then refused for its build, not left without the harness.
+#endif
 static bool isGame(void) {
 	char path[4096];
 	uint32_t size = sizeof path;
-	static const char suffix[] = "/Contents/MacOS/fm";
+	static const char suffix[] = "/Contents/MacOS/" EDITION_GAME_EXECUTABLE;
 	size_t length = 0;
+#if EDITION_ENGINE_PLUGIN
+	static const char folder[] = "/Contents/MacOS/";
+	if (_NSGetExecutablePath(path, &size) != 0) {
+		return false;
+	}
+	length = strlen(path);
+	if (length >= sizeof suffix - 1 && strcmp(path + length - (sizeof suffix - 1), suffix) == 0) {
+		return true;
+	}
+	const char *name = strrchr(path, '/');
+	size_t bundle = name ? (size_t)(name - path) + 1 : 0; // up to <bundle>/Contents/MacOS/
+	if (bundle < sizeof folder ||
+			strncmp(path + bundle - (sizeof folder - 1), folder, sizeof folder - 1) != 0) {
+		return false;
+	}
+	char app[sizeof path];
+	char named[sizeof path];
+	(void)snprintf(app, sizeof app, "%.*s", (int)(bundle - (sizeof folder - 1)), path);
+	return infoPlist_executable(
+					 app, EDITION_GAME_BUNDLE_ID, EDITION_GAME_EXECUTABLE, named, sizeof named
+				 ) &&
+				 strcmp(named, path) == 0;
+#else
 	return _NSGetExecutablePath(path, &size) == 0 && (length = strlen(path)) >= sizeof suffix - 1 &&
 				 strcmp(path + length - (sizeof suffix - 1), suffix) == 0;
+#endif
 }
 
 static void *serveJobs(void *parameter) {
@@ -91,6 +149,11 @@ static void *serveJobs(void *parameter) {
 	}
 	unsigned pauseMs = 0;
 	for (;;) {
+#if EDITION_ENGINE_PLUGIN
+		if (!awaitConnection(listener)) {
+			continue;
+		}
+#endif
 		int connection = accept(listener, NULL, NULL);
 		if (connection < 0) {
 			if (acceptFailed(errno, &pauseMs)) {
@@ -123,11 +186,30 @@ static int startServing(void) {
 	setDirectory();
 	log_open(harnessDirectory);
 	log_message("harness %s loaded (pid %d)", HARNESS_PROTOCOL_TEXT, (int)getpid());
+#if EDITION_ENGINE_PLUGIN
+	log_message("starting: waiting for " EDITION_GAME " to load its engine, " EDITION_ENGINE_PATH);
+	loggingOnly = hasLogOnlyFile();
+	if (loggingOnly) {
+		log_message(
+			"log-only mode (%ls/" HARNESS_LOG_ONLY_FILE "): logging the engine's loading and "
+			"unloading, and serving no jobs",
+			harnessDirectory
+		);
+		watchOnly();
+		return -1;
+	}
+	int listener = openSocket();
+	if (listener >= 0) {
+		log_message("serving jobs: status reports the game starting until then");
+	}
+	noteEngine(game_update());
+#else
 	supported = game_init();
 	int listener = openSocket();
 	if (listener >= 0) {
 		log_message(supported ? "ready; waiting for jobs" : "refusing jobs: unsupported game build");
 	}
+#endif
 	return listener;
 }
 
@@ -281,6 +363,12 @@ static void serve(int connection) {
 	} else if (memchr(text, 0, length)) {
 		log_message("the job contains a NUL byte");
 		job_writeResult("error: cannot read the job; see harness.log");
+#if EDITION_ENGINE_PLUGIN
+	} else {
+		text[length] = 0;
+		runPluginJob(text);
+	}
+#else
 	} else if (!supported) {
 		job_writeResult(
 			"error: harness %s does not support this game build; see harness.log", HARNESS_PROTOCOL_TEXT
@@ -289,6 +377,7 @@ static void serve(int connection) {
 		text[length] = 0;
 		job_execute(text);
 	}
+#endif
 	const char *result = job_takeResult();
 	if (!result[0]) {
 		result = "error: the job reported no result; see harness.log";
@@ -330,3 +419,109 @@ static void setDirectory(void) {
 		harnessDirectory[0] = 0;
 	}
 }
+
+#if EDITION_ENGINE_PLUGIN
+static bool hasLogOnlyFile(void) {
+	char directory[HARNESS_PATH_LENGTH * 4];
+	char path[sizeof directory + sizeof HARNESS_LOG_ONLY_FILE + 1];
+	if (!platform_toUtf8(harnessDirectory, directory, sizeof directory)) {
+		return false;
+	}
+	int written = snprintf(path, sizeof path, "%s/%s", directory, HARNESS_LOG_ONLY_FILE);
+	return written > 0 && (size_t)written < sizeof path && access(path, F_OK) == 0;
+}
+
+// Log-only mode: notes what the game loads and unloads for as long as the game runs.
+static void watchOnly(void) {
+	noteEngine(game_update());
+	struct pollfd watch = {.fd = game_watchDescriptor(), .events = POLLIN};
+	for (;;) {
+		int ready = poll(&watch, 1, -1);
+		if (ready < 0 && errno != EINTR) {
+			log_message("cannot watch for the engine (%s)", platform_errorText(errno).text);
+			return;
+		}
+		if (ready > 0 && !(watch.revents & POLLIN)) {
+			log_message("cannot watch for the engine");
+			return;
+		}
+		if (ready > 0) {
+			noteEngine(game_update());
+		}
+	}
+}
+
+// Waits until a runner connects (true), noting what the game loads and unloads meanwhile and, while
+// its engine is accepted, sampling the game every GAME_STATE_SAMPLE_MS. A failure to wait is left
+// for accept() to report.
+static bool awaitConnection(int listener) {
+	struct pollfd waits[] = {
+		{.fd = listener, .events = POLLIN},
+		{.fd = game_watchDescriptor(), .events = POLLIN},
+	};
+	int ready = poll(waits, 2, supported ? GAME_STATE_SAMPLE_MS : -1);
+	if (ready == 0) {
+		sampleGame();
+		return false;
+	}
+	if (ready < 0) {
+		return errno != EINTR;
+	}
+	if (waits[1].revents) {
+		noteEngine(game_update());
+	}
+	return waits[0].revents != 0;
+}
+
+// Samples the game's state, holding its engine as a job does.
+static void sampleGame(void) {
+	if (supported && game_hold()) {
+		gameState_sample();
+		game_release();
+	}
+}
+
+// Logs what a change of the engine's state means for jobs.
+static void noteEngine(GameEngineState engine) {
+	static const char *const serving[] = {
+		[GAME_ENGINE_ACCEPTED] = "accepted: ready; waiting for jobs",
+		[GAME_ENGINE_REFUSED] = "refusing jobs: unsupported game build",
+		[GAME_ENGINE_GONE] = "gone: refusing jobs until the game loads its engine again",
+	};
+	static const char *const logging[] = {
+		[GAME_ENGINE_ACCEPTED] = "accepted",
+		[GAME_ENGINE_REFUSED] = "refused: unsupported game build",
+		[GAME_ENGINE_GONE] = "gone",
+	};
+	supported = engine == GAME_ENGINE_ACCEPTED;
+	if (engine == noted) {
+		return;
+	}
+	noted = engine;
+	if (engine != GAME_ENGINE_STARTING) {
+		log_message(
+			loggingOnly ? "%s (log-only mode: serving no jobs)" : "%s",
+			(loggingOnly ? logging : serving)[engine]
+		);
+	}
+}
+
+// A job once the engine is accepted runs holding it, so that the game's unloading of it waits for
+// the job. Before the engine is loaded, job_execute answers status (the game is starting) and
+// refuses the rest; once it is refused or unloaded, every job is refused.
+static void runPluginJob(char *text) {
+	GameEngineState engine = game_engineState();
+	if (supported && game_hold()) {
+		job_execute(text);
+		game_release();
+	} else if (supported || engine == GAME_ENGINE_GONE) {
+		job_writeResult("error: " EDITION_PRODUCT " is quitting: it has unloaded its match engine");
+	} else if (engine == GAME_ENGINE_STARTING) {
+		job_execute(text);
+	} else {
+		job_writeResult(
+			"error: harness %s does not support this game build; see harness.log", HARNESS_PROTOCOL_TEXT
+		);
+	}
+}
+#endif

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "client.h"
+#include "edition.h"
 #include "embedded.h"
 #include "files.h"
 #include "paths.h"
@@ -74,7 +75,7 @@ static bool removeTestFile(const wchar_t *path);
 
 
 static const char plainConfig[] =
-	"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u8\":42}],\"home_team\":678,\"away_team\":677}";
+	"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u8\":42}],\"home_team\":678,\"away_team\":677}";
 static const char *configText = plainConfig; // what every file read returns
 static unsigned configReads;
 static ByteBuffer writtenConfig;
@@ -110,7 +111,7 @@ static bool writeConfig(const wchar_t *path, const void *bytes, size_t length) {
 
 // paths_parentFolder for commands.c: a closed folder's answer, the real one, or an open folder's.
 static PathsFolder testParentFolder(const wchar_t *path) {
-	if (foldersClosed && wcsstr(path, L"/fm24-closed-folder/")) {
+	if (foldersClosed && wcsstr(path, L"/" EDITION_LOWER "-closed-folder/")) {
 		return PATHS_FOLDER_PRIVACY;
 	}
 	return folderChecked ? paths_parentFolder(path) : PATHS_FOLDER_FOUND;
@@ -118,7 +119,7 @@ static PathsFolder testParentFolder(const wchar_t *path) {
 
 // platform_removeFile for commands.c: counts the job inputs it removes (files_write wrote none).
 static bool removeTestFile(const wchar_t *path) {
-	if (wcsstr(path, L"_job_input-")) {
+	if (wcsstr(path, L"" EDITION_JOB_INPUT_PREFIX)) {
 		++removedJobInputs;
 	}
 	return platform_removeFile(path);
@@ -168,7 +169,7 @@ TEST(encodes_input_and_metadata_in_one_read) {
 	ASSERT_BOOL_EQ(!check.save[0] && !check.date[0] && !check.badSave, true);
 	buffer_free(&writtenConfig);
 	// The save and date come from the same read.
-	configText = "{\"format\":\"fm24-match-config/1\",\"save\":\"LIV\",\"game_date\":\"2024 day 1 "
+	configText = "{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"save\":\"LIV\",\"game_date\":\"2024 day 1 "
 							 "09:00\",\"fields\":[{\"u8\":42}]}";
 	configReads = 0;
 	ASSERT_BOOL_EQ(encodeToFile(&input, &output, &size, teams, &check), true);
@@ -180,7 +181,7 @@ TEST(encodes_input_and_metadata_in_one_read) {
 
 TEST(replaces_either_team_and_preserves_both_overrides) {
 	for (unsigned side = 0; side < 2; ++side) {
-		wchar_t *arguments[] = {L"fm24ctl.exe",
+		wchar_t *arguments[] = {L"" EDITION_CLI ".exe",
 			side ? L"replace-away" : L"replace-home",
 			L"input.json",
 			L"Norwich City",
@@ -203,7 +204,7 @@ TEST(replaces_either_team_and_preserves_both_overrides) {
 }
 
 TEST(decodes_binary_fixtures_through_the_inspect_job) {
-	wchar_t *arguments[] = {L"fm24ctl", L"decode", L"next.bin", L"next.json", L"--full", NULL};
+	wchar_t *arguments[] = {L"" EDITION_CLI, L"decode", L"next.bin", L"next.json", L"--full", NULL};
 	for (int full = 0; full < 2; ++full) {
 		submittedJob[0] = 0;
 		ASSERT_INT_EQ(commands_decode(4 + full, arguments), EXIT_OK);
@@ -213,20 +214,20 @@ TEST(decodes_binary_fixtures_through_the_inspect_job) {
 			strstr(submittedJob, full ? "next.json\nfull=1\n" : "next.json\nfull=0\n") != NULL, true
 		);
 	}
-	jobReply = "error: cannot read input or invalid FM24 binary header";
+	jobReply = "error: cannot read input or invalid " EDITION_PRODUCT " binary header";
 	ASSERT_INT_EQ(commands_decode(4, arguments), EXIT_FAILED);
 	jobReply = "ok";
 	struct {
 		int argc;
 		wchar_t *argv[6];
 	} invalid[] = {
-		{3, {L"fm24ctl", L"decode", L"next.bin"}},
-		{5, {L"fm24ctl", L"decode", L"next.bin", L"next.json", L"--seed"}},
-		{6, {L"fm24ctl", L"decode", L"next.bin", L"next.json", L"--full", L"--full"}},
-		{4, {L"fm24ctl", L"decode", L"next.bin", L"--full"}},
-		{4, {L"fm24ctl", L"decode", L"Next.JSON", L"copy.json"}},
-		{4, {L"fm24ctl", L"decode", L"next.bin", L"copy.bin"}},
-		{4, {L"fm24ctl", L"decode", L"next.bin", L"next.txt"}},
+		{3, {L"" EDITION_CLI, L"decode", L"next.bin"}},
+		{5, {L"" EDITION_CLI, L"decode", L"next.bin", L"next.json", L"--seed"}},
+		{6, {L"" EDITION_CLI, L"decode", L"next.bin", L"next.json", L"--full", L"--full"}},
+		{4, {L"" EDITION_CLI, L"decode", L"next.bin", L"--full"}},
+		{4, {L"" EDITION_CLI, L"decode", L"Next.JSON", L"copy.json"}},
+		{4, {L"" EDITION_CLI, L"decode", L"next.bin", L"copy.bin"}},
+		{4, {L"" EDITION_CLI, L"decode", L"next.bin", L"next.txt"}},
 	};
 	for (size_t i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
 		submittedJob[0] = 0;
@@ -236,7 +237,7 @@ TEST(decodes_binary_fixtures_through_the_inspect_job) {
 }
 
 TEST(reports_whether_the_game_is_ready) {
-	wchar_t *arguments[] = {L"fm24ctl", L"status", L"extra", NULL};
+	wchar_t *arguments[] = {L"" EDITION_CLI, L"status", L"extra", NULL};
 	static const struct {
 		const char *reply;
 		int status;
@@ -273,10 +274,10 @@ TEST(reports_whether_the_game_is_ready) {
 
 TEST(encodes_configs_alike_with_or_without_the_save_and_date) {
 	static const char plain[] =
-		"{\"format\":\"fm24-match-config/1\",\"source\":\"A vs B, 2024 day 130 15:00, seed 1\","
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"source\":\"A vs B, 2024 day 130 15:00, seed 1\","
 		"\"home_team\":678,\"fields\":[{\"u8\":42},{\"str\":\"ab\"}]}";
 	static const char annotated[] =
-		"{\"format\":\"fm24-match-config/1\",\"source\":\"A vs B, 2024 day 130 15:00, seed 1\","
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"source\":\"A vs B, 2024 day 130 15:00, seed 1\","
 		"\"save\":\"LIV \\\"MAIN\\\" \\u00d8\",\"game_date\":\"2024 day 123 15:00\","
 		"\"home_team\":678,\"fields\":[{\"u8\":42},{\"str\":\"ab\"}]}";
 	ByteBuffer bytes[2] = {{0}};
@@ -310,7 +311,7 @@ TEST(reads_the_save_and_date_a_fixture_was_exported_from) {
 	ConfigOrigin origin;
 	// A "save" inside a field is not the header's.
 	static const char nested[] =
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"save\":\"inner\",\"u8\":1}],"
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"save\":\"inner\",\"u8\":1}],"
 		"\"game_date\":\"2024 day 1 09:00\",\"save\":\"Outer\"}";
 	ASSERT_BOOL_EQ(matchConfig_readOrigin(nested, sizeof nested - 1, &origin), true);
 	ASSERT_BOOL_EQ(origin.hasSave && strcmp(origin.save, "Outer") == 0, true);
@@ -492,7 +493,7 @@ TEST(parses_the_harness_status_line) {
 	line[prefix + 256] = 0;
 	ASSERT_BOOL_EQ(saves_parseStatus(line, &status), false);
 	static const char *const garbled[] = {
-		"error: FM24 is busy (loading); wait until it is idle",
+		"error: " EDITION_PRODUCT " is busy (loading); wait until it is idle",
 		"error: status is not available on Windows yet",
 		"ok: 21 bytes",
 		"ok: ready",
@@ -715,6 +716,27 @@ TEST(waits_until_the_save_is_loaded_and_stays_idle) {
 	ASSERT_INT_EQ(session_step(&wait, &sample), SESSION_WAITING);
 	sample.at = START + 11 + SESSION_MENU_GRACE_S - 1;
 	ASSERT_INT_EQ(session_step(&wait, &sample), SESSION_WAITING);
+#if EDITION_ENGINE_PLUGIN
+	// Once the save is to be loaded by hand (the game's engine did not load it), the menu does not
+	// end the wait: the save loaded, or the time running out, does.
+	static const StatusPhase byHand[] = {
+		STATUS_MENU, STATUS_MENU, STATUS_LOADING, STATUS_READY, STATUS_READY, STATUS_READY};
+	session_start(&wait, "LIV", true, TIMEOUT, START);
+	sample = statusSample(START + 5, STATUS_MENU, "");
+	ASSERT_INT_EQ(session_step(&wait, &sample), SESSION_WAITING);
+	sample.at = START + 5 + SESSION_MENU_GRACE_S;
+	ASSERT_INT_EQ(session_step(&wait, &sample), SESSION_NO_AUTOPLAY);
+	wait.byHand = true;
+	sample.at = START + 5 + 20 * SESSION_MENU_GRACE_S;
+	ASSERT_INT_EQ(session_step(&wait, &sample), SESSION_WAITING);
+	ASSERT_INT_EQ(stepThrough(&wait, START + 400, byHand, 6, ""), SESSION_READY);
+	session_start(&wait, "LIV", true, TIMEOUT, START);
+	wait.byHand = true;
+	sample.at = START + TIMEOUT - 1;
+	ASSERT_INT_EQ(session_step(&wait, &sample), SESSION_WAITING);
+	sample.at = START + TIMEOUT;
+	ASSERT_INT_EQ(session_step(&wait, &sample), SESSION_TIMED_OUT);
+#endif
 	// A game without the human manager's team for SESSION_NO_TEAM_GRACE_S.
 	session_start(&wait, "LIV", false, TIMEOUT, START);
 	sample = statusSample(START, STATUS_NO_TEAM, "LIV");
@@ -837,36 +859,36 @@ TEST(keeps_every_argument_form_and_takes_the_save_options) {
 	static const ArgumentCase cases[] = {
 		// What has always worked works as before.
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-home", L"next.json", L"677", L"out.json"},
+			{L"" EDITION_CLI, L"replace-home", L"next.json", L"677", L"out.json"},
 			EXIT_OK,
 			"\nfull=0\n"},
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-home", L"next.json", L"677", L"out.json", L"--full"},
+			{L"" EDITION_CLI, L"replace-home", L"next.json", L"677", L"out.json", L"--full"},
 			EXIT_OK,
 			"\nfull=1\n"},
-		{commands_listTeams, {L"fm24ctl", L"list-teams", L"teams.txt"}, EXIT_OK, "command=list_teams\n"},
+		{commands_listTeams, {L"" EDITION_CLI, L"list-teams", L"teams.txt"}, EXIT_OK, "command=list_teams\n"},
 		{commands_listPlayers,
-			{L"fm24ctl", L"list-players", L"players.txt"},
+			{L"" EDITION_CLI, L"list-players", L"players.txt"},
 			EXIT_OK,
 			"command=list_players\n"},
 		{commands_getPlayer,
-			{L"fm24ctl", L"get-player", L"2000040347", L"p.json"},
+			{L"" EDITION_CLI, L"get-player", L"2000040347", L"p.json"},
 			EXIT_OK,
 			"command=get_player\nperson=2000040347\n"},
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"next.json", L"--seed", L"42", L"--full"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"next.json", L"--seed", L"42", L"--full"},
 			EXIT_OK,
 			"\nseed=42\nfull=1\n"},
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"next.json", L"--full", L"--seed", L"7", L"--seed", L"8"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"next.json", L"--full", L"--seed", L"7", L"--seed", L"8"},
 			EXIT_OK,
 			"\nseed=8\nfull=1\n"},
 		{commands_injectPlayer,
-			{L"fm24ctl", L"inject-player", L"next.json", L"home.player[0]", L"2000040347", L"out.json"},
+			{L"" EDITION_CLI, L"inject-player", L"next.json", L"home.player[0]", L"2000040347", L"out.json"},
 			ANY_RESULT,
 			"command=get_player\n"},
 		{commands_injectPlayer,
-			{L"fm24ctl",
+			{L"" EDITION_CLI,
 				L"inject-player",
 				L"next.json",
 				L"home.player[0]",
@@ -876,28 +898,28 @@ TEST(keeps_every_argument_form_and_takes_the_save_options) {
 			ANY_RESULT,
 			"command=get_player\n"},
 		// And what has always been refused is refused.
-		{commands_replaceTeam, {L"fm24ctl", L"replace-home", L"next.json", L"677"}, EXIT_USAGE, NULL},
+		{commands_replaceTeam, {L"" EDITION_CLI, L"replace-home", L"next.json", L"677"}, EXIT_USAGE, NULL},
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-home", L"next.json", L"677", L"out.json", L"--full", L"--full"},
+			{L"" EDITION_CLI, L"replace-home", L"next.json", L"677", L"out.json", L"--full", L"--full"},
 			EXIT_USAGE,
 			NULL},
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-home", L"next.json", L"677", L"out.json", L"extra.json"},
+			{L"" EDITION_CLI, L"replace-home", L"next.json", L"677", L"out.json", L"extra.json"},
 			EXIT_USAGE,
 			NULL},
-		{commands_listTeams, {L"fm24ctl", L"list-teams", L"teams.txt", L"extra"}, EXIT_USAGE, NULL},
-		{commands_listPlayers, {L"fm24ctl", L"list-players", L"a.txt", L"--full"}, EXIT_USAGE, NULL},
-		{commands_getPlayer, {L"fm24ctl", L"get-player", L"1", L"p.json", L"x"}, EXIT_USAGE, NULL},
+		{commands_listTeams, {L"" EDITION_CLI, L"list-teams", L"teams.txt", L"extra"}, EXIT_USAGE, NULL},
+		{commands_listPlayers, {L"" EDITION_CLI, L"list-players", L"a.txt", L"--full"}, EXIT_USAGE, NULL},
+		{commands_getPlayer, {L"" EDITION_CLI, L"get-player", L"1", L"p.json", L"x"}, EXIT_USAGE, NULL},
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"next.json", L"--seed"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"next.json", L"--seed"},
 			EXIT_USAGE,
 			NULL},
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"next.json", L"extra"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"next.json", L"extra"},
 			EXIT_USAGE,
 			NULL},
 		{commands_injectPlayer,
-			{L"fm24ctl",
+			{L"" EDITION_CLI,
 				L"inject-player",
 				L"next.json",
 				L"home.player[0]",
@@ -908,7 +930,7 @@ TEST(keeps_every_argument_form_and_takes_the_save_options) {
 			EXIT_USAGE,
 			NULL},
 		{commands_injectPlayer,
-			{L"fm24ctl",
+			{L"" EDITION_CLI,
 				L"inject-player",
 				L"next.json",
 				L"home.player[0]",
@@ -918,26 +940,26 @@ TEST(keeps_every_argument_form_and_takes_the_save_options) {
 			EXIT_USAGE,
 			NULL},
 		{commands_decode,
-			{L"fm24ctl", L"decode", L"next.bin", L"next.json", L"--save", L"LIV"},
+			{L"" EDITION_CLI, L"decode", L"next.bin", L"next.json", L"--save", L"LIV"},
 			EXIT_USAGE,
 			NULL},
 		// --no-launch and --any-save need --save where there is no fixture, and names must be names.
-		{commands_listTeams, {L"fm24ctl", L"list-teams", L"teams.txt", L"--no-launch"}, EXIT_USAGE, NULL},
+		{commands_listTeams, {L"" EDITION_CLI, L"list-teams", L"teams.txt", L"--no-launch"}, EXIT_USAGE, NULL},
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"next.json", L"--any-save"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"next.json", L"--any-save"},
 			EXIT_USAGE,
 			NULL},
-		{commands_listTeams, {L"fm24ctl", L"list-teams", L"teams.txt", L"--save"}, EXIT_USAGE, NULL},
+		{commands_listTeams, {L"" EDITION_CLI, L"list-teams", L"teams.txt", L"--save"}, EXIT_USAGE, NULL},
 		{commands_listTeams,
-			{L"fm24ctl", L"list-teams", L"teams.txt", L"--save", L"LIV", L"--save", L"LIV"},
+			{L"" EDITION_CLI, L"list-teams", L"teams.txt", L"--save", L"LIV", L"--save", L"LIV"},
 			EXIT_USAGE,
 			NULL},
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-away", L"next.json", L"677", L"out.json", L"--save", L"LIV"},
+			{L"" EDITION_CLI, L"replace-away", L"next.json", L"677", L"out.json", L"--save", L"LIV"},
 			EXIT_USAGE,
 			NULL},
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-away", L"next.json", L"677", L"out.json", L"--any-save", L"--any-save"},
+			{L"" EDITION_CLI, L"replace-away", L"next.json", L"677", L"out.json", L"--any-save", L"--any-save"},
 			EXIT_USAGE,
 			NULL},
 	};
@@ -945,27 +967,27 @@ TEST(keeps_every_argument_form_and_takes_the_save_options) {
 	// The save options follow the fixed arguments, in any order, once each; Windows has none.
 	static const ArgumentCase saveOptions[] = {
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-away", L"next.json", L"677", L"out.json", L"--no-launch", L"--full"},
+			{L"" EDITION_CLI, L"replace-away", L"next.json", L"677", L"out.json", L"--no-launch", L"--full"},
 			EXIT_OK,
 			"\nfull=1\n"},
 		{commands_listTeams,
-			{L"fm24ctl", L"list-teams", L"teams.txt", L"--any-save", L"--save", L"LIV MAIN (v02)"},
+			{L"" EDITION_CLI, L"list-teams", L"teams.txt", L"--any-save", L"--save", L"LIV MAIN (v02)"},
 			EXIT_OK,
 			"command=list_teams\n"},
 		{commands_listPlayers,
-			{L"fm24ctl", L"list-players", L"a.txt", L"--save", L"\u00D8degaard \u20AC", L"--no-launch"},
+			{L"" EDITION_CLI, L"list-players", L"a.txt", L"--save", L"\u00D8degaard \u20AC", L"--no-launch"},
 			EXIT_OK,
 			"command=list_players\n"},
 		{commands_getPlayer,
-			{L"fm24ctl", L"get-player", L"7", L"p.json", L"--save", L"LIV", L"--any-save"},
+			{L"" EDITION_CLI, L"get-player", L"7", L"p.json", L"--save", L"LIV", L"--any-save"},
 			EXIT_OK,
 			"command=get_player\nperson=7\n"},
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"next.json", L"--save", L"LIV", L"--seed", L"3"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"next.json", L"--save", L"LIV", L"--seed", L"3"},
 			EXIT_OK,
 			"\nseed=3\nfull=0\n"},
 		{commands_injectPlayer,
-			{L"fm24ctl",
+			{L"" EDITION_CLI,
 				L"inject-player",
 				L"next.json",
 				L"home.player[0]",
@@ -979,7 +1001,7 @@ TEST(keeps_every_argument_form_and_takes_the_save_options) {
 	};
 	checkArguments(saveOptions, sizeof saveOptions / sizeof saveOptions[0], SAVE_OPTIONS == 0);
 	// run takes the save flags anywhere, like its others.
-	wchar_t *run[] = {L"fm24ctl", L"run", L"next.json", L"--no-launch", L"1-10", L"--any-save", NULL};
+	wchar_t *run[] = {L"" EDITION_CLI, L"run", L"next.json", L"--no-launch", L"1-10", L"--any-save", NULL};
 	RunOptions options;
 	ASSERT_BOOL_EQ(parseRunArguments(6, run, &options), SAVE_OPTIONS != 0);
 	ASSERT_BOOL_EQ(!SAVE_OPTIONS || (options.check.noLaunch && options.check.anySave), true);
@@ -1020,7 +1042,7 @@ TEST(stops_bad_seeds_and_missing_output_folders_before_the_game) {
 	};
 	RunOptions options;
 	for (size_t i = 0; i <= sizeof good / sizeof good[0]; ++i) {
-		wchar_t *run[] = {L"fm24ctl", L"run", L"next.json", i < 1 ? longest : (wchar_t *)good[i - 1]};
+		wchar_t *run[] = {L"" EDITION_CLI, L"run", L"next.json", i < 1 ? longest : (wchar_t *)good[i - 1]};
 		ASSERT_BOOL_EQ(parseRunArguments(4, run, &options), true);
 	}
 	longest[SEED_PATTERN_LENGTH] = L'1';
@@ -1039,7 +1061,7 @@ TEST(stops_bad_seeds_and_missing_output_folders_before_the_game) {
 		L"99999999999999999999999",
 	};
 	for (size_t i = 0; i <= sizeof bad / sizeof bad[0]; ++i) {
-		wchar_t *run[] = {L"fm24ctl", L"run", L"next.json", i < 1 ? longest : (wchar_t *)bad[i - 1], NULL};
+		wchar_t *run[] = {L"" EDITION_CLI, L"run", L"next.json", i < 1 ? longest : (wchar_t *)bad[i - 1], NULL};
 		ASSERT_BOOL_EQ(parseRunArguments(4, run, &options), false);
 		ASSERT_INT_EQ(invoke(commands_run, run), EXIT_USAGE);
 		ASSERT_INT_EQ(submittedJob[0], 0);
@@ -1050,47 +1072,47 @@ TEST(stops_bad_seeds_and_missing_output_folders_before_the_game) {
 	// An output in a folder that does not exist, or that is a folder itself, stops the command
 	// before it checks the save or submits a job: the game would only report a failed write.
 	static const ArgumentCase missingFolder[] = {
-		{commands_getNextFixture, {L"fm24ctl", L"get-next-fixture", L"."}, EXIT_FAILED, NULL},
-		{commands_run, {L"fm24ctl", L"run", L"next.json", L"1-10", L".."}, EXIT_FAILED, NULL},
+		{commands_getNextFixture, {L"" EDITION_CLI, L"get-next-fixture", L"."}, EXIT_FAILED, NULL},
+		{commands_run, {L"" EDITION_CLI, L"run", L"next.json", L"1-10", L".."}, EXIT_FAILED, NULL},
 		{commands_run,
-			{L"fm24ctl", L"run", L"next.json", L"1-10", L"fm24-no-such-folder/results.csv"},
+			{L"" EDITION_CLI, L"run", L"next.json", L"1-10", L"" EDITION_LOWER "-no-such-folder/results.csv"},
 			EXIT_FAILED,
 			NULL},
 		{commands_run,
-			{L"fm24ctl", L"run", L"next.json", L"--profile", L"fm24-no-such-folder/samples.txt"},
+			{L"" EDITION_CLI, L"run", L"next.json", L"--profile", L"" EDITION_LOWER "-no-such-folder/samples.txt"},
 			EXIT_FAILED,
 			NULL},
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"fm24-no-such-folder/next.json"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"" EDITION_LOWER "-no-such-folder/next.json"},
 			EXIT_FAILED,
 			NULL},
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-away", L"next.json", L"677", L"fm24-no-such-folder/out.json"},
+			{L"" EDITION_CLI, L"replace-away", L"next.json", L"677", L"" EDITION_LOWER "-no-such-folder/out.json"},
 			EXIT_FAILED,
 			NULL},
 		{commands_listTeams,
-			{L"fm24ctl", L"list-teams", L"fm24-no-such-folder/teams.txt"},
+			{L"" EDITION_CLI, L"list-teams", L"" EDITION_LOWER "-no-such-folder/teams.txt"},
 			EXIT_FAILED,
 			NULL},
 		{commands_listPlayers,
-			{L"fm24ctl", L"list-players", L"fm24-no-such-folder/players.txt"},
+			{L"" EDITION_CLI, L"list-players", L"" EDITION_LOWER "-no-such-folder/players.txt"},
 			EXIT_FAILED,
 			NULL},
 		{commands_getPlayer,
-			{L"fm24ctl", L"get-player", L"7", L"fm24-no-such-folder/p.json"},
+			{L"" EDITION_CLI, L"get-player", L"7", L"" EDITION_LOWER "-no-such-folder/p.json"},
 			EXIT_FAILED,
 			NULL},
 		{commands_injectPlayer,
-			{L"fm24ctl",
+			{L"" EDITION_CLI,
 				L"inject-player",
 				L"next.json",
 				L"home.player[0]",
 				L"2000040347",
-				L"fm24-no-such-folder/out.json"},
+				L"" EDITION_LOWER "-no-such-folder/out.json"},
 			EXIT_FAILED,
 			NULL},
 		{commands_decode,
-			{L"fm24ctl", L"decode", L"next.bin", L"fm24-no-such-folder/next.json"},
+			{L"" EDITION_CLI, L"decode", L"next.bin", L"" EDITION_LOWER "-no-such-folder/next.json"},
 			EXIT_FAILED,
 			NULL},
 	};
@@ -1107,13 +1129,13 @@ TEST(stops_bad_seeds_and_missing_output_folders_before_the_game) {
 #ifndef _WIN32
 // A fixture exported from the save LIV_MAIN_FM24 at 2024 day 123 15:00.
 static const char savedConfig[] =
-	"{\"format\":\"fm24-match-config/1\",\"source\":\"A vs B, 2024 day 130 15:00, seed 1\","
+	"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"source\":\"A vs B, 2024 day 130 15:00, seed 1\","
 	"\"save\":\"LIV_MAIN_FM24\",\"game_date\":\"2024 day 123 15:00\",\"home_team\":678,"
 	"\"fields\":[{\"u8\":42}]}";
 
 // As invoke, writing what the command printed to stderr to `out`.
 static int invokeCapturingErrors(Command *command, wchar_t **arguments, char *out, size_t size) {
-	char printed[] = "/tmp/fm24-runner-errors-XXXXXX";
+	char printed[] = "/tmp/" EDITION_LOWER "-runner-errors-XXXXXX";
 	int file = mkstemp(printed);
 	int saved = dup(STDERR_FILENO);
 	int status = -1;
@@ -1157,15 +1179,15 @@ TEST(explains_refused_seeds) {
 	};
 	char errors[2048];
 	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
-		wchar_t *run[] = {L"fm24ctl", L"run", L"next.json", (wchar_t *)cases[i].seeds, NULL};
+		wchar_t *run[] = {L"" EDITION_CLI, L"run", L"next.json", (wchar_t *)cases[i].seeds, NULL};
 		ASSERT_INT_EQ(invokeCapturingErrors(commands_run, run, errors, sizeof errors), EXIT_USAGE);
 		ASSERT_INT_EQ(strncmp(errors, cases[i].reason, strlen(cases[i].reason)), 0);
-		ASSERT_BOOL_EQ(strstr(errors, "\nusage: fm24ctl run ") != NULL, true);
+		ASSERT_BOOL_EQ(strstr(errors, "\nusage: " EDITION_CLI " run ") != NULL, true);
 	}
 	wchar_t longest[SEED_PATTERN_LENGTH + 2];
 	wmemset(longest, L'1', SEED_PATTERN_LENGTH + 1);
 	longest[SEED_PATTERN_LENGTH + 1] = 0;
-	wchar_t *run[] = {L"fm24ctl", L"run", L"next.json", longest, NULL};
+	wchar_t *run[] = {L"" EDITION_CLI, L"run", L"next.json", longest, NULL};
 	ASSERT_INT_EQ(invokeCapturingErrors(commands_run, run, errors, sizeof errors), EXIT_USAGE);
 	static const char tooLong[] = "the seed pattern must fit in 255 characters (this one has 256)\n";
 	ASSERT_INT_EQ(strncmp(errors, tooLong, sizeof tooLong - 1), 0);
@@ -1196,7 +1218,7 @@ static bool allowFilesOnly(const char *path) {
 // folder they may not add files to or that is locked, or a new one in a folder whose access list
 // lets them add files but not folders, or that is append-only.
 TEST(explains_output_folders_it_cannot_write_in) {
-	char directory[] = "/tmp/fm24-outputs-XXXXXX";
+	char directory[] = "/tmp/" EDITION_LOWER "-outputs-XXXXXX";
 	ASSERT_BOOL_EQ(mkdtemp(directory) != NULL, true);
 	char path[1100];
 	static const char *const folders[] = {"locked",
@@ -1295,8 +1317,8 @@ TEST(explains_output_folders_it_cannot_write_in) {
 		(void)snprintf(path, sizeof path, "%s/%s", directory, cases[i].output);
 		ASSERT_BOOL_EQ(platform_fromUtf8(path, output, 1100), true);
 		// The game writes get-next-fixture's output; fm24ctl reads back run's results.
-		wchar_t *next[] = {L"fm24ctl", L"get-next-fixture", output, NULL};
-		wchar_t *run[] = {L"fm24ctl", L"run", L"next.json", L"1-10", output, NULL};
+		wchar_t *next[] = {L"" EDITION_CLI, L"get-next-fixture", output, NULL};
+		wchar_t *run[] = {L"" EDITION_CLI, L"run", L"next.json", L"1-10", output, NULL};
 		for (int opened = 0; opened < 2; ++opened) {
 			expectedTimeout = opened ? CLIENT_LONG_TIMEOUT_MS : CLIENT_SHORT_TIMEOUT_MS;
 			Command *command = opened ? commands_run : commands_getNextFixture;
@@ -1342,7 +1364,7 @@ TEST(explains_output_folders_it_cannot_write_in) {
 		ASSERT_BOOL_EQ(platform_fromUtf8(path, input, 1100), true);
 		(void)snprintf(path, sizeof path, "%s/%s", directory, runs[i].output ? runs[i].output : "");
 		ASSERT_BOOL_EQ(platform_fromUtf8(path, output, 1100), true);
-		wchar_t *run[] = {L"fm24ctl", L"run", input, L"1-10", L"--detailed", NULL, NULL};
+		wchar_t *run[] = {L"" EDITION_CLI, L"run", input, L"1-10", L"--detailed", NULL, NULL};
 		if (runs[i].output) {
 			run[5] = output;
 		}
@@ -1392,32 +1414,32 @@ TEST(explains_output_folders_it_cannot_write_in) {
 // inject-player's output, which it writes. The outputs only the game writes go on to the job.
 TEST(leaves_folders_closed_to_fm24ctl_alone_for_outputs_the_game_writes) {
 	static const char privacy[] =
-		"macOS does not let fm24ctl into its folder (operation not permitted): choose another folder "
-		"or, for a folder macOS protects, allow the app fm24ctl runs in (such as Terminal) under "
+		"macOS does not let " EDITION_CLI " into its folder (operation not permitted): choose another folder "
+		"or, for a folder macOS protects, allow the app " EDITION_CLI " runs in (such as Terminal) under "
 		"System Settings > Privacy & Security\n";
 	static const ArgumentCase gameWrites[] = {
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"fm24-closed-folder/next.json"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"" EDITION_LOWER "-closed-folder/next.json"},
 			EXIT_OK,
 			"command=build_next\n"},
 		{commands_replaceTeam,
-			{L"fm24ctl", L"replace-away", L"next.json", L"677", L"fm24-closed-folder/out.json"},
+			{L"" EDITION_CLI, L"replace-away", L"next.json", L"677", L"" EDITION_LOWER "-closed-folder/out.json"},
 			EXIT_OK,
 			"command=replace_away\n"},
 		{commands_listTeams,
-			{L"fm24ctl", L"list-teams", L"fm24-closed-folder/teams.txt"},
+			{L"" EDITION_CLI, L"list-teams", L"" EDITION_LOWER "-closed-folder/teams.txt"},
 			EXIT_OK,
 			"command=list_teams\n"},
 		{commands_listPlayers,
-			{L"fm24ctl", L"list-players", L"fm24-closed-folder/players.txt"},
+			{L"" EDITION_CLI, L"list-players", L"" EDITION_LOWER "-closed-folder/players.txt"},
 			EXIT_OK,
 			"command=list_players\n"},
 		{commands_getPlayer,
-			{L"fm24ctl", L"get-player", L"7", L"fm24-closed-folder/p.json"},
+			{L"" EDITION_CLI, L"get-player", L"7", L"" EDITION_LOWER "-closed-folder/p.json"},
 			EXIT_OK,
 			"command=get_player\n"},
 		{commands_decode,
-			{L"fm24ctl", L"decode", L"next.bin", L"fm24-closed-folder/next.json"},
+			{L"" EDITION_CLI, L"decode", L"next.bin", L"" EDITION_LOWER "-closed-folder/next.json"},
 			EXIT_OK,
 			"command=inspect\n"},
 	};
@@ -1427,23 +1449,23 @@ TEST(leaves_folders_closed_to_fm24ctl_alone_for_outputs_the_game_writes) {
 		const char *output;
 	} fm24ctlOpens[] = {
 		{commands_run,
-			{L"fm24ctl", L"run", L"next.json", L"1-10", L"fm24-closed-folder/results.csv"},
-			"fm24-closed-folder/results.csv"},
+			{L"" EDITION_CLI, L"run", L"next.json", L"1-10", L"" EDITION_LOWER "-closed-folder/results.csv"},
+			EDITION_LOWER "-closed-folder/results.csv"},
 		{commands_run,
-			{L"fm24ctl", L"run", L"fm24-closed-folder/next.json", L"1-10"},
-			"fm24-closed-folder/next.csv"},
+			{L"" EDITION_CLI, L"run", L"" EDITION_LOWER "-closed-folder/next.json", L"1-10"},
+			EDITION_LOWER "-closed-folder/next.csv"},
 		{commands_injectPlayer,
-			{L"fm24ctl",
+			{L"" EDITION_CLI,
 				L"inject-player",
 				L"next.json",
 				L"home.player[0]",
 				L"2000040347",
-				L"fm24-closed-folder/out.json"},
-			"fm24-closed-folder/out.json"},
+				L"" EDITION_LOWER "-closed-folder/out.json"},
+			EDITION_LOWER "-closed-folder/out.json"},
 	};
 	static const ArgumentCase profile = {
 		commands_run,
-		{L"fm24ctl", L"run", L"next.json", L"--profile", L"fm24-closed-folder/samples.txt"},
+		{L"" EDITION_CLI, L"run", L"next.json", L"--profile", L"" EDITION_LOWER "-closed-folder/samples.txt"},
 		ANY_RESULT,
 		"\nprofile=",
 	};
@@ -1475,7 +1497,7 @@ TEST(checks_the_fixtures_save_before_its_job) {
 	expectedTimeout = CLIENT_LONG_TIMEOUT_MS;
 	// run checks the fixture's save first, and lets the check wait as long as the run would.
 	wchar_t *run[] = {
-		L"fm24ctl", L"run", L"next.json", L"1-10", L"fm24-save-check-test.csv", NULL, NULL, NULL
+		L"" EDITION_CLI, L"run", L"next.json", L"1-10", L"" EDITION_LOWER "-save-check-test.csv", NULL, NULL, NULL
 	};
 	(void)invoke(commands_run, run);
 	ASSERT_BOOL_EQ(ensures == 1 && strcmp(ensured.save, "LIV_MAIN_FM24") == 0, true);
@@ -1512,13 +1534,16 @@ TEST(checks_the_fixtures_save_before_its_job) {
 		(void)invokeCapturingErrors(commands_run, run, errors, sizeof errors);
 		ASSERT_BOOL_EQ(strstr(errors, "warning: the save is at") == NULL, true);
 	}
-	// A fixture without a save, and a .bin, are played as before.
+	// A fixture without a save is played as before, or, where the edition's exports record no
+	// save, once the running game has one loaded (checks_the_loaded_game_for_an_export_without_save);
+	// a .bin is played as before.
 	run[5] = NULL;
 	configText = plainConfig;
 	(void)invoke(commands_run, run);
-	ASSERT_BOOL_EQ(ensures == 0 && strncmp(submittedJob, "command=run\n", 12) == 0, true);
+	ASSERT_BOOL_EQ(ensures == (EDITION_ENGINE_PLUGIN ? 1 : 0), true);
+	ASSERT_BOOL_EQ(strncmp(submittedJob, "command=run\n", 12) == 0, true);
 	configText = savedConfig;
-	char bin[] = "/tmp/fm24-runner-input-XXXXXX.bin"; // fm24ctl checks that a .bin is there
+	char bin[] = "/tmp/" EDITION_LOWER "-runner-input-XXXXXX.bin"; // fm24ctl checks that a .bin is there
 	int made = mkstemps(bin, 4);
 	ASSERT_BOOL_EQ(made >= 0 && close(made) == 0, true);
 	wchar_t binary[64];
@@ -1529,15 +1554,15 @@ TEST(checks_the_fixtures_save_before_its_job) {
 	ASSERT_INT_EQ(unlink(bin), 0);
 	run[2] = L"next.json";
 	// Only the last part of a path counts; a "save" that is no save's name stops the run first.
-	configText = "{\"format\":\"fm24-match-config/1\",\"save\":\"/x/cloud/games/LIV (v02)\","
+	configText = "{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"save\":\"/x/cloud/games/LIV (v02)\","
 							 "\"fields\":[]}";
 	(void)invoke(commands_run, run);
 	ASSERT_BOOL_EQ(ensures == 1 && strcmp(ensured.save, "LIV (v02)") == 0, true);
 	static const char *const badSaves[] = {
-		"{\"format\":\"fm24-match-config/1\",\"save\":\"\",\"fields\":[]}",
-		"{\"format\":\"fm24-match-config/1\",\"save\":\"x/\",\"fields\":[]}",
-		"{\"format\":\"fm24-match-config/1\",\"save\":7,\"fields\":[]}",
-		"{\"format\":\"fm24-match-config/1\",\"save\":\"a\\u001b[2J\",\"fields\":[]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"save\":\"\",\"fields\":[]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"save\":\"x/\",\"fields\":[]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"save\":7,\"fields\":[]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"save\":\"a\\u001b[2J\",\"fields\":[]}",
 	};
 	for (size_t i = 0; i < sizeof badSaves / sizeof badSaves[0]; ++i) {
 		configText = badSaves[i];
@@ -1548,7 +1573,7 @@ TEST(checks_the_fixtures_save_before_its_job) {
 	expectedTimeout = CLIENT_SHORT_TIMEOUT_MS;
 	// replace-home and replace-away check the fixture's save before the rebuild.
 	wchar_t *replace[] = {
-		L"fm24ctl", L"replace-away", L"next.json", L"677", L"out.json", L"--any-save", L"--full", NULL
+		L"" EDITION_CLI, L"replace-away", L"next.json", L"677", L"out.json", L"--any-save", L"--full", NULL
 	};
 	ASSERT_INT_EQ(invoke(commands_replaceTeam, replace), EXIT_OK);
 	ASSERT_BOOL_EQ(ensures == 1 && strcmp(ensured.save, "LIV_MAIN_FM24") == 0, true);
@@ -1560,7 +1585,7 @@ TEST(checks_the_fixtures_save_before_its_job) {
 	ensureResult = EXIT_OK;
 	// inject-player checks before it fetches a player by ID, and not for a player file.
 	wchar_t *inject[] = {
-		L"fm24ctl", L"inject-player", L"next.json", L"home.player[0]", L"2000040347", L"out.json",
+		L"" EDITION_CLI, L"inject-player", L"next.json", L"home.player[0]", L"2000040347", L"out.json",
 		L"--no-launch", NULL
 	};
 	(void)invoke(commands_injectPlayer, inject);
@@ -1580,13 +1605,13 @@ TEST(checks_the_fixtures_save_before_its_job) {
 		int fixed; // the arguments before the options
 	} named[] = {
 		{commands_getNextFixture,
-			{L"fm24ctl", L"get-next-fixture", L"next.json", L"--save", L"LIV (v02)", L"--seed", L"42"},
+			{L"" EDITION_CLI, L"get-next-fixture", L"next.json", L"--save", L"LIV (v02)", L"--seed", L"42"},
 			3},
-		{commands_listTeams, {L"fm24ctl", L"list-teams", L"teams.txt", L"--save", L"LIV (v02)"}, 3},
+		{commands_listTeams, {L"" EDITION_CLI, L"list-teams", L"teams.txt", L"--save", L"LIV (v02)"}, 3},
 		{commands_listPlayers,
-			{L"fm24ctl", L"list-players", L"players.txt", L"--no-launch", L"--save", L"LIV (v02)"},
+			{L"" EDITION_CLI, L"list-players", L"players.txt", L"--no-launch", L"--save", L"LIV (v02)"},
 			3},
-		{commands_getPlayer, {L"fm24ctl", L"get-player", L"7", L"p.json", L"--save", L"LIV (v02)"}, 4},
+		{commands_getPlayer, {L"" EDITION_CLI, L"get-player", L"7", L"p.json", L"--save", L"LIV (v02)"}, 4},
 	};
 	for (size_t i = 0; i < sizeof named / sizeof named[0]; ++i) {
 		ASSERT_INT_EQ(invoke(named[i].command, (wchar_t **)named[i].arguments), EXIT_OK);
@@ -1602,10 +1627,114 @@ TEST(checks_the_fixtures_save_before_its_job) {
 		ASSERT_BOOL_EQ(ensures == 0 && submittedJob[0], true);
 	}
 	// decode never starts or checks the game.
-	wchar_t *decode[] = {L"fm24ctl", L"decode", L"next.bin", L"next.json", NULL};
+	wchar_t *decode[] = {L"" EDITION_CLI, L"decode", L"next.bin", L"next.json", NULL};
 	ASSERT_INT_EQ(invoke(commands_decode, decode), EXIT_OK);
 	ASSERT_BOOL_EQ(ensures == 0 && submittedJob[0], true);
 	ensureDate = "";
+	configText = plainConfig;
+	buffer_free(&writtenConfig);
+}
+
+// replace-home and replace-away say how they take the team: by its unique ID or its club's name,
+// or, where the clubs' names have not been located (the engine plugin's builds), by unique ID only.
+TEST(says_how_replacements_take_the_team) {
+#if EDITION_ENGINE_PLUGIN
+	static const char team[] = "<team unique ID>";
+	static const char prompt[] = "Enter a team's unique ID.";
+#else
+	static const char team[] = "<team ID or club name>";
+	static const char prompt[] = "Enter a team ID or club short name (up to 255 UTF-8 bytes).";
+#endif
+	char errors[1024];
+	char expected[512];
+	wchar_t *missing[] = {L"" EDITION_CLI, L"replace-home", L"next.json", L"677", NULL};
+	ASSERT_INT_EQ(invokeCapturingErrors(commands_replaceTeam, missing, errors, sizeof errors), EXIT_USAGE);
+	(void)snprintf(
+		expected,
+		sizeof expected,
+		"usage: " EDITION_CLI " replace-home <input.json> %s <output.json> [--full]%s\n",
+		team,
+		SAVE_FLAGS_USAGE
+	);
+	ASSERT_INT_EQ(strcmp(errors, expected), 0);
+	char result[256];
+	wchar_t *blank[] = {L"" EDITION_CLI, L"replace-away", L"next.json", L" \t", L"out.json", NULL};
+	submittedJob[0] = 0;
+	ASSERT_INT_EQ(commands_replaceTeamWithResult(5, blank, result, sizeof result), EXIT_FAILED);
+	ASSERT_INT_EQ(strcmp(result, prompt), 0);
+	ASSERT_BOOL_EQ(!submittedJob[0], true);
+}
+#endif
+
+#if EDITION_ENGINE_PLUGIN
+// The edition's exports record no save, as its harness cannot read the loaded save's name: a job
+// for one waits for the running game to have a save loaded and idle, whichever it is, without
+// starting the game, and run warns if that save is at another date than the export's.
+TEST(checks_the_loaded_game_for_an_export_without_save) {
+	static const char exported[] =
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"source\":\"A vs B, 2026 day 130 15:00, seed 1\","
+		"\"game_date\":\"2026 day 123 15:00\",\"home_team\":678,\"fields\":[{\"u8\":42}]}";
+	configText = exported;
+	expectedTimeout = CLIENT_LONG_TIMEOUT_MS;
+	wchar_t *run[] = {
+		L"" EDITION_CLI, L"run", L"next.json", L"1-10", L"" EDITION_LOWER "-save-check-test.csv", NULL, NULL, NULL
+	};
+	(void)invoke(commands_run, run);
+	ASSERT_BOOL_EQ(ensures == 1 && ensured.unrecorded && !ensured.save[0], true);
+	ASSERT_BOOL_EQ(!ensured.launch && ensured.anySave, true);
+	ASSERT_BOOL_EQ(ensured.timeoutMs == CLIENT_LONG_TIMEOUT_MS, true);
+	ASSERT_BOOL_EQ(strncmp(submittedJob, "command=run\n", 12) == 0, true);
+	// --no-launch and --any-save have nothing to change.
+	run[5] = L"--no-launch";
+	run[6] = L"--any-save";
+	(void)invoke(commands_run, run);
+	ASSERT_BOOL_EQ(ensures == 1 && ensured.unrecorded && !ensured.launch && ensured.anySave, true);
+	run[5] = NULL;
+	// The loaded save at another date than the export's: a warning, and the run goes ahead.
+	char errors[1024];
+	ensureDate = "2026 day 130 09:00";
+	(void)invokeCapturingErrors(commands_run, run, errors, sizeof errors);
+	ASSERT_BOOL_EQ(
+		strstr(
+			errors,
+			"warning: the save is at 2026 day 130 09:00, the fixture was exported at 2026 day 123 15:00"
+		) != NULL,
+		true
+	);
+	ASSERT_BOOL_EQ(strncmp(submittedJob, "command=run\n", 12) == 0, true);
+	ensureDate = "2026 day 123 15:00";
+	(void)invokeCapturingErrors(commands_run, run, errors, sizeof errors);
+	ASSERT_BOOL_EQ(strstr(errors, "warning: the save is at") == NULL, true);
+	ensureDate = "";
+	// No game running, or one that stays busy: the check's exit code, and no job.
+	static const int stops[] = {EXIT_FAILED, EXIT_WRONG_STATE};
+	for (size_t i = 0; i < sizeof stops / sizeof stops[0]; ++i) {
+		ensureResult = stops[i];
+		ASSERT_INT_EQ(invoke(commands_run, run), stops[i]);
+		ASSERT_BOOL_EQ(ensures == 1 && !submittedJob[0], true);
+	}
+	ensureResult = EXIT_OK;
+	// replace-away and inject-player with a person ID check the same way, as long as their jobs may
+	// wait; a .bin and a player file are not checked.
+	expectedTimeout = CLIENT_SHORT_TIMEOUT_MS;
+	wchar_t *replace[] = {L"" EDITION_CLI, L"replace-away", L"next.json", L"677", L"out.json", NULL};
+	ASSERT_INT_EQ(invoke(commands_replaceTeam, replace), EXIT_OK);
+	ASSERT_BOOL_EQ(ensures == 1 && ensured.unrecorded, true);
+	ASSERT_BOOL_EQ(ensured.timeoutMs == CLIENT_SHORT_TIMEOUT_MS, true);
+	ASSERT_BOOL_EQ(strstr(submittedJob, "command=replace_away\n") != NULL, true);
+	wchar_t *inject[] = {
+		L"" EDITION_CLI, L"inject-player", L"next.json", L"home.player[0]", L"2000040347", L"out.json", NULL
+	};
+	(void)invoke(commands_injectPlayer, inject);
+	ASSERT_BOOL_EQ(ensures == 1 && ensured.unrecorded, true);
+	ASSERT_BOOL_EQ(strncmp(submittedJob, "command=get_player\n", 19) == 0, true);
+	inject[4] = L"player.json";
+	(void)invoke(commands_injectPlayer, inject);
+	ASSERT_BOOL_EQ(ensures == 0, true);
+	// A fixture that has a save is checked for it, as before.
+	configText = savedConfig;
+	(void)invoke(commands_replaceTeam, replace);
+	ASSERT_BOOL_EQ(ensures == 1 && !ensured.unrecorded && strcmp(ensured.save, "LIV_MAIN_FM24") == 0, true);
 	configText = plainConfig;
 	buffer_free(&writtenConfig);
 }
@@ -1751,7 +1880,7 @@ TEST(extracts_the_dll_only_when_it_changed) {
 	DWORD length = GetTempPathW(MAX_PATH, path);
 	ASSERT_BOOL_EQ(length > 0 && length < MAX_PATH - 40, true);
 	(void)swprintf(
-		path + length, MAX_PATH - length, L"fm24-embedded-test-%lu.dll", GetCurrentProcessId()
+		path + length, MAX_PATH - length, L"" EDITION_LOWER "-embedded-test-%lu.dll", GetCurrentProcessId()
 	);
 	ByteBuffer contents = {0};
 	ASSERT_BOOL_EQ(embedded_write(path, first, sizeof first), true);
@@ -1774,10 +1903,10 @@ TEST(extracts_the_dll_only_when_it_changed) {
 TEST(replaces_an_installed_dylib_atomically) {
 	static const char first[] = "first build";
 	static const char second[] = "second build";
-	char directory[] = "/tmp/fm24-embedded-test-XXXXXX";
+	char directory[] = "/tmp/" EDITION_LOWER "-embedded-test-XXXXXX";
 	ASSERT_BOOL_EQ(mkdtemp(directory) != NULL, true);
 	char narrow[256];
-	(void)snprintf(narrow, sizeof narrow, "%s/fm24-harness.dylib", directory);
+	(void)snprintf(narrow, sizeof narrow, "%s/" EDITION_HARNESS ".dylib", directory);
 	wchar_t path[256];
 	ASSERT_BOOL_EQ(platform_fromUtf8(narrow, path, 256), true);
 	ByteBuffer contents = {0};
@@ -1873,8 +2002,8 @@ static bool writeFat(const char *path, const TestSlice *slices, uint32_t count, 
 // `fm24ctl probe <path>`'s exit code, with what it printed in `out`.
 static int probeFile(const char *path, char *out, size_t size) {
 	wchar_t wide[1100];
-	wchar_t *arguments[] = {L"fm24ctl", L"probe", wide, NULL};
-	char printed[] = "/tmp/fm24-probe-out-XXXXXX";
+	wchar_t *arguments[] = {L"" EDITION_CLI, L"probe", wide, NULL};
+	char printed[] = "/tmp/" EDITION_LOWER "-probe-out-XXXXXX";
 	out[0] = 0;
 	int file = platform_fromUtf8(path, wide, 1100) ? mkstemp(printed) : -1;
 	if (file < 0) {
@@ -1933,9 +2062,12 @@ static const MacosBuild *supportedBuild(const char *architecture) {
 }
 
 TEST(probe_reads_the_uuid_of_each_slice) {
+	char directory[] = "/tmp/" EDITION_LOWER "-probe-test-XXXXXX";
+	char path[1100];
+	char printed[2048];
+	char line[160];
 	const MacosBuild *arm = supportedBuild("arm64");
 	const MacosBuild *intel = supportedBuild("x86_64");
-	char directory[] = "/tmp/fm24-probe-test-XXXXXX";
 	bool ready = arm && intel && mkdtemp(directory) != NULL;
 	ASSERT_BOOL_EQ(ready, true);
 	if (!ready) {
@@ -1944,9 +2076,6 @@ TEST(probe_reads_the_uuid_of_each_slice) {
 	uint8_t otherBuild[16];
 	memcpy(otherBuild, arm->uuid, sizeof otherBuild);
 	otherBuild[0] ^= 1;
-	char path[1100];
-	char printed[2048];
-	char line[160];
 	(void)snprintf(path, sizeof path, "%s/fm", directory);
 	// The supported game: both slices.
 	TestSlice slices[] = {{CPU_TYPE_ARM64, arm->uuid}, {CPU_TYPE_X86_64, intel->uuid}};
@@ -1974,7 +2103,7 @@ TEST(probe_reads_the_uuid_of_each_slice) {
 	ASSERT_BOOL_EQ(writeFat(path, slices, 2, SIZE_MAX), true);
 	ASSERT_INT_EQ(probeFile(path, printed, sizeof printed), 1);
 	ASSERT_BOOL_EQ(
-		strstr(printed, " does not support this build: please report its UUIDs\n") != NULL, true
+		strstr(printed, " does not support this build: please report its UUIDs") != NULL, true
 	);
 	// A universal file whose last slice is cut short, or whose table lists a slice it lacks.
 	slices[0].uuid = arm->uuid;
@@ -1984,20 +2113,97 @@ TEST(probe_reads_the_uuid_of_each_slice) {
 	ASSERT_BOOL_EQ(writeFat(path, slices, 3, SIZE_MAX), true);
 	ASSERT_INT_EQ(probeFile(path, printed, sizeof printed), 1);
 	ASSERT_BOOL_EQ(unlink(path) == 0, true);
+#if EDITION_ENGINE_PLUGIN
+	// One slice on its own, in an app's engine plugin, named by the app, its executable, the plugin's
+	// bundle or the plugin itself: the app's version and the plugin come first.
+	static const char *const folders[] = {
+		"Game.app",
+		"Game.app/Contents",
+		"Game.app/Contents/MacOS",
+		"Game.app/Contents/PlugIns",
+		"Game.app/Contents/PlugIns/game_plugin.bundle",
+		"Game.app/Contents/PlugIns/game_plugin.bundle/Contents",
+		"Game.app/Contents/PlugIns/game_plugin.bundle/Contents/MacOS",
+	};
+	enum { FOLDERS = sizeof folders / sizeof folders[0] };
+	ASSERT_BOOL_EQ(strncmp(EDITION_ENGINE_PATH, "game_plugin.bundle/Contents/MacOS/", 34) == 0, true);
+	for (size_t i = 0; i < FOLDERS; ++i) {
+		(void)snprintf(path, sizeof path, "%s/%s", directory, folders[i]);
+		ASSERT_INT_EQ(mkdir(path, 0755), 0);
+	}
+	char plist[1100];
+	char stub[1100];
+	(void)snprintf(plist, sizeof plist, "%s/Game.app/Contents/Info.plist", directory);
+	static const char info[] =
+		"<plist version=\"1.0\"><dict>\n<key>CFBundleExecutable</key>\n<string>Game &amp; "
+		"Stub</string>\n"
+		"<key>CFBundleIdentifier</key>\n<string>" EDITION_GAME_BUNDLE_ID "</string>\n"
+		"<key>CFBundleShortVersionString</key>\n<string>27.0.0.1</string>\n</dict></plist>\n";
+	ASSERT_BOOL_EQ(writeBytes(plist, info, sizeof info - 1), true);
+	(void)snprintf(stub, sizeof stub, "%s/Game.app/Contents/MacOS/Game & Stub", directory);
+	ASSERT_BOOL_EQ(writeBytes(stub, "#!/bin/sh\n", 10), true);
+	uint8_t thin[256];
+	(void)snprintf(path, sizeof path, "%s/Game.app/Contents/PlugIns/" EDITION_ENGINE_PATH, directory);
+	ASSERT_BOOL_EQ(writeBytes(path, thin, writeSlice(thin, &slices[1])), true);
+	char heading[2400];
+	(void)snprintf(
+		heading, sizeof heading, EDITION_GAME " 27.0.0.1: %s/Game.app\n%s\n", directory, path
+	);
+	char named[4][1100];
+	(void)snprintf(named[0], sizeof named[0], "%s/Game.app/", directory);
+	(void)snprintf(named[1], sizeof named[1], "%s", stub);
+	(void)snprintf(
+		named[2], sizeof named[2], "%s/Game.app/Contents/PlugIns/game_plugin.bundle//", directory
+	);
+	(void)snprintf(named[3], sizeof named[3], "%s", path);
+	for (size_t i = 0; i < 4; ++i) {
+		ASSERT_INT_EQ(probeFile(named[i], printed, sizeof printed), 0);
+		ASSERT_BOOL_EQ(strncmp(printed, heading, strlen(heading)) == 0, true);
+		ASSERT_BOOL_EQ(strstr(printed, " supports 1 slice(s) of this build\n") != NULL, true);
+	}
+	// Without the app's version; outside an app, the plugin alone.
+	ASSERT_INT_EQ(unlink(plist), 0);
+	(void)snprintf(
+		heading, sizeof heading, EDITION_GAME " (unknown version): %s/Game.app\n", directory
+	);
+	ASSERT_INT_EQ(probeFile(named[0], printed, sizeof printed), 0);
+	ASSERT_BOOL_EQ(strncmp(printed, heading, strlen(heading)) == 0, true);
+	char loose[1100];
+	(void)snprintf(loose, sizeof loose, "%s/game_plugin", directory);
+	ASSERT_BOOL_EQ(writeBytes(loose, thin, writeSlice(thin, &slices[1])), true);
+	ASSERT_INT_EQ(probeFile(loose, printed, sizeof printed), 0);
+	ASSERT_BOOL_EQ(
+		strncmp(printed, loose, strlen(loose)) == 0 && printed[strlen(loose)] == '\n', true
+	);
+	ASSERT_INT_EQ(unlink(loose), 0);
+	ASSERT_INT_EQ(unlink(stub), 0);
+	// An unsupported build asks for the game's version too.
+	TestSlice other = {CPU_TYPE_ARM64, otherBuild};
+	ASSERT_BOOL_EQ(writeBytes(path, thin, writeSlice(thin, &other)), true);
+	ASSERT_INT_EQ(probeFile(named[0], printed, sizeof printed), 1);
+	ASSERT_BOOL_EQ(
+		strstr(
+			printed, " does not support this build: please report its UUIDs and the game's version\n"
+		) != NULL,
+		true
+	);
+#else
 	// One slice on its own, named by its bundle.
 	static const char *const folders[] = {"Game.app", "Game.app/Contents", "Game.app/Contents/MacOS"};
-	for (size_t i = 0; i < 3; ++i) {
+	enum { FOLDERS = sizeof folders / sizeof folders[0] };
+	for (size_t i = 0; i < FOLDERS; ++i) {
 		(void)snprintf(path, sizeof path, "%s/%s", directory, folders[i]);
 		ASSERT_INT_EQ(mkdir(path, 0755), 0);
 	}
 	uint8_t thin[256];
-	(void)snprintf(path, sizeof path, "%s/Game.app/Contents/MacOS/fm", directory);
+	(void)snprintf(path, sizeof path, "%s/Game.app/Contents/MacOS/" EDITION_GAME_EXECUTABLE, directory);
 	ASSERT_BOOL_EQ(writeBytes(path, thin, writeSlice(thin, &slices[1])), true);
 	char bundle[1100];
 	(void)snprintf(bundle, sizeof bundle, "%s/Game.app/", directory);
 	ASSERT_INT_EQ(probeFile(bundle, printed, sizeof printed), 0);
 	ASSERT_BOOL_EQ(strncmp(printed, path, strlen(path)) == 0 && printed[strlen(path)] == '\n', true);
 	ASSERT_BOOL_EQ(strstr(printed, " supports 1 slice(s) of this build\n") != NULL, true);
+#endif
 	// A slice without a UUID, a script, a file too short to be a slice and none at all.
 	TestSlice anonymous = {CPU_TYPE_X86_64, NULL};
 	ASSERT_BOOL_EQ(writeBytes(path, thin, writeSlice(thin, &anonymous)), true);
@@ -2010,7 +2216,7 @@ TEST(probe_reads_the_uuid_of_each_slice) {
 	ASSERT_INT_EQ(probeFile(path, printed, sizeof printed), 1);
 	ASSERT_BOOL_EQ(unlink(path) == 0, true);
 	ASSERT_INT_EQ(probeFile(path, printed, sizeof printed), 1);
-	wchar_t *extra[] = {L"fm24ctl", L"probe", L"fm.app", L"fm.app", NULL};
+	wchar_t *extra[] = {L"" EDITION_CLI, L"probe", L"fm.app", L"fm.app", NULL};
 	ASSERT_INT_EQ(commands_probe(4, extra), 2);
 	// Without a path, and with no game running or in Steam's libraries (none under this HOME), it
 	// says it cannot find the game: a failure, not a usage error.
@@ -2019,14 +2225,14 @@ TEST(probe_reads_the_uuid_of_each_slice) {
 	char previous[1100];
 	(void)snprintf(previous, sizeof previous, "%s", home ? home : "");
 	ASSERT_INT_EQ(setenv("HOME", directory, 1), 0);
-	wchar_t *bare[] = {L"fm24ctl", L"probe", NULL};
+	wchar_t *bare[] = {L"" EDITION_CLI, L"probe", NULL};
 	if (!macosGame_findRunning(running, sizeof running)) {
 		char errors[512];
 		ASSERT_INT_EQ(invokeCapturingErrors(commands_probe, bare, errors, sizeof errors), 1);
 		ASSERT_INT_EQ(
 			strcmp(
 				errors,
-				"cannot find Football Manager 2024: it is not running or in your Steam libraries; pass "
+				"cannot find " EDITION_GAME ": it is not running or in your Steam libraries; pass "
 				"the path to its fm.app\n"
 			),
 			0
@@ -2037,7 +2243,7 @@ TEST(probe_reads_the_uuid_of_each_slice) {
 	} else {
 		ASSERT_INT_EQ(unsetenv("HOME"), 0);
 	}
-	for (size_t i = 3; i-- > 0;) {
+	for (size_t i = FOLDERS; i-- > 0;) {
 		(void)snprintf(path, sizeof path, "%s/%s", directory, folders[i]);
 		ASSERT_INT_EQ(rmdir(path), 0);
 	}
@@ -2111,11 +2317,18 @@ void registerRunnerTests(void) {
 		test_explains_output_folders_it_cannot_write_in
 	);
 	test_run(
-		"runner leaves folders closed to fm24ctl alone for outputs the game writes",
+		"runner leaves folders closed to " EDITION_CLI " alone for outputs the game writes",
 		test_leaves_folders_closed_to_fm24ctl_alone_for_outputs_the_game_writes
 	);
 	test_run(
 		"runner checks the fixture's save before its job", test_checks_the_fixtures_save_before_its_job
+	);
+	test_run("runner says how replacements take the team", test_says_how_replacements_take_the_team);
+#endif
+#if EDITION_ENGINE_PLUGIN
+	test_run(
+		"runner checks the loaded game for an export without its save",
+		test_checks_the_loaded_game_for_an_export_without_save
 	);
 #endif
 #ifdef _WIN32

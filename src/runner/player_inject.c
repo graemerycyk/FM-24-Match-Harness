@@ -3,6 +3,7 @@
 
 #include "player_inject.h"
 
+#include "edition.h"
 #include "match_config.h"
 
 #include <stdint.h>
@@ -85,7 +86,7 @@ bool playerInject_apply(
 	ConfigVisitor fileVisitor = {.context = &file, .field = readPlayerField};
 	char visitError[256] = "";
 	if (!matchConfig_visitFormat(
-				player, playerLength, "fm24-player/1", &fileVisitor, visitError, sizeof visitError
+				player, playerLength, EDITION_PLAYER_FORMAT, &fileVisitor, visitError, sizeof visitError
 			)) {
 		(void)snprintf(error, errorSize, "player file: %s", visitError);
 		return false;

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Football Manager 2024 saves for `launch --save`: finding one by name in the game's data folder,
+// The game's saves for `launch --save`: finding one by name in the game's data folder,
 // the auto-play file that has the game load it, and the harness's status line, which says which
 // save is loaded (see session.h). Text only: the caller lists the folders.
 #pragma once
@@ -16,7 +16,7 @@ enum {
 	SAVES_SIMILAR_LENGTH = 1024, // the names of the saves a search lists instead
 };
 
-// The folders FM24 keeps saves in, under its data folder, in the order a name is looked up.
+// The folders the game keeps saves in, under its data folder, in the order a name is looked up.
 typedef enum SavesFolder {
 	SAVES_CLOUD, // cloud/games: Steam Cloud saves, where the game saves by default
 	SAVES_LOCAL, // games
@@ -85,7 +85,7 @@ SavesResult saves_result(const SaveSearch *search, SavesFolder *folder);
 // `data`/`folder`/`name`.fm.
 bool saves_path(const char *data, SavesFolder folder, const char *name, char *out, size_t size);
 
-// The auto-play file that has FM24 load the save at `path`, and nothing else:
+// The auto-play file that has the game load the save at `path`, and nothing else:
 // {"LOAD_GAME": "<path>"}, with '"' and '\' escaped. False if the path has control characters or
 // the text does not fit.
 bool saves_autoplayJson(const char *path, char *out, size_t size);

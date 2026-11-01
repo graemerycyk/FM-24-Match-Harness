@@ -78,11 +78,11 @@ int main(const int argc, const char *argv[]) {
 		const char *name;
 		void (*registerTests)(void);
 	} tests[] = {
-#if defined(_WIN32) || defined(FM24_DLL_TESTS)
+#if defined(_WIN32) || defined(TESTS_DLL)
 		{"job", registerJobTests},
 		{"dll", registerDllTests},
 #endif
-#if defined(_WIN32) || defined(FM24_RUNNER_TESTS)
+#if defined(_WIN32) || defined(TESTS_RUNNER)
 		{"runner", registerRunnerTests},
 		{"runner_main", registerRunnerMainTests},
 #endif
@@ -90,8 +90,9 @@ int main(const int argc, const char *argv[]) {
 		{"fixture_window", registerFixtureWindowTests},
 		{"fixture_load", registerFixtureLoadTests},
 #endif
-#ifdef FM24_MACOS_TESTS
+#ifdef TESTS_MACOS
 		{"macos", registerMacosTests},
+		{"match", registerMatchTests},
 #endif
 		{"fixture_data", registerFixtureDataTests},
 		{"fixture_export", registerFixtureExportTests},

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "config_writer.h"
 #include "database.h"
+#include "edition.h"
 #include "files.h"
 #include "job.h"
 #include "log.h"
@@ -13,7 +14,7 @@ void jobs_inspect(const Job *job) {
 	ByteBuffer input = {0};
 	size_t seedOffset = 0;
 	if (!files_read(job->input, &input) || !match_seedOffset(input.data, input.length, &seedOffset)) {
-		job_writeResult("error: cannot read input or invalid FM24 binary header");
+		job_writeResult("error: cannot read input or invalid " EDITION_PRODUCT " binary header");
 		buffer_free(&input);
 		return;
 	}

@@ -8,7 +8,8 @@ and the seed. You can edit it and play it with `fm24ctl run <file>.json`.
 
 This page explains what is in the file, what you can change safely, and what
 the values mean. Some of it is still unknown. Where something hasn't been
-tested, this page says so.
+tested, this page says so. For the files of the FM27 edition, see also
+[Editing an FM27 fixture file](FIXTURE-FM27.md).
 
 To inspect a fixture visually, run `fm24ctl <file>.json` (or `<file>.bin`).
 This opens the fixture viewer, FM24 Viewer (`FM24Viewer.app`), not a match
@@ -19,7 +20,7 @@ guess AI starting assignments, weather meanings or league/cup type codes.
 Its date/time comes from the export's advisory `source` annotation,
 converted to `YYYY-MM-DD HH:MM` (accounting for leap years), not a decoded
 date field. Binary dates remain unknown when no date annotation is
-available. See the README's [viewer notes](../README.md#view-a-fixture) for
+available. See the README's [viewer notes](../README-FM24.md#view-a-fixture) for
 the limits, and the [macOS guide](MACOS.md#the-fixture-viewer) for
 everything the viewer does.
 

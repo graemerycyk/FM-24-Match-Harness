@@ -6,8 +6,12 @@
 #include "buffer.h"
 #include "channel.h"
 #include "client.h"
+#include "edition.h"
 #include "embedded.h"
 #include "files.h"
+#if EDITION_ENGINE_PLUGIN
+#include "info_plist.h"
+#endif
 #include "paths.h"
 #include "platform.h"
 #include "protocol.h"
@@ -47,17 +51,19 @@ enum {
 	VDF_KEY = 64,
 };
 
-static const char steamAppId[] = "2252570";
-static const char bundleIdentifier[] = "com.sigames.eur.FootballManager2024";
-static const char executableSuffix[] = "/Contents/MacOS/fm";
+static const char steamAppId[] = EDITION_STEAM_APP_ID;
+static const char bundleIdentifier[] = EDITION_GAME_BUNDLE_ID;
+#if !EDITION_ENGINE_PLUGIN
+static const char executableSuffix[] = "/Contents/MacOS/" EDITION_GAME_EXECUTABLE;
+#endif
 static const unsigned long long steamIdBase = 76561197960265728ULL; // SteamID64 of account ID 0
 static const char dataFolderPath[] =
-	"Library/Application Support/Sports Interactive/Football Manager 2024"; // under the home folder
-// Auto-play files, next to the launcher: a request for it, named after fm24ctl's process, and the
-// copy it hands the game, named after the game's (or a direct start's, named after fm24ctl's).
+	"Library/Application Support/" EDITION_DATA_FOLDER; // under the home folder
+// Auto-play files, next to the launcher: a request for it, named after fmNNctl's process, and the
+// copy it hands the game, named after the game's (or a direct start's, named after fmNNctl's).
 static const char autoplayRequestPrefix[] = "autoplay-request-";
 static const char autoplayPrefix[] = "autoplay-";
-// A request for the x86_64 slice, named after fm24ctl's process, and its name once the launcher has
+// A request for the x86_64 slice, named after fmNNctl's process, and its name once the launcher has
 // taken it, after its own (which it then deletes).
 static const char rosettaRequestPrefix[] = "rosetta-request-";
 static const char rosettaPrefix[] = "rosetta-";
@@ -66,7 +72,7 @@ static const char rosettaPrefix[] = "rosetta-";
 typedef struct LaunchOptions {
 	const wchar_t *app;      // the fm.app given, or NULL
 	const wchar_t *save;     // --save: a save's name or its .fm file, or NULL
-	const wchar_t *userData; // --user-data: FM24's data folder, or NULL for the usual one
+	const wchar_t *userData; // --user-data: the game's data folder, or NULL for the usual one
 	unsigned timeoutS;       // --timeout
 	bool rosetta;            // --rosetta: the x86_64 slice, under Rosetta on Apple silicon
 	const SessionNeed *job;  // the command's job that follows, or NULL for `launch`
@@ -99,11 +105,13 @@ typedef bool VdfVisit(void *context, const VdfPair *pair); // false to stop
 typedef enum OptionData {
 	OPTION_DATA_NONE,    // nothing: the game uses its usual folder
 	OPTION_DATA_FOUND,   // an absolute folder
-	OPTION_DATA_UNCLEAR, // something fm24ctl does not follow
+	OPTION_DATA_UNCLEAR, // something fmNNctl does not follow
 } OptionData;
 
 static bool readFile(const char *path, ByteBuffer *out);
+#if !EDITION_ENGINE_PLUGIN
 static bool contains(const ByteBuffer *text, const char *needle);
+#endif
 static bool steamRoot(char *out, size_t size);
 static const char *vdfSkip(const char *c);
 static char vdfUnescape(char c);
@@ -125,6 +133,9 @@ parseLaunchArguments(int argc, wchar_t **argv, bool appleSilicon, LaunchOptions 
 static bool parseTimeout(const wchar_t *text, unsigned *seconds);
 static int launchGame(const LaunchOptions *options, const char *launcher, pid_t pid);
 static int ensureSave(const SessionNeed *need, pid_t pid, char *date, size_t size);
+#if EDITION_ENGINE_PLUGIN
+static int ensureLoaded(const SessionNeed *need, pid_t pid, char *date, size_t size);
+#endif
 static int launchForJob(const LaunchOptions *options, SaveTarget *target);
 static int useRunningGame(pid_t pid, const LaunchOptions *options, SaveTarget *target);
 static bool underRosetta(pid_t pid);
@@ -185,6 +196,11 @@ static void reportSave(
 	const SessionNeed *job,
 	bool throughSteam
 );
+#if EDITION_ENGINE_PLUGIN
+static void
+reportLoadByHand(SessionOutcome outcome, const SessionWait *wait, const SaveTarget *target);
+static bool reportUnrecorded(SessionOutcome outcome, pid_t pid, const SessionNeed *job);
+#endif
 static void
 reportOtherSave(const GameStatus *last, const SaveTarget *target, const SessionNeed *job);
 static int saveExitCode(SessionOutcome outcome, const SessionNeed *job);
@@ -194,37 +210,58 @@ static bool shellWord(const char *text, char *out, size_t size);
 static bool launcherPath(char *out, size_t size);
 static void describeMissingGame(void);
 static void describeLaunchOption(const char *launcher, bool forInstall);
+#if EDITION_ENGINE_PLUGIN
+static bool bundleOf(const char *path, char *out, size_t size);
+static bool logOnlyPath(const char *directory, char *out, size_t size);
+static bool setLogOnly(const char *launcher);
+static bool clearLogOnly(const char *directory);
+#endif
 
 int macosGame_install(int argc, wchar_t **argv) {
 	(void)argv;
-	if (argc != 2) {
-		fprintf(stderr, "usage: fm24ctl install\n");
+#if EDITION_ENGINE_PLUGIN
+	bool logOnly = argc == 3 && wcscmp(argv[2], L"--log-only") == 0;
+	if (argc != 2 && !logOnly) {
+		fprintf(stderr, "usage: " EDITION_CLI " install [--log-only]\n");
 		return 2;
 	}
+#else
+	if (argc != 2) {
+		fprintf(stderr, "usage: " EDITION_CLI " install\n");
+		return 2;
+	}
+#endif
 	char launcher[PATH_LENGTH];
 	if (!macosGame_installHarness(true, launcher, sizeof launcher)) {
 		return 1;
 	}
+#if EDITION_ENGINE_PLUGIN
+	if (logOnly && !setLogOnly(launcher)) {
+		return 1;
+	}
+#endif
 	char app[PATH_LENGTH];
 	if (macosGame_findInstalled(app, sizeof app)) {
-		printf("Football Manager 2024: %s\n", app);
+		printf(EDITION_GAME ": %s\n", app);
 	} else {
-		printf("Football Manager 2024 was not found in your Steam libraries\n");
+		printf(EDITION_GAME " was not found in your Steam libraries\n");
 		describeMissingGame();
 	}
 	char option[PATH_LENGTH];
 	char data[PATH_LENGTH];
 	if (launchOptionSet(launcher)) {
 		printf(
-			"\nSteam's launch option for Football Manager 2024 already uses this launcher: start the "
+			"\nSteam's launch option for " EDITION_GAME " already uses this launcher: start the "
 			"game "
 			"from Steam as usual.\n"
 		);
 		if (readLaunchOption(option, sizeof option) &&
 				optionDataFolder(option, data, sizeof data) == OPTION_DATA_UNCLEAR) {
 			printf(
-				"It sets FM24's data folder (user_data_location) in a way fm24ctl does not follow, which "
-				"stops `fm24ctl launch --save` and the commands that start the game for a fixture's save: "
+				"It sets " EDITION_PRODUCT "'s data folder (user_data_location) in a way " EDITION_CLI
+				" does not follow, which "
+				"stops `" EDITION_CLI
+				" launch --save` and the commands that start the game for a fixture's save: "
 				"write it as --user_data_location=<absolute folder>.\n"
 			);
 		}
@@ -232,7 +269,8 @@ int macosGame_install(int argc, wchar_t **argv) {
 		describeLaunchOption(launcher, true);
 	}
 	printf(
-		"\nRun `fm24ctl install` again after updating fm24ctl: it updates the harness and the "
+		"\nRun `" EDITION_CLI " install` again after updating " EDITION_CLI
+		": it updates the harness and the "
 		"launcher.\n"
 	);
 	return 0;
@@ -243,7 +281,7 @@ int macosGame_launch(int argc, wchar_t **argv) {
 	if (!parseLaunchArguments(argc, argv, onAppleSilicon(), &options)) {
 		fprintf(
 			stderr,
-			"usage: fm24ctl launch [--save <name|path.fm>] [--timeout <s>] [--user-data <dir>] "
+			"usage: " EDITION_CLI " launch [--save <name|path.fm>] [--timeout <s>] [--user-data <dir>] "
 			"[--rosetta] [path to fm.app]\n"
 		);
 		return 2;
@@ -336,12 +374,12 @@ static bool parseTimeout(const wchar_t *text, unsigned *seconds) {
 }
 
 // `launch` with the game already running as `pid`: it must have this harness, and with --save it
-// must have that save loaded, which fm24ctl waits for while the game is busy.
+// must have that save loaded, which fmNNctl waits for while the game is busy.
 static int useRunningGame(pid_t pid, const LaunchOptions *options, SaveTarget *target) {
 	if (!harnessListening()) {
 		fprintf(
 			stderr,
-			"Football Manager 2024 (pid %d) is already running without harness %s; quit it first\n",
+			EDITION_GAME " (pid %d) is already running without harness %s; quit it first\n",
 			(int)pid,
 			HARNESS_PROTOCOL_TEXT
 		);
@@ -354,7 +392,7 @@ static int useRunningGame(pid_t pid, const LaunchOptions *options, SaveTarget *t
 		return saveExitCode(waitForSave(pid, target, options, false, false), options->job);
 	}
 	printf(
-		"Football Manager 2024 (pid %d) is already running with the harness%s\n",
+		EDITION_GAME " (pid %d) is already running with the harness%s\n",
 		(int)pid,
 		options->rosetta ? ", under Rosetta" : ""
 	);
@@ -371,7 +409,7 @@ static bool underRosetta(pid_t pid) {
 }
 
 // False (with a message) if --rosetta asks for the x86_64 slice and game `pid` does not run under
-// Rosetta: a game that was already running, which fm24ctl never restarts, or one it has just
+// Rosetta: a game that was already running, which fmNNctl never restarts, or one it has just
 // `started`, `throughSteam` or directly.
 static bool
 runsAskedSlice(pid_t pid, const LaunchOptions *options, bool started, bool throughSteam) {
@@ -381,16 +419,16 @@ runsAskedSlice(pid_t pid, const LaunchOptions *options, bool started, bool throu
 	if (!started) {
 		fprintf(
 			stderr,
-			"Football Manager 2024 (pid %d) is already running natively, not under Rosetta; fm24ctl "
-			"will not restart a running game. Quit it, then run this again.\n",
+			EDITION_GAME " (pid %d) is already running natively, not under Rosetta; " EDITION_CLI " "
+									 "will not restart a running game. Quit it, then run this again.\n",
 			(int)pid
 		);
 		return false;
 	}
 	fprintf(
 		stderr,
-		"Football Manager 2024 (pid %d) started natively, not under Rosetta: %s. Quit it, then run "
-		"this again.\n",
+		EDITION_GAME " (pid %d) started natively, not under Rosetta: %s. Quit it, then run "
+								 "this again.\n",
 		(int)pid,
 		throughSteam ? "the launcher did not take the request; Steam must start the game within "
 									 "five minutes, through the launcher in its launch option"
@@ -400,9 +438,9 @@ runsAskedSlice(pid_t pid, const LaunchOptions *options, bool started, bool throu
 }
 
 // Starts the game to load `target`, waits until it has, and removes the auto-play files it leaves.
-// Through Steam the launcher takes the request while this fm24ctl waits for it (see
-// writeLauncher); a direct start passes the file itself. Either is named after fm24ctl's process,
-// so removeStaleAutoplay also clears it once fm24ctl has exited (a direct start's once no game
+// Through Steam the launcher takes the request while this fmNNctl waits for it (see
+// writeLauncher); a direct start passes the file itself. Either is named after fmNNctl's process,
+// so removeStaleAutoplay also clears it once fmNNctl has exited (a direct start's once no game
 // runs either). startGame handles --rosetta's.
 static int launchWithSave(
 	const char *launcher,
@@ -439,6 +477,11 @@ static int ensureSave(const SessionNeed *need, pid_t pid, char *date, size_t siz
 	if (date && size) {
 		date[0] = 0;
 	}
+#if EDITION_ENGINE_PLUGIN
+	if (need->unrecorded) {
+		return ensureLoaded(need, pid, date, size);
+	}
+#endif
 	SessionPlan plan = session_plan(need, pid != 0, pid && harnessListening());
 	if (plan == SESSION_PLAN_SUBMIT) {
 		if (!pid && !need->launch && need->save && need->save[0]) {
@@ -462,6 +505,35 @@ static int ensureSave(const SessionNeed *need, pid_t pid, char *date, size_t siz
 	return status;
 }
 
+#if EDITION_ENGINE_PLUGIN
+// ensureSave for a job whose fixture does not record its save: game `pid` must have a save loaded
+// and idle, whichever it is, which fmNNctl waits for as it does for a save asked for (waitForSave).
+// It cannot start the game with a save it does not know, so it stops if no game is running; a game
+// without this harness gets the job as before, which explains.
+static int ensureLoaded(const SessionNeed *need, pid_t pid, char *date, size_t size) {
+	if (!pid) {
+		fprintf(
+			stderr,
+			EDITION_GAME " is not running: start it with the harness, load the fixture's save and leave "
+									 "the game idle, then run this again. " EDITION_PRODUCT
+									 " exports do not record their save, so " EDITION_CLI
+									 " cannot start the game with it.\n"
+		);
+		return 1;
+	}
+	if (!harnessListening()) {
+		return 0;
+	}
+	LaunchOptions options = {.timeoutS = SAVE_TIMEOUT_S, .job = need};
+	SaveTarget target = {.name = "the fixture's save"};
+	SessionOutcome outcome = waitForSave(pid, &target, &options, false, false);
+	if (outcome == SESSION_READY && date) {
+		(void)snprintf(date, size, "%s", target.date);
+	}
+	return saveExitCode(outcome, need);
+}
+#endif
+
 // Starts the game, which is not running, with the save a command's job is for.
 static int launchForJob(const LaunchOptions *options, SaveTarget *target) {
 	char launcher[PATH_LENGTH];
@@ -473,7 +545,7 @@ static int launchForJob(const LaunchOptions *options, SaveTarget *target) {
 		return 1;
 	}
 	printf(
-		"Football Manager 2024 is not running; starting it to load %s (--no-launch turns this off)\n",
+		EDITION_GAME " is not running; starting it to load %s (--no-launch turns this off)\n",
 		target->name
 	);
 	return launchWithSave(launcher, throughSteam, options, target);
@@ -481,9 +553,9 @@ static int launchForJob(const LaunchOptions *options, SaveTarget *target) {
 
 // Starts the game through Steam, or directly with `autoplay` (if given) as its auto-play file, and
 // waits for the harness (see waitForHarness). With --rosetta a direct start opens the x86_64 slice;
-// through Steam fm24ctl leaves a request for it next to the launcher, named after its own process,
+// through Steam fmNNctl leaves a request for it next to the launcher, named after its own process,
 // which the launcher takes as it takes a save's (see writeLauncher) and which goes once the wait is
-// over (or, if fm24ctl is interrupted, through removeStaleAutoplay).
+// over (or, if fmNNctl is interrupted, through removeStaleAutoplay).
 static int startGame(
 	const char *launcher,
 	bool throughSteam,
@@ -531,10 +603,10 @@ static bool writeRosettaRequest(const char *launcher, char *path, size_t size) {
 // Steam's launch option runs the launcher, which loads the harness.
 static bool startThroughSteam(bool rosetta) {
 	printf(
-		"starting Football Manager 2024 through Steam (its launch option loads the harness%s)\n",
+		"starting " EDITION_GAME " through Steam (its launch option loads the harness%s)\n",
 		rosetta ? " and starts the x86_64 slice under Rosetta" : ""
 	);
-	char *const arguments[] = {"/usr/bin/open", "steam://rungameid/2252570", NULL};
+	char *const arguments[] = {"/usr/bin/open", "steam://rungameid/" EDITION_STEAM_APP_ID, NULL};
 	return runProgram(arguments);
 }
 
@@ -546,11 +618,11 @@ startDirectly(const wchar_t *given, const char *launcher, const char *autoplay, 
 	char path[PATH_LENGTH];
 	if (given) {
 		if (!paths_toUtf8(given, path, sizeof path) || !macosGame_bundle(path, app, sizeof app)) {
-			fprintf(stderr, "%ls is not Football Manager 2024's fm.app\n", given);
+			fprintf(stderr, "%ls is not " EDITION_GAME "'s fm.app\n", given);
 			return false;
 		}
 	} else if (!macosGame_findInstalled(app, sizeof app)) {
-		fprintf(stderr, "cannot find Football Manager 2024; pass the path to its fm.app\n");
+		fprintf(stderr, "cannot find " EDITION_GAME "; pass the path to its fm.app\n");
 		return false;
 	}
 	char inserted[PATH_LENGTH + 32];
@@ -559,7 +631,7 @@ startDirectly(const wchar_t *given, const char *launcher, const char *autoplay, 
 	int written = snprintf(
 		inserted,
 		sizeof inserted,
-		"DYLD_INSERT_LIBRARIES=%.*s/fm24-harness-%s.dylib",
+		"DYLD_INSERT_LIBRARIES=%.*s/" EDITION_HARNESS "-%s.dylib",
 		directory,
 		launcher,
 		HARNESS_PROTOCOL_TEXT
@@ -575,10 +647,11 @@ startDirectly(const wchar_t *given, const char *launcher, const char *autoplay, 
 		return false;
 	}
 	printf(
-		"%s, which has not been verified: the game crashed in its one attempt (`fm24ctl install` says "
+		"%s, which has not been verified: the game crashed in its one attempt (`" EDITION_CLI
+		" install` says "
 		"how to set Steam's launch option)\n",
 		given ? "Opening the given fm.app directly, without Steam's launch option"
-					: "Steam's launch option for Football Manager 2024 is not set, or Steam has not saved it "
+					: "Steam's launch option for " EDITION_GAME " is not set, or Steam has not saved it "
 						"yet: opening fm.app directly"
 	);
 	printf("starting %s with the harness%s\n", app, rosetta ? ", x86_64 under Rosetta" : "");
@@ -591,9 +664,9 @@ startDirectly(const wchar_t *given, const char *launcher, const char *autoplay, 
 		"--env",
 		inserted,
 		"--env",
-		"SteamAppId=2252570",
+		"SteamAppId=" EDITION_STEAM_APP_ID,
 		"--env",
-		"SteamGameId=2252570",
+		"SteamGameId=" EDITION_STEAM_APP_ID,
 	};
 	size_t count = 8;
 	if (rosetta) {
@@ -684,18 +757,19 @@ static int launchExitCode(
 				return 1;
 			}
 			printf(
-				"the harness is ready in Football Manager 2024 (pid %d%s)%s\n",
+				"the harness is ready in " EDITION_GAME " (pid %d%s)%s\n",
 				(int)watch->readyPid,
 				options->rosetta ? ", under Rosetta" : "",
 				options->save ? ""
-											: ". Load your save and leave the game idle before running fm24ctl commands."
+											: ". Load your save and leave the game idle before running " EDITION_CLI
+												" commands."
 			);
 			return 0;
 		case LAUNCH_EXITED:
 			fprintf(
 				stderr,
-				"Football Manager 2024 exited %s.%s See harness.log next to the dylib, and any crash "
-				"report in ~/Library/Logs/DiagnosticReports.\n",
+				EDITION_GAME " exited %s.%s See harness.log next to the dylib, and any crash "
+										 "report in ~/Library/Logs/DiagnosticReports.\n",
 				watch->wasReady ? "soon after loading the harness" : "before the harness started",
 				throughSteam ? "" : " If Steam was not running, start it first."
 			);
@@ -703,7 +777,7 @@ static int launchExitCode(
 		case LAUNCH_NEVER_STARTED:
 			fprintf(
 				stderr,
-				"Football Manager 2024 did not start within %d minutes%s\n",
+				EDITION_GAME " did not start within %d minutes%s\n",
 				START_TIMEOUT_S / 60,
 				throughSteam ? "; check Steam for an update or an error" : ""
 			);
@@ -713,7 +787,7 @@ static int launchExitCode(
 }
 
 // Waits until the started game serves this protocol's socket, and writes its process ID to `pid`.
-// Returns the exit code (see launchExitCode). fm24ctl waits for --save's save next.
+// Returns the exit code (see launchExitCode). fmNNctl waits for --save's save next.
 static int
 waitForHarness(const char *launcher, bool throughSteam, const LaunchOptions *options, pid_t *pid) {
 	printf(
@@ -740,8 +814,8 @@ waitForHarness(const char *launcher, bool throughSteam, const LaunchOptions *opt
 static void reportNoHarness(const char *launcher, bool throughSteam) {
 	fprintf(
 		stderr,
-		"Football Manager 2024 is running without the harness%s. Quit it first: the harness loads only "
-		"when the game starts. See harness.log next to the dylib if the harness loaded.\n",
+		EDITION_GAME " is running without the harness%s. Quit it first: the harness loads only "
+								 "when the game starts. See harness.log next to the dylib if the harness loaded.\n",
 		throughSteam ? ": Steam did not start it through the launch option"
 								 : ": Steam may have restarted it"
 	);
@@ -750,8 +824,9 @@ static void reportNoHarness(const char *launcher, bool throughSteam) {
 		// option.
 		char app[PATH_LENGTH];
 		printf(
-			"\nSteam's launch option for Football Manager 2024 should be:\n  /bin/sh \"%s\" %%command%%\n"
-			"Or start the game with the harness without it, which has not been verified: fm24ctl launch "
+			"\nSteam's launch option for " EDITION_GAME " should be:\n  /bin/sh \"%s\" %%command%%\n"
+			"Or start the game with the harness without it, which has not been verified: " EDITION_CLI
+			" launch "
 			"\"%s\"\n",
 			launcher,
 			macosGame_findInstalled(app, sizeof app) ? app : "<path to fm.app>"
@@ -761,7 +836,7 @@ static void reportNoHarness(const char *launcher, bool throughSteam) {
 	}
 }
 
-// The save --save names: its .fm file, or a save's name, looked up in FM24's save folders if
+// The save --save names: its .fm file, or a save's name, looked up in the game's save folders if
 // `lookUp` (a running game's save is only compared by name). `throughSteam` if Steam starts the
 // game, whose launch option may give it another data folder.
 static bool
@@ -810,9 +885,9 @@ findSave(const LaunchOptions *options, bool throughSteam, bool lookUp, SaveTarge
 				data,
 				saves_folderName(SAVES_LOCAL),
 				given,
-				options->job
-					? "load the one you mean with fm24ctl launch --save <path>, then run this again"
-					: "pass the path of the one to load"
+				options->job ? "load the one you mean with " EDITION_CLI
+											 " launch --save <path>, then run this again"
+										 : "pass the path of the one to load"
 			);
 			return false;
 		default: break;
@@ -825,10 +900,10 @@ findSave(const LaunchOptions *options, bool throughSteam, bool lookUp, SaveTarge
 // a save folder could be read; `forJob` for a command's job, which has no --user-data.
 static void
 reportMissingSave(const SaveSearch *search, const char *data, bool listed, bool forJob) {
-	const char *unread = forJob
-												 ? " (neither folder exists or can be read)"
-												 : " (neither folder exists or can be read: pass FM24's data folder with "
-													 "--user-data)";
+	const char *unread = forJob ? " (neither folder exists or can be read)"
+															: " (neither folder exists or can be read: pass " EDITION_PRODUCT
+																"'s data folder with "
+																"--user-data)";
 	fprintf(
 		stderr,
 		"no save named %s in %s/%s or %s/%s%s\n",
@@ -848,8 +923,8 @@ reportMissingSave(const SaveSearch *search, const char *data, bool listed, bool 
 	}
 }
 
-// --save's .fm file, which must exist, and must not share its name with another save in FM24's
-// save folders: fm24ctl tells saves apart by name.
+// --save's .fm file, which must exist, and must not share its name with another save in the game's
+// save folders: fmNNctl tells saves apart by name.
 static bool findSaveFile(const LaunchOptions *options, bool throughSteam, SaveTarget *target) {
 	wchar_t absolute[HARNESS_PATH_LENGTH];
 	if (!paths_absolute(options->save, absolute, HARNESS_PATH_LENGTH) ||
@@ -877,7 +952,7 @@ static bool findSaveFile(const LaunchOptions *options, bool throughSteam, SaveTa
 }
 
 // False (with a message) if a save in `data`'s save folders has `target`'s name but is not its
-// file, `file`. One of FM24's own saves passes.
+// file, `file`. One of the game's own saves passes.
 static bool uniquelyNamed(const char *data, const SaveTarget *target, const struct stat *file) {
 	SaveSearch search;
 	saves_startSearch(&search, target->name);
@@ -900,7 +975,8 @@ static bool uniquelyNamed(const char *data, const SaveTarget *target, const stru
 	if (other[0]) {
 		fprintf(
 			stderr,
-			"%s has the name of the save %s, and fm24ctl tells saves apart by name: give the copy a "
+			"%s has the name of the save %s, and " EDITION_CLI
+			" tells saves apart by name: give the copy a "
 			"name of its own\n",
 			target->path,
 			other
@@ -910,7 +986,7 @@ static bool uniquelyNamed(const char *data, const SaveTarget *target, const stru
 	return true;
 }
 
-// FM24's data folder: --user-data, else the one Steam's launch option gives the game if Steam
+// The game's data folder: --user-data, else the one Steam's launch option gives the game if Steam
 // starts it (`throughSteam`), else the usual one in the home folder.
 static bool dataFolder(const LaunchOptions *options, bool throughSteam, char *out, size_t size) {
 	wchar_t absolute[HARNESS_PATH_LENGTH];
@@ -932,18 +1008,20 @@ static bool dataFolder(const LaunchOptions *options, bool throughSteam, char *ou
 	if (given == OPTION_DATA_UNCLEAR) {
 		fprintf(
 			stderr,
-			"Steam's launch option for FM24 sets its data folder (user_data_location) in a way fm24ctl "
+			"Steam's launch option for " EDITION_PRODUCT
+			" sets its data folder (user_data_location) in a way " EDITION_CLI " "
 			"does not follow; %s\n",
-			options->job ? "load the save with fm24ctl launch --save <name> --user-data <dir>, then run "
+			options->job ? "load the save with " EDITION_CLI
+										 " launch --save <name> --user-data <dir>, then run "
 										 "this again"
 									 : "pass the folder with --user-data"
 		);
 		return false;
 	}
-	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fm24ctl has one thread
+	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fmNNctl has one thread
 	int written = home ? snprintf(out, size, "%s/%s", home, dataFolderPath) : -1;
 	if (written <= 0 || (size_t)written >= size) {
-		fprintf(stderr, "cannot find FM24's data folder; pass it with --user-data\n");
+		fprintf(stderr, "cannot find " EDITION_PRODUCT "'s data folder; pass it with --user-data\n");
 		return false;
 	}
 	return true;
@@ -977,13 +1055,61 @@ static bool listSaves(const char *data, SavesFolder folder, SaveSearch *search) 
 }
 
 // The folder `launcher` is in.
+#if EDITION_ENGINE_PLUGIN
+// The file that puts the harness in log-only mode, next to it (protocol.h).
+static bool logOnlyPath(const char *directory, char *out, size_t size) {
+	int written = snprintf(out, size, "%s/" HARNESS_LOG_ONLY_FILE, directory);
+	return written > 0 && (size_t)written < size;
+}
+
+// `install --log-only`: the harness the game loads next only logs how the game loads and unloads
+// its engine, for a first check of a game build. Every other install undoes it (clearLogOnly).
+static bool setLogOnly(const char *launcher) {
+	char directory[PATH_LENGTH];
+	char path[PATH_LENGTH + sizeof HARNESS_LOG_ONLY_FILE];
+	FILE *file = launcherFolder(launcher, directory, sizeof directory) &&
+									 logOnlyPath(directory, path, sizeof path)
+								 ? fopen(path, "wb")
+								 : NULL;
+	bool ok = file && fputs("Written by `" EDITION_CLI " install --log-only`.\n", file) >= 0;
+	if (!file || fclose(file) != 0 || !ok) {
+		fprintf(stderr, "cannot write the log-only setting next to the harness\n");
+		return false;
+	}
+	printf(
+		"log-only mode: the harness only logs to %s/harness.log how " EDITION_GAME " loads and "
+		"unloads its match engine, and serves no jobs. `" EDITION_CLI " install` without --log-only "
+		"turns this off, as does any " EDITION_CLI " command that installs the harness.\n",
+		directory
+	);
+	return true;
+}
+
+static bool clearLogOnly(const char *directory) {
+	char path[PATH_LENGTH + sizeof HARNESS_LOG_ONLY_FILE];
+	if (!logOnlyPath(directory, path, sizeof path)) {
+		return false;
+	}
+	if (unlink(path) != 0 && errno != ENOENT) {
+		fprintf(
+			stderr,
+			"cannot remove %s (%s), which keeps the harness from serving jobs\n",
+			path,
+			platform_errorText(errno).text
+		);
+		return false;
+	}
+	return true;
+}
+#endif
+
 static bool launcherFolder(const char *launcher, char *out, size_t size) {
 	const char *slash = strrchr(launcher, '/');
 	int written = snprintf(out, size, "%.*s", slash ? (int)(slash - launcher) : 0, launcher);
 	return written > 0 && (size_t)written < size;
 }
 
-// The auto-play file fm24ctl writes in `folder` to load a save, named after its own process: the
+// The auto-play file fmNNctl writes in `folder` to load a save, named after its own process: the
 // request the launcher takes through Steam, or the file a direct start passes.
 static bool autoplayPath(const char *folder, bool throughSteam, char *out, size_t size) {
 	const char *prefix = throughSteam ? autoplayRequestPrefix : autoplayPrefix;
@@ -1034,9 +1160,9 @@ static void removeAutoplay(
 }
 
 // Deletes the auto-play and Rosetta files in `directory` that no running process needs: requests
-// (autoplay-request-<pid>.json, rosetta-request-<pid>) of an fm24ctl that has exited, and other
-// files (autoplay-<pid>.json, rosetta-<pid>) of a game, launcher or fm24ctl that has. While a game
-// runs (`gameRunning`), auto-play files stay: an fm24ctl that started the game directly may have
+// (autoplay-request-<pid>.json, rosetta-request-<pid>) of an fmNNctl that has exited, and other
+// files (autoplay-<pid>.json, rosetta-<pid>) of a game, launcher or fmNNctl that has. While a game
+// runs (`gameRunning`), auto-play files stay: an fmNNctl that started the game directly may have
 // been ended (the viewer's Cancel) before the game read its file at the start screen.
 static void removeStaleAutoplay(const char *directory, bool gameRunning) {
 	// Each prefix comes before the shorter one it starts with.
@@ -1090,7 +1216,7 @@ static void pollGame(void *context, SessionSample *sample) {
 }
 
 // Waits until game `pid` has `target` loaded and idle, for at most `options->timeoutS`, and says
-// how it went; once it has, `target->date` is the save's in-game date. `launched` if fm24ctl has
+// how it went; once it has, `target->date` is the save's in-game date. `launched` if fmNNctl has
 // just started it to load the save, `throughSteam` or directly.
 static SessionOutcome waitForSave(
 	pid_t pid,
@@ -1107,12 +1233,40 @@ static SessionOutcome waitForSave(
 		printf("waiting for it to load %s (at most %u s)...\n", target->name, options->timeoutS);
 	}
 	SessionOutcome outcome = session_waitReady(&wait, pollGame, &game);
+#if EDITION_ENGINE_PLUGIN
+	if (outcome == SESSION_NO_AUTOPLAY || outcome == SESSION_NOT_LOADED) {
+		reportLoadByHand(outcome, &wait, target);
+		wait.byHand = true;
+		outcome = session_waitReady(&wait, pollGame, &game);
+	}
+#endif
 	if (outcome == SESSION_READY) {
 		(void)snprintf(target->date, sizeof target->date, "%s", wait.last.date);
 	}
 	reportSave(outcome, &wait, pid, target, options->job, throughSteam);
 	return outcome;
 }
+
+#if EDITION_ENGINE_PLUGIN
+// The game fmNNctl started reached its menu without loading `target`, after `outcome`: from now on
+// fmNNctl waits for it to be loaded by hand, as the game's command line may not reach its engine
+// (which only the game's own code passes it on to).
+static void
+reportLoadByHand(SessionOutcome outcome, const SessionWait *wait, const SaveTarget *target) {
+	time_t left = (time_t)wait->timeoutS - (time(NULL) - wait->started);
+	printf(
+		EDITION_PRODUCT " reached its menu without loading %s: %s. Load it in " EDITION_PRODUCT
+										" yourself (%s), and leave the game idle; " EDITION_CLI
+										" waits until it is loaded, for at most %lld s more, then goes on.\n",
+		target->name,
+		outcome == SESSION_NO_AUTOPLAY
+			? "it did not read the auto-play file, so its command line may not reach its match engine"
+			: "it read the auto-play file, but did not load the save",
+		target->path[0] ? target->path : target->name,
+		(long long)(left > 0 ? left : 0)
+	);
+}
+#endif
 
 // What the wait came to, for `launch` or before a command's `job`.
 static void reportSave(
@@ -1124,12 +1278,17 @@ static void reportSave(
 	bool throughSteam
 ) {
 	const GameStatus *last = &wait->last;
+#if EDITION_ENGINE_PLUGIN
+	if (reportUnrecorded(outcome, pid, job)) {
+		return;
+	}
+#endif
 	switch (outcome) {
 		case SESSION_READY:
 			if (!last->save[0]) {
 				fprintf(
 					stderr,
-					"the harness cannot read which save FM24 has loaded; taking it to be %s\n",
+					"the harness cannot read which save " EDITION_PRODUCT " has loaded; taking it to be %s\n",
 					target->name
 				);
 			}
@@ -1149,7 +1308,9 @@ static void reportSave(
 		case SESSION_AT_MENU:
 			fprintf(
 				stderr,
-				"FM24 (pid %d) is at its start screen with no save loaded: load %s in FM24, or quit FM24 "
+				EDITION_PRODUCT
+				" (pid %d) is at its start screen with no save loaded: load %s in " EDITION_PRODUCT
+				", or quit " EDITION_PRODUCT " "
 				"and run this again.\n",
 				(int)pid,
 				target->name
@@ -1158,34 +1319,35 @@ static void reportSave(
 		case SESSION_NO_AUTOPLAY:
 			fprintf(
 				stderr,
-				"FM24 reached its start screen without the auto-play file, so %s was not loaded. %s\n",
+				EDITION_PRODUCT
+				" reached its start screen without the auto-play file, so %s was not loaded. %s\n",
 				target->name,
 				throughSteam ? "Steam must start the game within five minutes, through the launcher in its "
-											 "launch option (see `fm24ctl install`)."
+											 "launch option (see `" EDITION_CLI " install`)."
 										 : "The game may have restarted through Steam, which drops its arguments; set "
-											 "Steam's launch option (see `fm24ctl install`) and run this again."
+											 "Steam's launch option (see `" EDITION_CLI " install`) and run this again."
 			);
 			break;
 		case SESSION_NOT_LOADED:
 			fprintf(
 				stderr,
-				"FM24 read the auto-play file but did not load %s; check the game window and "
-				"harness.log.\n",
+				EDITION_PRODUCT " read the auto-play file but did not load %s; check the game window and "
+												"harness.log.\n",
 				target->name
 			);
 			break;
 		case SESSION_NO_TEAM:
 			fprintf(
 				stderr,
-				"FM24 has %s loaded, but the harness finds no human manager's team.\n",
+				EDITION_PRODUCT " has %s loaded, but the harness finds no human manager's team.\n",
 				last->save[0] ? last->save : target->name
 			);
 			break;
 		case SESSION_EXITED:
 			fprintf(
 				stderr,
-				"Football Manager 2024 exited before %s was ready. See harness.log next to the dylib, and "
-				"any crash report in ~/Library/Logs/DiagnosticReports.\n",
+				EDITION_GAME " exited before %s was ready. See harness.log next to the dylib, and "
+										 "any crash report in ~/Library/Logs/DiagnosticReports.\n",
 				target->name
 			);
 			break;
@@ -1193,7 +1355,7 @@ static void reportSave(
 			fprintf(
 				stderr,
 				"%s%s after %u s, without %s ready. Check the game window%s.\n",
-				wait->answered ? "FM24 was still " : "the harness had not answered",
+				wait->answered ? EDITION_PRODUCT " was still " : "the harness had not answered",
 				wait->answered ? saves_phaseName(last->phase) : "",
 				wait->timeoutS,
 				target->name,
@@ -1203,12 +1365,35 @@ static void reportSave(
 		case SESSION_REFUSED:
 			// session_query printed the harness's answer.
 			if (job) {
-				fprintf(stderr, "cannot check which save FM24 has loaded; going ahead\n");
+				fprintf(stderr, "cannot check which save " EDITION_PRODUCT " has loaded; going ahead\n");
 			}
 			break;
 		default: break;
 	}
 }
+
+#if EDITION_ENGINE_PLUGIN
+// What reportSave says before a `job` for a fixture that does not record its save, where it differs
+// from what it says for a save asked for: true if it has said it. Any loaded save will do, and
+// fmNNctl does not start the game for one, so quitting it would not help.
+static bool reportUnrecorded(SessionOutcome outcome, pid_t pid, const SessionNeed *job) {
+	if (!job || !job->unrecorded) {
+		return false;
+	}
+	switch (outcome) {
+		case SESSION_OTHER_SAVE: return true;
+		case SESSION_AT_MENU:
+			fprintf(
+				stderr,
+				EDITION_PRODUCT " (pid %d) has no save loaded: load the fixture's save in " EDITION_PRODUCT
+												", leave the game idle, then run this again.\n",
+				(int)pid
+			);
+			return true;
+		default: return false;
+	}
+}
+#endif
 
 // Another save is loaded and idle: `launch` and a command stop, unless --any-save lets the
 // command's job use it.
@@ -1216,15 +1401,19 @@ static void
 reportOtherSave(const GameStatus *last, const SaveTarget *target, const SessionNeed *job) {
 	if (job && job->anySave) {
 		printf(
-			"FM24 has '%s' loaded, not '%s'; using it, as --any-save asks\n", last->save, target->name
+			EDITION_PRODUCT " has '%s' loaded, not '%s'; using it, as --any-save asks\n",
+			last->save,
+			target->name
 		);
 		return;
 	}
 	fprintf(
 		stderr,
-		"FM24 has '%s' loaded, not '%s'; fm24ctl will not switch saves in a running game (unsaved "
-		"progress). Quit FM24 (saving first only if you loaded that save yourself and have done no "
-		"harness work since), then run this again%s.\n",
+		EDITION_PRODUCT " has '%s' loaded, not '%s'; " EDITION_CLI
+										" will not switch saves in a running game (unsaved "
+										"progress). Quit " EDITION_PRODUCT
+										" (saving first only if you loaded that save yourself and have done no "
+										"harness work since), then run this again%s.\n",
 		last->save,
 		target->name,
 		job ? ", or pass --any-save to use the loaded save" : ""
@@ -1252,7 +1441,7 @@ bool macosGame_installHarness(bool verbose, char *launcher, size_t size) {
 			!embedded_dllPath(dylib, HARNESS_PATH_LENGTH)) {
 		return false;
 	}
-	// A development build's dylib next to fm24ctl takes precedence over the built-in one.
+	// A development build's dylib next to fmNNctl takes precedence over the built-in one.
 	wchar_t here[HARNESS_PATH_LENGTH];
 	wchar_t loose[HARNESS_PATH_LENGTH];
 	ByteBuffer bytes = {0};
@@ -1266,17 +1455,22 @@ bool macosGame_installHarness(bool verbose, char *launcher, size_t size) {
 		return false;
 	}
 	char name[64];
-	(void)snprintf(name, sizeof name, "fm24-harness-%s.dylib", HARNESS_PROTOCOL_TEXT);
+	(void)snprintf(name, sizeof name, EDITION_HARNESS "-%s.dylib", HARNESS_PROTOCOL_TEXT);
 	if (!writeLauncher(launcher, name)) {
 		return false;
 	}
+#if EDITION_ENGINE_PLUGIN
+	if (!clearLogOnly(directory)) {
+		return false;
+	}
+#endif
 	char running[PATH_LENGTH];
 	removeStaleAutoplay(directory, macosGame_findRunning(running, sizeof running) != 0);
 	if (verbose) {
 		printf(
 			"installed harness %s%s: %s/%s\nlauncher: %s\nlog: %s/harness.log\n",
 			HARNESS_PROTOCOL_TEXT,
-			fromBuild ? " (the development build next to fm24ctl)" : "",
+			fromBuild ? " (the development build next to " EDITION_CLI ")" : "",
 			directory,
 			name,
 			launcher,
@@ -1340,6 +1534,50 @@ bool macosGame_findInstalled(char *app, size_t size) {
 	return search.found || libraryApp(root, app, size);
 }
 
+#if EDITION_ENGINE_PLUGIN
+bool macosGame_bundle(const char *path, char *app, size_t size) {
+	size_t length = strlen(path);
+	while (length > 1 && path[length - 1] == '/') {
+		--length;
+	}
+	char given[PATH_LENGTH];
+	char executable[PATH_LENGTH];
+	int written = snprintf(given, sizeof given, "%.*s", (int)length, path);
+	if (written <= 0 || (size_t)written >= sizeof given) {
+		return false;
+	}
+	if (macosGame_appExecutable(given, executable, sizeof executable)) {
+		written = snprintf(app, size, "%s", given);
+		return written > 0 && (size_t)written < size;
+	}
+	return bundleOf(given, app, size) && macosGame_isGameExecutable(given);
+}
+
+bool macosGame_isGameExecutable(const char *path) {
+	char app[PATH_LENGTH];
+	char executable[PATH_LENGTH];
+	return bundleOf(path, app, sizeof app) &&
+				 macosGame_appExecutable(app, executable, sizeof executable) &&
+				 strcmp(executable, path) == 0;
+}
+
+bool macosGame_appExecutable(const char *app, char *out, size_t size) {
+	return infoPlist_executable(app, bundleIdentifier, EDITION_GAME_EXECUTABLE, out, size);
+}
+
+// The bundle whose Contents/MacOS/ holds the file at `path`.
+static bool bundleOf(const char *path, char *out, size_t size) {
+	static const char folder[] = "/Contents/MacOS/";
+	const char *name = strrchr(path, '/');
+	size_t end = name ? (size_t)(name - path) + 1 : 0; // after <bundle>/Contents/MacOS/
+	if (end < sizeof folder || !name[1] ||
+			strncmp(path + end - (sizeof folder - 1), folder, sizeof folder - 1) != 0) {
+		return false;
+	}
+	int written = snprintf(out, size, "%.*s", (int)(end - (sizeof folder - 1)), path);
+	return written > 0 && (size_t)written < size;
+}
+#else
 bool macosGame_bundle(const char *path, char *app, size_t size) {
 	size_t length = strlen(path);
 	while (length > 1 && path[length - 1] == '/') {
@@ -1371,12 +1609,14 @@ bool macosGame_isGameExecutable(const char *path) {
 	buffer_free(&info);
 	return ok;
 }
+#endif
 
 static bool readFile(const char *path, ByteBuffer *out) {
 	wchar_t wide[HARNESS_PATH_LENGTH];
 	return platform_fromUtf8(path, wide, HARNESS_PATH_LENGTH) && files_read(wide, out);
 }
 
+#if !EDITION_ENGINE_PLUGIN
 static bool contains(const ByteBuffer *text, const char *needle) {
 	size_t length = strlen(needle);
 	for (size_t i = 0; i + length <= text->length; ++i) {
@@ -1386,9 +1626,10 @@ static bool contains(const ByteBuffer *text, const char *needle) {
 	}
 	return false;
 }
+#endif
 
 static bool steamRoot(char *out, size_t size) {
-	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fm24ctl has one thread
+	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fmNNctl has one thread
 	int written = home ? snprintf(out, size, "%s/Library/Application Support/Steam", home) : -1;
 	return written > 0 && (size_t)written < size;
 }
@@ -1511,7 +1752,7 @@ static bool visitTopLevel(void *context, const VdfPair *pair) {
 	return !lookup->found;
 }
 
-// The fm.app of app 2252570 in one Steam library folder, if it is installed there.
+// The game's fm.app in one Steam library folder, if it is installed there.
 static bool libraryApp(const char *library, char *app, size_t size) {
 	char manifest[PATH_LENGTH];
 	int written =
@@ -1524,9 +1765,14 @@ static bool libraryApp(const char *library, char *app, size_t size) {
 	}
 	char executable[PATH_LENGTH];
 	written = snprintf(app, size, "%s/steamapps/common/%s/fm.app", library, installDirectory);
+#if EDITION_ENGINE_PLUGIN
+	return written > 0 && (size_t)written < size &&
+				 macosGame_appExecutable(app, executable, sizeof executable);
+#else
 	int executableWritten = snprintf(executable, sizeof executable, "%s%s", app, executableSuffix);
 	return written > 0 && (size_t)written < size && executableWritten > 0 &&
 				 (size_t)executableWritten < sizeof executable && macosGame_isGameExecutable(executable);
+#endif
 }
 
 // The Steam account that signed in last, from loginusers.vdf ("users" > SteamID64 > "MostRecent"
@@ -1588,7 +1834,7 @@ static bool currentAccount(const char *root, char *out, size_t size) {
 	return written > 0 && (size_t)written < size;
 }
 
-// The launch option of app 2252570 ("apps" > "2252570" > "LaunchOptions").
+// The launch option of the game's Steam app ("apps" > its app ID > "LaunchOptions").
 static bool visitLaunchOption(void *context, const VdfPair *pair) {
 	VdfLookup *lookup = context;
 	if (pair->depth >= 2 && strcasecmp(pair->key, "LaunchOptions") == 0 &&
@@ -1601,7 +1847,7 @@ static bool visitLaunchOption(void *context, const VdfPair *pair) {
 	return true;
 }
 
-// The current Steam account's launch option for Football Manager 2024, if it has one.
+// The current Steam account's launch option for the game, if it has one.
 static bool readLaunchOption(char *option, size_t size) {
 	char root[PATH_LENGTH];
 	char account[64];
@@ -1616,7 +1862,7 @@ static bool readLaunchOption(char *option, size_t size) {
 				 vdfVisitFile(config, visitLaunchOption, &lookup) && lookup.found;
 }
 
-// True if the current Steam account gives Football Manager 2024 a launch option that runs
+// True if the current Steam account gives the game a launch option that runs
 // `launcher` with the game's command.
 static bool launchOptionSet(const char *launcher) {
 	char option[PATH_LENGTH];
@@ -1684,9 +1930,13 @@ static OptionData optionDataFolder(const char *option, char *out, size_t size) {
 
 // The script Steam's launch option runs: it starts the game (passed as fm.app or its executable,
 // with any arguments) with the harness, after any libraries Steam inserts itself (its overlay).
+#if EDITION_ENGINE_PLUGIN
+// It finds an app's executable in its Info.plist (with plutil, which reads it from macOS 12 on, as
+// the game needs 13), else takes the edition's name for it.
+#endif
 // `launch` leaves requests for the game it starts, named after its own process: a save to load
 // (autoplay-request-<pid>.json, --save) and the x86_64 slice (rosetta-request-<pid>, --rosetta).
-// The script takes each one under five minutes old whose fm24ctl is still running, and so still
+// The script takes each one under five minutes old whose fmNNctl is still running, and so still
 // waiting for it, once: it renames it after its own process ID, which the game keeps. It adds the
 // save's to the game's arguments as its auto-play file, and deletes the other. Any other request
 // changes nothing.
@@ -1696,22 +1946,39 @@ static OptionData optionDataFolder(const char *option, char *out, size_t size) {
 // The script asks for arm64 only where sysctl reports it, which it also does under Rosetta: arch
 // on an Intel Mac rejects the name. As a system binary, arch loses DYLD_* from its own environment
 // (as /bin/sh does), so -e hands the libraries on.
+#if EDITION_ENGINE_PLUGIN
+#define LAUNCHER_APP_EXECUTABLE                                                                    \
+	"# An app's executable is the one its Info.plist names.\n"                                       \
+	"case $game in\n"                                                                                \
+	"\t*.app | *.app/)\n"                                                                            \
+	"\t\tgame=${game%%/}\n"                                                                          \
+	"\t\texecutable=$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "                         \
+	"\"$game/Contents/Info.plist\" 2>/dev/null)\n"                                                   \
+	"\t\tgame=\"$game/Contents/MacOS/${executable:-" EDITION_GAME_EXECUTABLE "}\"\n"                 \
+	"\t\t;;\n"                                                                                       \
+	"esac\n"
+#else
+#define LAUNCHER_APP_EXECUTABLE                                                                    \
+	"case $game in\n"                                                                                \
+	"\t*.app | *.app/) game=\"${game%%/}/Contents/MacOS/" EDITION_GAME_EXECUTABLE "\" ;;\n"          \
+	"esac\n"
+#endif
+
 static bool writeLauncher(const char *path, const char *dylibName) {
 	char script[2 * PATH_LENGTH];
 	int written = snprintf(
 		script,
 		sizeof script,
 		"#!/bin/sh\n"
-		"# Written by fm24ctl install: starts Football Manager 2024 with the FM24 match-engine "
+		"# Written by " EDITION_CLI " install: starts " EDITION_GAME " with the " EDITION_PRODUCT
+		" match-engine "
 		"harness.\n"
 		"# Steam runs it through the game's launch option:  /bin/sh \"%s\" %%command%%\n"
 		"here=$(cd \"$(dirname \"$0\")\" && pwd)\n"
 		"game=$1\n"
-		"[ $# -gt 0 ] && shift\n"
-		"case $game in\n"
-		"\t*.app | *.app/) game=\"${game%%/}/Contents/MacOS/fm\" ;;\n"
-		"esac\n"
-		"# Takes a request ($1<pid>$2) left by an `fm24ctl launch` that is still waiting for it, if\n"
+		"[ $# -gt 0 ] && shift\n" LAUNCHER_APP_EXECUTABLE
+		"# Takes a request ($1<pid>$2) left by an `" EDITION_CLI
+		" launch` that is still waiting for it, if\n"
 		"# under five minutes old: renamed $3<this pid>$2, it is used once.\n"
 		"take() {\n"
 		"\tfor request in \"$here/$1\"*\"$2\"; do\n"
@@ -1788,8 +2055,9 @@ static void reportNotLaunched(const char *save) {
 			shellWord(save, word, sizeof word)) {
 		fprintf(
 			stderr,
-			"The job is for the save %s, and --no-launch keeps fm24ctl from starting FM24 with it: start "
-			"FM24 from Steam and load that save, or run `fm24ctl launch --save %s`, then run this "
+			"The job is for the save %s, and --no-launch keeps " EDITION_CLI
+			" from starting " EDITION_PRODUCT " with it: start " EDITION_PRODUCT
+			" from Steam and load that save, or run `" EDITION_CLI " launch --save %s`, then run this "
 			"again; or leave out --no-launch.\n",
 			save,
 			word
@@ -1797,8 +2065,10 @@ static void reportNotLaunched(const char *save) {
 	} else {
 		fprintf(
 			stderr,
-			"The job is for the save %s, and --no-launch keeps fm24ctl from starting FM24 with it: set "
-			"Steam's launch option for the harness (`fm24ctl install` says how), start FM24 from Steam "
+			"The job is for the save %s, and --no-launch keeps " EDITION_CLI
+			" from starting " EDITION_PRODUCT " with it: set "
+			"Steam's launch option for the harness (`" EDITION_CLI
+			" install` says how), start " EDITION_PRODUCT " from Steam "
 			"and load that save, then run this again.\n",
 			save
 		);
@@ -1837,13 +2107,15 @@ static bool shellWord(const char *text, char *out, size_t size) {
 
 // Where macosGame_installHarness writes the launcher, without installing anything.
 static bool launcherPath(char *out, size_t size) {
-	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fm24ctl has one thread
-	int written =
-		home && home[0] == '/'
-			? snprintf(
-					out, size, "%s/Library/Application Support/fm24-harness/%s", home, MACOS_GAME_LAUNCHER
-				)
-			: -1;
+	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fmNNctl has one thread
+	int written = home && home[0] == '/' ? snprintf(
+																					 out,
+																					 size,
+																					 "%s/Library/Application Support/" EDITION_HARNESS "/%s",
+																					 home,
+																					 MACOS_GAME_LAUNCHER
+																				 )
+																			 : -1;
 	return written > 0 && (size_t)written < size;
 }
 
@@ -1856,13 +2128,14 @@ static void describeMissingGame(void) {
 	}
 	if (stat(root, &status) != 0 || !S_ISDIR(status.st_mode)) {
 		printf(
-			"Steam is not in %s, where fm24ctl looks for it: install Steam and Football Manager 2024 "
-			"(24.4.2), then run `fm24ctl install` again.\n",
+			"Steam is not in %s, where " EDITION_CLI " looks for it: install Steam and " EDITION_GAME " "
+			"(" EDITION_GAME_VERSION "), then run `" EDITION_CLI " install` again.\n",
 			root
 		);
 	} else {
 		printf(
-			"Install Football Manager 2024 (24.4.2) in Steam, then run `fm24ctl install` again; fm24ctl "
+			"Install " EDITION_GAME " (" EDITION_GAME_VERSION ") in Steam, then run `" EDITION_CLI
+			" install` again; " EDITION_CLI " "
 			"looks in the Steam libraries that %s/steamapps/libraryfolders.vdf lists.\n",
 			root
 		);
@@ -1870,22 +2143,24 @@ static void describeMissingGame(void) {
 }
 
 // How to set Steam's launch option, after the account's current one if it has another; for
-// `install`, also how to check that Steam has saved it, and that `fm24ctl launch` starts the game
+// `install`, also how to check that Steam has saved it, and that `fmNNctl launch` starts the game
 // directly until then.
 static void describeLaunchOption(const char *launcher, bool forInstall) {
 	char current[PATH_LENGTH];
 	if (readLaunchOption(current, sizeof current) && current[0]) {
-		printf("\nSteam's launch option for Football Manager 2024 is now: %s\n", current);
+		printf("\nSteam's launch option for " EDITION_GAME " is now: %s\n", current);
 	}
 	printf(
-		"\nTo start Football Manager 2024 from Steam with the harness, set its launch option once:\n"
-		"  Steam > Library > Football Manager 2024 > Properties > General > Launch Options:\n"
+		"\nTo start " EDITION_GAME " from Steam with the harness, set its launch option once:\n"
+		"  Steam > Library > " EDITION_GAME " > Properties > General > Launch Options:\n"
 		"  /bin/sh \"%s\" %%command%%\n%s",
 		launcher,
 		forInstall
 			? "Keep any arguments of your own after %command%. Steam may save the option only when it "
-				"quits: run `fm24ctl install` again until it says that Steam's launch option uses this "
-				"launcher, quitting Steam if it does not. Until then, `fm24ctl launch` starts the game "
+				"quits: run `" EDITION_CLI
+				" install` again until it says that Steam's launch option uses this "
+				"launcher, quitting Steam if it does not. Until then, `" EDITION_CLI
+				" launch` starts the game "
 				"without the launch option, which has not been verified: the game crashed in its one "
 				"attempt.\n"
 			: ""

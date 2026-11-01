@@ -4,7 +4,7 @@
 import AppKit
 import Combine
 
-/// Tells a GameMonitor when FM24 starts or quits, from the system's notices of applications
+/// Tells a GameMonitor when FMNN starts or quits, from the system's notices of applications
 /// starting and quitting.
 @MainActor
 final class GameWatch {
@@ -24,7 +24,7 @@ final class GameWatch {
 			.store(in: &watchers)
 	}
 
-	/// Whether FM24 is running.
+	/// Whether FMNN is running.
 	nonisolated static func gameRunning() -> Bool {
 		NSWorkspace.shared.runningApplications.contains {
 			$0.bundleIdentifier == GameMonitor.bundleIdentifier

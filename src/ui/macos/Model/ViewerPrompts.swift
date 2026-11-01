@@ -10,7 +10,7 @@ protocol ViewerPrompts: AnyObject {
 	/// An error box, titled as the Windows viewer titles it.
 	func showError(_ message: String, title: String)
 	/// An error box for a job no harness of this protocol served, with OK (the default) and
-	/// `action` (Launch FM24… or Install Harness…); `completion` gets true for `action`.
+	/// `action` (Launch FMNN… or Install Harness…); `completion` gets true for `action`.
 	func offerLaunch(
 		_ message: String,
 		title: String,

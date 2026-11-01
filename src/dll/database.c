@@ -3,6 +3,7 @@
 
 #include "database.h"
 
+#include "edition.h"
 #include "game.h"
 #include "memory.h"
 #include "platform.h"
@@ -198,18 +199,35 @@ bool database_personName(const uint8_t *person, char *out, size_t size) {
 }
 
 void database_clubShortName(const uint8_t *team, char *out, size_t size) {
+#ifdef GAME_UNLOCATED_CLUB_NAME
+	(void)team;
+	(void)snprintf(out, size, "?");
+#else
 	uint8_t *club = NULL;
 	uint8_t *string = NULL;
 	if (!memory_readPointer(team, TEAM_CLUB, &club) ||
 			!memory_readPointer(club, CLUB_NAME_SHORT, &string) || !readString(string, out, size)) {
 		(void)snprintf(out, size, "?");
 	}
+#endif
 }
 
 bool database_findTeam(const char *spec, uint8_t **team, char *error, size_t errorSize) {
 	*team = NULL;
 	TeamSearch search = {.name = spec};
 	search.byId = parseUniqueId(spec, &search.uniqueId);
+#ifdef GAME_UNLOCATED_CLUB_NAME
+	if (!search.byId) {
+		(void)snprintf(
+			error,
+			errorSize,
+			"the " EDITION_PRODUCT
+			" harness cannot look teams up by club name yet: give the team's unique "
+			"ID (list-teams lists them)"
+		);
+		return false;
+	}
+#endif
 	memory_scanForQword((uintptr_t)game_address(RVA_TEAM_VTABLE), considerTeam, &search);
 	if (search.byId) {
 		*team = search.team;

@@ -3,6 +3,7 @@
 
 #include "config_writer.h"
 
+#include "edition.h"
 #include "game.h"
 #include "labels.h"
 #include "match.h"
@@ -291,10 +292,20 @@ static void writeHeader(
 	const uint8_t *bytes = serialised->bytes.data;
 	fprintf(
 		file,
-		"{\n  \"format\": \"fm24-match-config/1\",\n  \"game_build\": %u,\n",
+		"{\n  \"format\": \"" EDITION_MATCH_CONFIG_FORMAT "\",\n  \"game_build\": %u,\n",
 		(unsigned)game_timestamp()
 	);
+#if EDITION_ENGINE_PLUGIN
+	// The match block starts with the game's version, its most significant byte first, then the
+	// format version (match.c).
+	if (serialised->bytes.length >= 4) {
+		fprintf(
+			file, "  \"engine_version\": \"%u.%u.%u.%u\",\n", bytes[0], bytes[1], bytes[2], bytes[3]
+		);
+	}
+#else
 	fprintf(file, "  \"engine_version\": \"%u.%u.%u.%u\",\n", bytes[2], bytes[3], bytes[4], bytes[5]);
+#endif
 	fprintf(file, "  \"source\": ");
 	configWriter_writeString(file, source);
 	if (save && save[0]) {

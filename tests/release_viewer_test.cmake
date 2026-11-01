@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# macOS: installs the Viewer component as a release does and checks FM24Viewer.app. APP is the build
-# tree's bundle, DLL the stripped, signed dylib fm24ctl embeds, ARCHITECTURES (comma-separated) the
-# slices the viewer was built for, PROTOCOL the harness protocol version (src/common/protocol.h).
+# macOS: installs the Viewer component as a release does and checks the viewer's bundle. APP is the
+# build tree's bundle, DLL the stripped, signed dylib the CLI embeds, ARCHITECTURES (comma-
+# separated) the slices the viewer was built for, PROTOCOL the harness protocol version
+# (src/common/protocol.h), and IDENTIFIER, VIEWER_NAME, VIEWER_EXECUTABLE, PRODUCT, CLI and SECTION
+# the edition's names (edition.h).
 string(REPLACE "," ";" architectures "${ARCHITECTURES}")
+get_filename_component(app_name "${APP}" NAME)
 set(built "${APP}/Contents/MacOS")
-file(SHA256 "${built}/fm24viewer" viewer_before)
-file(SHA256 "${built}/fm24ctl" runner_before)
+file(SHA256 "${built}/${VIEWER_EXECUTABLE}" viewer_before)
+file(SHA256 "${built}/${CLI}" runner_before)
 
 set(prefix "${BUILD_DIR}/release-check-viewer")
 execute_process(
@@ -13,7 +16,7 @@ execute_process(
 		--component Viewer
 	COMMAND_ERROR_IS_FATAL ANY
 )
-set(app "${prefix}/FM24Viewer.app")
+set(app "${prefix}/${app_name}")
 set(installed "${app}/Contents/MacOS")
 
 # A valid ad-hoc signature over the whole bundle, with no entitlements.
@@ -21,9 +24,9 @@ execute_process(
 	COMMAND codesign --verify --deep --strict "${app}" RESULT_VARIABLE invalid ERROR_VARIABLE why
 )
 if(invalid)
-	message(FATAL_ERROR "FM24Viewer.app: the code signature is missing or invalid: ${why}")
+	message(FATAL_ERROR "${app_name}: the code signature is missing or invalid: ${why}")
 endif()
-foreach(code IN ITEMS "${app}" "${installed}/fm24ctl")
+foreach(code IN ITEMS "${app}" "${installed}/${CLI}")
 	execute_process(
 		COMMAND codesign -d --entitlements - "${code}"
 		OUTPUT_VARIABLE entitlements ERROR_QUIET COMMAND_ERROR_IS_FATAL ANY
@@ -34,14 +37,14 @@ foreach(code IN ITEMS "${app}" "${installed}/fm24ctl")
 	endif()
 endforeach()
 
-foreach(binary IN ITEMS fm24viewer fm24ctl)
+foreach(binary IN ITEMS ${VIEWER_EXECUTABLE} ${CLI})
 	set(path "${installed}/${binary}")
 	execute_process(COMMAND lipo -archs "${path}" OUTPUT_VARIABLE archs COMMAND_ERROR_IS_FATAL ANY)
 	string(STRIP "${archs}" archs)
 	string(REPLACE " " ";" archs "${archs}")
-	# fm24ctl is always universal; the viewer has the slices this toolchain could build.
+	# The CLI is always universal; the viewer has the slices this toolchain could build.
 	set(expected ${architectures})
-	if(binary STREQUAL "fm24ctl")
+	if(binary STREQUAL "${CLI}")
 		set(expected arm64 x86_64)
 		set(minimum "${RUNNER_MINIMUM}")
 	else()
@@ -89,8 +92,10 @@ set(plist "${app}/Contents/Info.plist")
 execute_process(COMMAND plutil -lint "${plist}" OUTPUT_QUIET COMMAND_ERROR_IS_FATAL ANY)
 foreach(check IN ITEMS
 	"CFBundleIdentifier=${IDENTIFIER}"
-	"CFBundleExecutable=fm24viewer"
-	"CFBundleDisplayName=FM24 Viewer"
+	"CFBundleExecutable=${VIEWER_EXECUTABLE}"
+	"CFBundleDisplayName=${VIEWER_NAME}"
+	"CFBundleName=${VIEWER_NAME}"
+	"CFBundleDocumentTypes.0.CFBundleTypeName=${PRODUCT} fixture"
 	"CFBundleShortVersionString=${PROTOCOL}"
 	"CFBundleVersion=${PROTOCOL}"
 	"LSMinimumSystemVersion=${VIEWER_MINIMUM}"
@@ -112,22 +117,22 @@ foreach(check IN ITEMS
 	endif()
 endforeach()
 
-# Each slice of the bundled fm24ctl carries the whole universal dylib.
+# Each slice of the bundled CLI carries the whole universal dylib.
 file(SIZE "${DLL}" dll_size)
 foreach(arch IN ITEMS x86_64 arm64)
 	execute_process(
-		COMMAND size -m -arch ${arch} "${installed}/fm24ctl"
+		COMMAND size -m -arch ${arch} "${installed}/${CLI}"
 		OUTPUT_VARIABLE sections
 		COMMAND_ERROR_IS_FATAL ANY
 	)
-	string(REGEX MATCH "Section __fm24_harness: ([0-9]+)" section_match "${sections}")
+	string(REGEX MATCH "Section ${SECTION}: ([0-9]+)" section_match "${sections}")
 	if(NOT section_match OR CMAKE_MATCH_1 LESS dll_size)
-		message(FATAL_ERROR "fm24ctl (${arch}) in FM24Viewer.app: the harness dylib is not embedded")
+		message(FATAL_ERROR "${CLI} (${arch}) in ${app_name}: the harness dylib is not embedded")
 	endif()
 endforeach()
 
-file(SHA256 "${built}/fm24viewer" viewer_after)
-file(SHA256 "${built}/fm24ctl" runner_after)
+file(SHA256 "${built}/${VIEWER_EXECUTABLE}" viewer_after)
+file(SHA256 "${built}/${CLI}" runner_after)
 if(NOT viewer_before STREQUAL viewer_after OR NOT runner_before STREQUAL runner_after)
 	message(FATAL_ERROR "Installing the stripped viewer modified the build outputs")
 endif()

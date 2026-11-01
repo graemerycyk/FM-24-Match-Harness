@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# macOS: DLL is the stripped, signed copy of the dylib fm24ctl embeds; the release installs only RUNNER.
+# macOS: DLL is the stripped, signed copy of the dylib the CLI embeds in its SECTION; the release
+# installs only RUNNER.
 file(SHA256 "${DLL}" dll_before)
 file(SHA256 "${RUNNER}" runner_before)
 
@@ -48,7 +49,7 @@ foreach(arch IN ITEMS x86_64 arm64)
 		OUTPUT_VARIABLE sections
 		COMMAND_ERROR_IS_FATAL ANY
 	)
-	string(REGEX MATCH "Section __fm24_harness: ([0-9]+)" section_match "${sections}")
+	string(REGEX MATCH "Section ${SECTION}: ([0-9]+)" section_match "${sections}")
 	if(NOT section_match OR CMAKE_MATCH_1 LESS dll_size)
 		message(FATAL_ERROR "${runner_name} (${arch}): the harness dylib is not embedded")
 	endif()

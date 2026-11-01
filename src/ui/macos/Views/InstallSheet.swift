@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import SwiftUI
 
-/// The Install Harness sheet: what `fm24ctl install` did, the Steam launch option that loads the
+/// The Install Harness sheet: what `fmNNctl install` did, the Steam launch option that loads the
 /// harness, in a field that can be selected, with Copy, the account's own option if it has another,
 /// whether Steam already has it, install's advice, and that the new harness loads the next time the
 /// game starts.
@@ -62,13 +63,13 @@ private struct InstalledReport: View {
 				.textSelection(.enabled)
 				.fixedSize(horizontal: false, vertical: true)
 			Text(
-				report.game.map { "Football Manager 2024: \(abbreviated($0))" }
-					?? "Football Manager 2024 was not found in your Steam libraries."
+				report.game.map { "\(EDITION_GAME): \(abbreviated($0))" }
+					?? "\(EDITION_GAME) was not found in your Steam libraries."
 			)
 			.foregroundColor(.secondary)
 			.textSelection(.enabled)
 			.fixedSize(horizontal: false, vertical: true)
-			Text("Steam launch option for Football Manager 2024:")
+			Text("Steam launch option for \(EDITION_GAME):")
 			HStack(alignment: .center, spacing: 8) {
 				Text(report.launchOption)
 					.font(.system(.body, design: .monospaced))
@@ -86,7 +87,7 @@ private struct InstalledReport: View {
 			}
 			if let current = report.currentOption, !report.optionSet {
 				Text(
-					"FM24's launch option in Steam is now: \(current)\nKeep any arguments of your own after "
+					"\(EDITION_PRODUCT)'s launch option in Steam is now: \(current)\nKeep any arguments of your own after "
 						+ "%command% when you set this one."
 				)
 				.textSelection(.enabled)
@@ -94,12 +95,12 @@ private struct InstalledReport: View {
 			}
 			Text(
 				report.optionSet
-					? "Steam's launch option for FM24 already uses this launcher: start the game from "
-						+ "Steam as usual, or with Launch FM24…."
-					: "Set it once in Steam: Library > Football Manager 2024 > Properties > General > "
+					? "Steam's launch option for \(EDITION_PRODUCT) already uses this launcher: start the game from "
+						+ "Steam as usual, or with Launch \(EDITION_PRODUCT)…."
+					: "Set it once in Steam: Library > \(EDITION_GAME) > Properties > General > "
 						+ "Launch Options. Steam may save it only when it quits: choose Install Harness… "
 						+ "again until it says that Steam has the option, quitting Steam if it does not. "
-						+ "Until then, Launch FM24… starts the game without the option, which has not "
+						+ "Until then, Launch \(EDITION_PRODUCT)… starts the game without the option, which has not "
 						+ "been verified: the game crashed in its one attempt."
 			)
 			.fixedSize(horizontal: false, vertical: true)
@@ -109,7 +110,7 @@ private struct InstalledReport: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 			Text(
-				"The new harness loads the next time FM24 starts; a game running now keeps the harness "
+				"The new harness loads the next time \(EDITION_PRODUCT) starts; a game running now keeps the harness "
 					+ "it loaded."
 			)
 			.foregroundColor(.secondary)

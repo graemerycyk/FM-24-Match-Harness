@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// The macOS job channel shared by fm24ctl and the harness dylib (see protocol.h).
+// The macOS job channel shared by fmNNctl and the harness dylib (see protocol.h).
 #pragma once
 
 #include <stdbool.h>
@@ -9,7 +9,7 @@
 
 
 // The job socket's path: HARNESS_SOCKET_NAME in the user's temporary directory, which the game and
-// fm24ctl share. False if it cannot be resolved or does not fit a Unix socket address.
+// fmNNctl share. False if it cannot be resolved or does not fit a Unix socket address.
 bool channel_socketPath(char *out, size_t size);
 
 // The lock file of the socket at `socketPath` ("<socketPath>.lock"). The harness holds an exclusive

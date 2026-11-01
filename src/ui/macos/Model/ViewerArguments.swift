@@ -4,9 +4,9 @@
 import FixtureCore
 import Foundation
 
-/// The viewer's command line (`open -a "FM24 Viewer" --args …` passes it):
-///   fm24viewer [<fixture.json|.bin>] [--launch-save <name|/path.fm> [--rosetta]]
-/// --launch-save starts FM24 with the harness and that save loaded, as File > Launch FM24… does,
+/// The viewer's command line (`open -a "FMNN Viewer" --args …` passes it):
+///   fmNNviewer [<fixture.json|.bin>] [--launch-save <name|/path.fm> [--rosetta]]
+/// --launch-save starts FMNN with the harness and that save loaded, as File > Launch FMNN… does,
 /// then exports the next fixture and shows it, unless a fixture is shown by then. A .fm file's
 /// path must be absolute: `open` starts the app in "/", not the shell's folder. Other arguments
 /// starting with "-" (such as AppKit's -NS… settings) and their values are left alone, as are any

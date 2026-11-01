@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// embedded.h on macOS: fm24ctl carries the universal harness dylib in its __TEXT,__fm24_harness
+// embedded.h on macOS: fmNNctl carries the universal harness dylib in its __TEXT,__fmNN_harness
 // section (linked with -sectcreate), and installs it to
-// ~/Library/Application Support/fm24-harness/HARNESS_DLL_NAME, where the game loads it at launch.
+// ~/Library/Application Support/fmNN-harness/HARNESS_DLL_NAME, where the game loads it at launch.
 
+#include "edition.h"
 #include "embedded.h"
 #include "files.h"
 #include "paths.h"
@@ -24,12 +25,12 @@
 static bool sameContents(const wchar_t *path, const void *bytes, size_t size);
 
 bool embedded_directory(char *out, size_t size) {
-	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fm24ctl has one thread
+	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fmNNctl has one thread
 	if (!home || home[0] != '/') {
 		fprintf(stderr, "cannot find the home folder\n");
 		return false;
 	}
-	int written = snprintf(out, size, "%s/Library/Application Support/fm24-harness", home);
+	int written = snprintf(out, size, "%s/Library/Application Support/" EDITION_HARNESS, home);
 	if (written <= 0 || (size_t)written >= size) {
 		fprintf(stderr, "the harness folder path is too long\n");
 		return false;
@@ -68,9 +69,9 @@ bool embedded_dllPath(wchar_t *out, size_t size) {
 
 bool embedded_extract(const wchar_t *path) {
 	unsigned long size = 0;
-	const uint8_t *bytes = getsectiondata(&_mh_execute_header, "__TEXT", "__fm24_harness", &size);
+	const uint8_t *bytes = getsectiondata(&_mh_execute_header, "__TEXT", EDITION_SECTION, &size);
 	if (!bytes || !size) {
-		fprintf(stderr, "this fm24ctl has no built-in harness dylib\n");
+		fprintf(stderr, "this " EDITION_CLI " has no built-in harness dylib\n");
 		return false;
 	}
 	return embedded_write(path, bytes, size);

@@ -47,12 +47,14 @@ const uint8_t *database_personFields(const uint8_t *person);
 // "Forename Surname"; returns false (and writes "") if the names cannot be read.
 bool database_personName(const uint8_t *person, char *out, size_t size);
 
-// The short name of a team's club, or "?".
+// The short name of a team's club, or "?": always "?" where the edition's builds' club names have
+// not been located (GAME_UNLOCATED_CLUB_NAME), so that teams are found by unique ID only.
 void database_clubShortName(const uint8_t *team, char *out, size_t size);
 
 // A team (db::TEAM) named by `spec`: its unique ID in decimal, or its club's short name (case is
 // ignored; a part of the name will do if no club's name matches in full), which picks the club's
-// first team. On failure, `error` says why (for an ambiguous name it lists the clubs).
+// first team. On failure, `error` says why (for an ambiguous name it lists the clubs). Where the
+// clubs' names have not been located (GAME_UNLOCATED_CLUB_NAME), a name is refused as such.
 bool database_findTeam(const char *spec, uint8_t **team, char *error, size_t errorSize);
 
 // Every club's first team as "uniqueId<TAB>short name" lines (the specs database_findTeam

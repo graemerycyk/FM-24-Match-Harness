@@ -3,12 +3,13 @@
 
 import AppKit
 import Combine
+import Edition
 import SwiftUI
 
 /// The application: one viewer window, as on Windows, into which every fixture opens (Open With,
-/// the Dock, the command line, `fm24ctl`, the Open panel and drops), a Log window, and the close
+/// the Dock, the command line, `fmNNctl`, the Open panel and drops), a Log window, and the close
 /// checks, which quitting also runs. Started with no fixture, it exports the next one from the
-/// game, as `fm24ctl` with no arguments does on Windows; started with --launch-save, it first
+/// game, as `fmNNctl` with no arguments does on Windows; started with --launch-save, it first
 /// starts the game with that save (ViewerArguments).
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate,
@@ -34,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 	)
 	private var window: NSWindow?
 	private var logWindow: NSWindow?
-	/// The sheet of the viewer's own that is open: the swap prompt, or the Launch FM24 or Install
+	/// The sheet of the viewer's own that is open: the swap prompt, or the Launch FMNN or Install
 	/// Harness sheet (one at a time, as each opens only while no other waits for the user).
 	private var sheet: (kind: SheetKind, window: NSWindow)?
 	private var watchers: Set<AnyCancellable> = []
@@ -59,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 			NSPasteboard.general.setString(text, forType: .string)
 		}
 		harness?.onRun = { [weak self] arguments in
-			self?.log.add("Running fm24ctl \(arguments.joined(separator: " "))")
+			self?.log.add("Running \(EDITION_CLI) \(arguments.joined(separator: " "))")
 		}
 		_ = gameWatch
 		_ = dockProgress
@@ -366,7 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 		case install
 	}
 
-	/// Opens the sheet the model asks for on the viewer window (the swap prompt, the Launch FM24
+	/// Opens the sheet the model asks for on the viewer window (the swap prompt, the Launch FMNN
 	/// sheet or the Install Harness sheet), closing the one open if it is another. A window in the
 	/// Dock comes back first, and the sheet opens once it has; a hidden one is shown.
 	private func updateSheet() {

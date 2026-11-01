@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// The harness DLL built into fm24ctl.exe (resource IDR_HARNESS_DLL), and the copy of it that is
-// injected: %LOCALAPPDATA%\fm24-harness\HARNESS_DLL_NAME, with harness.log next to it.
-// On macOS the dylib is built into fm24ctl's __TEXT,__fm24_harness section and installed to
-// ~/Library/Application Support/fm24-harness/HARNESS_DLL_NAME, which the game loads at launch.
+// The harness DLL built into fmNNctl.exe (resource IDR_HARNESS_DLL), and the copy of it that is
+// injected: %LOCALAPPDATA%\fmNN-harness\HARNESS_DLL_NAME, with harness.log next to it.
+// On macOS the dylib is built into fmNNctl's __TEXT,__fmNN_harness section and installed to
+// ~/Library/Application Support/fmNN-harness/HARNESS_DLL_NAME, which the game loads at launch.
 #pragma once
 
 #include <stdbool.h>

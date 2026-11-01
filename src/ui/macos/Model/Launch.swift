@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Combine
+import Edition
 import FixtureCore
 import Foundation
 
-/// A save the Launch FM24 sheet offers: a .fm file in one of FM24's save folders.
+/// A save the Launch FMNN sheet offers: a .fm file in one of FMNN's save folders.
 struct LaunchSave: Equatable {
-	/// Its name, as fm24ctl reports it: the file name without .fm.
+	/// Its name, as fmNNctl reports it: the file name without .fm.
 	let name: String
 	let url: URL
 	/// "cloud/games" or "games".
@@ -15,15 +16,15 @@ struct LaunchSave: Equatable {
 	let modified: Date
 }
 
-/// The saves `fm24ctl launch --save` finds, newest first: those in the cloud/games and games
-/// folders of FM24's data folder, the usual one or the one Steam's launch option gives the game
-/// (src/ui/save_list.h, which follows fm24ctl's rules). Only file names and dates are read.
+/// The saves `fmNNctl launch --save` finds, newest first: those in the cloud/games and games
+/// folders of FMNN's data folder, the usual one or the one Steam's launch option gives the game
+/// (src/ui/save_list.h, which follows fmNNctl's rules). Only file names and dates are read.
 struct LaunchSaves: Equatable {
 	enum Data: Equatable {
 		case usual
 		/// The folder Steam's launch option gives the game.
 		case steam
-		/// Steam's launch option sets the folder in a way fm24ctl does not follow.
+		/// Steam's launch option sets the folder in a way fmNNctl does not follow.
 		case unclear
 		/// The home folder is not known.
 		case noHome
@@ -37,19 +38,19 @@ struct LaunchSaves: Equatable {
 	let saves: [LaunchSave]
 	/// The home folder they were read for, which paths show as ~.
 	var home = ""
-	/// Steam's launch option for FM24 runs the harness's launcher, as Steam has saved it, so that
-	/// `fm24ctl launch` starts the game through Steam; otherwise it opens fm.app directly.
+	/// Steam's launch option for FMNN runs the harness's launcher, as Steam has saved it, so that
+	/// `fmNNctl launch` starts the game through Steam; otherwise it opens fm.app directly.
 	var optionSet = false
 
-	/// What the sheet says before Launch FM24 while Steam's launch option is not set: the direct
+	/// What the sheet says before Launch FMNN while Steam's launch option is not set: the direct
 	/// start it would make has not been verified. Its Install Harness… button closes it to set the
 	/// option, as File > Install Harness… waits until it is closed.
 	static let directStartWarning =
-		"Steam's launch option for FM24 is not set, or Steam has not saved it yet, so Launch FM24 "
+		"Steam's launch option for \(EDITION_PRODUCT) is not set, or Steam has not saved it yet, so Launch \(EDITION_PRODUCT) "
 		+ "would open the game without it, which has not been verified: the game crashed in its one "
-		+ "attempt. Set the option with Install Harness… and start FM24 from Steam instead."
+		+ "attempt. Set the option with Install Harness… and start \(EDITION_PRODUCT) from Steam instead."
 
-	/// Whether Steam's launch option for FM24 runs the harness's launcher in `home`
+	/// Whether Steam's launch option for FMNN runs the harness's launcher in `home`
 	/// (saveList_launchOptionSet).
 	static func launchOptionSet(home: String) -> Bool {
 		saveList_launchOptionSet(home)
@@ -87,7 +88,7 @@ struct LaunchSaves: Equatable {
 		)
 	}
 
-	/// Whether fm24ctl can load a save from the sheet: not while Steam's launch option sets the data
+	/// Whether fmNNctl can load a save from the sheet: not while Steam's launch option sets the data
 	/// folder in a way it does not follow, as it then refuses every save (macos_game.c's
 	/// dataFolder), and the sheet cannot pass --user-data.
 	var loadsSaves: Bool {
@@ -98,8 +99,9 @@ struct LaunchSaves: Equatable {
 	var note: String {
 		switch data {
 		case .unclear:
-			return "Steam's launch option for FM24 sets its data folder (user_data_location) in a way "
-				+ "fm24ctl does not follow, so FM24 Viewer cannot load a save: launch FM24 at its start "
+			return
+				"Steam's launch option for \(EDITION_PRODUCT) sets its data folder (user_data_location) in a way "
+				+ "\(EDITION_CLI) does not follow, so \(EDITION_VIEWER_NAME) cannot load a save: launch \(EDITION_PRODUCT) at its start "
 				+ "screen and load the save there, or give the folder in the option as "
 				+ "--user_data_location=<absolute folder>."
 		case .noHome:
@@ -107,7 +109,8 @@ struct LaunchSaves: Equatable {
 				"Your home folder cannot be found, so no saves are listed. Choose Other… to pick a save."
 		case .usual, .steam:
 			let place = folder.map { abbreviated($0.path) } ?? ""
-			let given = data == .steam ? ", the data folder Steam's launch option gives FM24" : ""
+			let given =
+				data == .steam ? ", the data folder Steam's launch option gives \(EDITION_PRODUCT)" : ""
 			return saves.isEmpty
 				? "No saves in cloud/games or games of \(place)\(given). Choose Other… to pick a save."
 				: "Saves in \(place)\(given), newest first."
@@ -129,7 +132,7 @@ struct LaunchSaves: Equatable {
 	}
 }
 
-/// The Launch FM24 sheet: what to load as the game starts with the harness (a listed save, a .fm
+/// The Launch FMNN sheet: what to load as the game starts with the harness (a listed save, a .fm
 /// file chosen with Other…, or none: the start screen), whether to run its x86_64 slice under
 /// Rosetta, and how the launch is going.
 @MainActor
@@ -144,20 +147,20 @@ final class LaunchPrompt: ObservableObject {
 
 	enum Phase: Equatable {
 		case choosing
-		/// fm24ctl runs.
+		/// fmNNctl runs.
 		case launching
-		/// Cancel ended fm24ctl.
+		/// Cancel ended fmNNctl.
 		case stopped
-		/// fm24ctl's reason.
+		/// fmNNctl's reason.
 		case failed(String)
-		/// fm24ctl's last line, with a fixture already on show.
+		/// fmNNctl's last line, with a fixture already on show.
 		case succeeded(String)
 	}
 
-	static let title = "Launch FM24"
+	static let title = "Launch \(EDITION_PRODUCT)"
 	static let startScreenLabel = "Start screen (no save)"
 	static let rosettaLabel = "Run under Rosetta (x86_64)"
-	/// The lines of fm24ctl's progress the sheet keeps.
+	/// The lines of fmNNctl's progress the sheet keeps.
 	static let lineLimit = 200
 
 	let saves: LaunchSaves
@@ -168,12 +171,12 @@ final class LaunchPrompt: ObservableObject {
 	@Published private(set) var other: URL?
 	@Published private(set) var rosetta: Bool
 	@Published private(set) var phase = Phase.choosing
-	/// What fm24ctl has printed on standard output as it starts the game: its progress.
+	/// What fmNNctl has printed on standard output as it starts the game: its progress.
 	@Published private(set) var lines: [String] = []
 
 	/// Starts with `remembered`, the last choice (a .fm file's path, or "" for the start screen),
 	/// if it can still be made, else the newest save, else the start screen, which is the only
-	/// choice if fm24ctl cannot load a save.
+	/// choice if fmNNctl cannot load a save.
 	init(saves: LaunchSaves, offersRosetta: Bool, remembered: String?, rosetta: Bool) {
 		self.saves = saves
 		self.offersRosetta = offersRosetta
@@ -209,7 +212,7 @@ final class LaunchPrompt: ObservableObject {
 		choice = .named(save)
 	}
 
-	/// What `fm24ctl launch --save` is given: a .fm file's path or a save's name; nil for the start
+	/// What `fmNNctl launch --save` is given: a .fm file's path or a save's name; nil for the start
 	/// screen.
 	var save: String? {
 		switch choice {
@@ -244,16 +247,16 @@ final class LaunchPrompt: ObservableObject {
 		choice == .startScreen ? "at its start screen" : "with \(label)"
 	}
 
-	/// What the sheet says while fm24ctl starts the game.
+	/// What the sheet says while fmNNctl starts the game.
 	var launchingText: String {
-		"Starting FM24 \(destination); this can take several minutes."
+		"Starting \(EDITION_PRODUCT) \(destination); this can take several minutes."
 	}
 
 	var isLaunching: Bool {
 		phase == .launching
 	}
 
-	/// Other… can choose a .fm file, unless fm24ctl cannot load one, or a launch runs.
+	/// Other… can choose a .fm file, unless fmNNctl cannot load one, or a launch runs.
 	var offersOther: Bool {
 		saves.loadsSaves && !isLaunching
 	}
@@ -274,7 +277,7 @@ final class LaunchPrompt: ObservableObject {
 	}
 
 	/// The choice can be changed, and the launch started, unless it runs; a .fm file only if
-	/// fm24ctl can load one.
+	/// fmNNctl can load one.
 	func choose(_ choice: Choice) {
 		if case .save = choice, !saves.loadsSaves {
 			return
@@ -295,7 +298,7 @@ final class LaunchPrompt: ObservableObject {
 		phase = .launching
 	}
 
-	/// A line of fm24ctl's progress.
+	/// A line of fmNNctl's progress.
 	func add(_ line: String) {
 		lines.append(line)
 		if lines.count > LaunchPrompt.lineLimit {

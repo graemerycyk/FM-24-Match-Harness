@@ -1,24 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The macOS fixture viewer, FM24Viewer.app: SwiftUI views in an AppKit shell over the C core
-# (src/ui/fixture_view.h, imported through src/ui/module.modulemap), with the same build's fm24ctl
-# inside it. swiftc runs once per slice and lipo joins the slices: CMake's own Swift support needs
-# Ninja or Xcode and cannot build a universal binary, so this works with every generator.
+# The macOS fixture viewer, EDITION_VIEWER_APP: SwiftUI views in an AppKit shell over the C core
+# (src/ui/fixture_view.h, imported through src/ui/module.modulemap) and the edition's names
+# (edition.h, imported as the module Edition), with the same build's CLI inside it. swiftc runs
+# once per slice and lipo joins the slices: CMake's own Swift support needs Ninja or Xcode and
+# cannot build a universal binary, so this works with every generator.
 set(FM24_VIEWER AUTO CACHE STRING "Build the macOS fixture viewer: AUTO, ON (required) or OFF")
 set_property(CACHE FM24_VIEWER PROPERTY STRINGS AUTO ON OFF)
 set(FM24_VIEWER_DEPLOYMENT_TARGET 13.0 CACHE STRING "Oldest macOS the fixture viewer supports")
-# The bundle identifier, which fm24ctl also opens the viewer by (src/runner/macos_viewer.h).
-file(STRINGS src/runner/macos_viewer.h identifier_line
-	REGEX "define MACOS_VIEWER_IDENTIFIER \"[^\"]+\""
-)
-string(REGEX MATCH "\"([^\"]+)\"" identifier_match "${identifier_line}")
-set(FM24_VIEWER_IDENTIFIER "${CMAKE_MATCH_1}")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS src/runner/macos_viewer.h)
-
 # Without the viewer, a bundle an earlier configuration built or installed is removed, so that
-# fm24ctl, which opens the FM24Viewer.app beside it, never hands fixtures to a stale copy.
+# the CLI, which opens the viewer beside it, never hands fixtures to a stale copy.
 macro(viewer_absent)
-	file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/FM24Viewer.app")
-	install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/FM24Viewer.app\")"
+	file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/${EDITION_VIEWER_APP}")
+	install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${EDITION_VIEWER_APP}\")"
 		COMPONENT Viewer
 	)
 endmacro()
@@ -40,9 +33,10 @@ if(FM24_BUILD_TESTS)
 		COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${viewer_source}"
 			-P "${viewer_source}/tests/viewer_sources.cmake"
 	)
-	# The texts the viewer's tests read from fm24ctl's stand-in are fm24ctl's own.
+	# The texts the viewer's tests read from the CLI's stand-in are the CLI's own.
 	add_test(NAME viewer_stand_in_texts
 		COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${viewer_source}"
+			"-DEDITION_HEADER=${EDITION_INCLUDE_DIR}/edition.h"
 			-P "${viewer_source}/tests/viewer_stand_in_texts.cmake"
 	)
 endif()
@@ -130,7 +124,7 @@ add_library(viewer_core STATIC
 	src/ui/fixture_view.c
 	src/ui/save_list.c
 )
-target_include_directories(viewer_core PUBLIC src/common src/runner src/ui)
+target_include_directories(viewer_core PUBLIC src/common src/runner src/ui "${EDITION_INCLUDE_DIR}")
 # The viewer calls the core on Swift's worker threads, whose stacks are 512 KiB: no function may
 # keep a FixtureData (about 570 KiB) on its stack, as unoptimised builds would for a temporary.
 target_compile_options(viewer_core PRIVATE
@@ -144,18 +138,20 @@ set(viewer_headers
 	"${viewer_source}/src/ui/save_list.h"
 	"${viewer_source}/src/ui/module.modulemap"
 	"${viewer_source}/src/common/channel.h"
+	"${EDITION_INCLUDE_DIR}/edition.h"
+	"${EDITION_INCLUDE_DIR}/module.modulemap"
 )
 set(swift_flags -swift-version 5 "$<IF:$<CONFIG:Debug>,-Onone$<SEMICOLON>-g,-O$<SEMICOLON>-wmo>"
 	-sdk "${FM24_MACOS_SDK}" -module-cache-path "${viewer_dir}/module-cache"
-	-I "${viewer_source}/src/ui"
+	-I "${viewer_source}/src/ui" -I "${EDITION_INCLUDE_DIR}"
 )
 
 # One command per slice, so that make and ninja compile the slices in parallel.
 set(slices)
 foreach(arch IN LISTS FM24_VIEWER_ARCHITECTURES)
-	set(slice "${viewer_dir}/fm24viewer-${arch}")
+	set(slice "${viewer_dir}/${EDITION_VIEWER_EXECUTABLE}-${arch}")
 	add_custom_command(OUTPUT "${slice}"
-		COMMAND "${FM24_SWIFTC}" ${swift_flags} -module-name FM24Viewer
+		COMMAND "${FM24_SWIFTC}" ${swift_flags} -module-name ${EDITION_PRODUCT}Viewer
 			-target ${arch}-apple-macos${FM24_VIEWER_DEPLOYMENT_TARGET}
 			${viewer_swift} "$<TARGET_FILE:viewer_core>" -Xlinker -dead_strip -o "${slice}"
 		DEPENDS ${viewer_swift} ${viewer_headers} viewer_core
@@ -165,29 +161,31 @@ foreach(arch IN LISTS FM24_VIEWER_ARCHITECTURES)
 	list(APPEND slices "${slice}")
 endforeach()
 
-# The bundle, stripped and signed ad hoc from the inside out: fm24ctl, then the bundle and its
+# The bundle, stripped and signed ad hoc from the inside out: the CLI, then the bundle and its
 # executable. Its two executables are stripped as it is assembled, while they still carry the
 # linker's signatures, which strip handles (Xcode 16's strip cannot process a binary whose signature
-# codesign removed); installing it only copies it. The slices and build tree's fm24ctl keep symbols.
-set(app "${CMAKE_BINARY_DIR}/FM24Viewer.app")
+# codesign removed); installing it only copies it. The slices and build tree's CLI keep symbols.
+set(app "${CMAKE_BINARY_DIR}/${EDITION_VIEWER_APP}")
+set(viewer_executable "${app}/Contents/MacOS/${EDITION_VIEWER_EXECUTABLE}")
+set(viewer_cli "${app}/Contents/MacOS/${EDITION_CLI}")
 configure_file(src/ui/macos/Info.plist.in "${viewer_dir}/Info.plist" @ONLY)
-add_custom_command(OUTPUT "${app}/Contents/MacOS/fm24viewer"
+add_custom_command(OUTPUT "${viewer_executable}"
 	COMMAND "${CMAKE_COMMAND}" -E make_directory "${app}/Contents/MacOS"
-	COMMAND lipo -create ${slices} -output "${app}/Contents/MacOS/fm24viewer"
-	COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:fm24ctl>" "${app}/Contents/MacOS/fm24ctl"
-	COMMAND strip -x "${app}/Contents/MacOS/fm24viewer"
-	COMMAND strip -x "${app}/Contents/MacOS/fm24ctl"
+	COMMAND lipo -create ${slices} -output "${viewer_executable}"
+	COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:${EDITION_CLI}>" "${viewer_cli}"
+	COMMAND strip -x "${viewer_executable}"
+	COMMAND strip -x "${viewer_cli}"
 	COMMAND "${CMAKE_COMMAND}" -E copy "${viewer_dir}/Info.plist" "${app}/Contents/Info.plist"
-	COMMAND codesign --force --sign - "${app}/Contents/MacOS/fm24ctl"
+	COMMAND codesign --force --sign - "${viewer_cli}"
 	COMMAND codesign --force --sign - "${app}"
-	DEPENDS ${slices} fm24ctl "${viewer_dir}/Info.plist"
-	COMMENT "Assembling FM24Viewer.app"
+	DEPENDS ${slices} ${EDITION_CLI} "${viewer_dir}/Info.plist"
+	COMMENT "Assembling ${EDITION_VIEWER_APP}"
 	VERBATIM
 )
-add_custom_target(fm24viewer ALL DEPENDS "${app}/Contents/MacOS/fm24viewer")
+add_custom_target(${EDITION_VIEWER_EXECUTABLE} ALL DEPENDS "${viewer_executable}")
 
 # Replacing the bundle, not writing into it, leaves a running copy's executable alone.
-install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/FM24Viewer.app\")"
+install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${EDITION_VIEWER_APP}\")"
 	COMPONENT Viewer
 )
 install(DIRECTORY "${app}" DESTINATION . COMPONENT Viewer USE_SOURCE_PERMISSIONS)
@@ -197,23 +195,24 @@ if(NOT FM24_BUILD_TESTS)
 endif()
 
 # The Swift tests: the viewer's models (Foundation only) with tests/viewer, linked with the C core
-# and the sample fixtures, and run on each slice. They run fm24ctl's stand-in, which never contacts
-# the game, in place of fm24ctl (FM24CTL).
+# and the sample fixtures, and run on each slice. They run the CLI's stand-in, which never contacts
+# the game, in place of the CLI (named by EDITION_CLI_ENV).
 add_library(viewer_samples STATIC tests/fixture_samples.c tests/save_samples.c)
 target_link_libraries(viewer_samples PRIVATE viewer_core)
 target_compile_options(viewer_samples PRIVATE ${warnings})
 set_target_properties(viewer_samples PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
-add_executable(fm24_stand_in_fm24ctl tests/viewer_stand_in_fm24ctl.c)
-target_link_libraries(fm24_stand_in_fm24ctl PRIVATE viewer_samples viewer_core)
-target_compile_options(fm24_stand_in_fm24ctl PRIVATE ${warnings})
-set(viewer_test_environment "FM24CTL=$<TARGET_FILE:fm24_stand_in_fm24ctl>")
+set(stand_in_cli ${EDITION_LOWER}_stand_in_${EDITION_CLI})
+add_executable(${stand_in_cli} tests/viewer_stand_in_cli.c)
+target_link_libraries(${stand_in_cli} PRIVATE viewer_samples viewer_core)
+target_compile_options(${stand_in_cli} PRIVATE ${warnings})
+set(viewer_test_environment "${EDITION_CLI_ENV}=$<TARGET_FILE:${stand_in_cli}>")
 file(GLOB viewer_model_swift CONFIGURE_DEPENDS "${viewer_source}/src/ui/macos/Model/*.swift")
 file(GLOB viewer_test_swift CONFIGURE_DEPENDS "${viewer_source}/tests/viewer/*.swift")
 set(test_slices)
 foreach(arch IN LISTS FM24_VIEWER_ARCHITECTURES)
-	set(slice "${viewer_dir}/fm24viewer_tests-${arch}")
+	set(slice "${viewer_dir}/${EDITION_VIEWER_EXECUTABLE}_tests-${arch}")
 	add_custom_command(OUTPUT "${slice}"
-		COMMAND "${FM24_SWIFTC}" ${swift_flags} -module-name FM24ViewerTests
+		COMMAND "${FM24_SWIFTC}" ${swift_flags} -module-name ${EDITION_PRODUCT}ViewerTests
 			-target ${arch}-apple-macos${FM24_VIEWER_DEPLOYMENT_TARGET}
 			-I "${viewer_source}/tests/viewer" ${viewer_model_swift} ${viewer_test_swift}
 			"$<TARGET_FILE:viewer_samples>" "$<TARGET_FILE:viewer_core>" -o "${slice}"
@@ -226,19 +225,20 @@ foreach(arch IN LISTS FM24_VIEWER_ARCHITECTURES)
 	)
 	list(APPEND test_slices "${slice}")
 endforeach()
-add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/fm24viewer_tests"
-	COMMAND lipo -create ${test_slices} -output "${CMAKE_BINARY_DIR}/fm24viewer_tests"
+set(viewer_tests "${CMAKE_BINARY_DIR}/${EDITION_VIEWER_EXECUTABLE}_tests")
+add_custom_command(OUTPUT "${viewer_tests}"
+	COMMAND lipo -create ${test_slices} -output "${viewer_tests}"
 	DEPENDS ${test_slices}
 	VERBATIM
 )
 # Named apart from the file, which Makefiles would otherwise take for a rule that depends on itself.
-add_custom_target(viewer_tests ALL DEPENDS "${CMAKE_BINARY_DIR}/fm24viewer_tests")
-add_dependencies(viewer_tests fm24_stand_in_fm24ctl)
-add_test(NAME viewer COMMAND "${CMAKE_BINARY_DIR}/fm24viewer_tests")
+add_custom_target(viewer_tests ALL DEPENDS "${viewer_tests}")
+add_dependencies(viewer_tests ${stand_in_cli})
+add_test(NAME viewer COMMAND "${viewer_tests}")
 set_tests_properties(viewer PROPERTIES TIMEOUT 300 ENVIRONMENT "${viewer_test_environment}")
 # Under Rosetta if CMakeLists.txt found that it works (FM24_ROSETTA_TESTS).
 if("x86_64" IN_LIST FM24_VIEWER_ARCHITECTURES AND rosetta_works)
-	add_test(NAME viewer_x86_64 COMMAND /usr/bin/arch -x86_64 "${CMAKE_BINARY_DIR}/fm24viewer_tests")
+	add_test(NAME viewer_x86_64 COMMAND /usr/bin/arch -x86_64 "${viewer_tests}")
 	set_tests_properties(viewer_x86_64 PROPERTIES
 		TIMEOUT 600 ENVIRONMENT "${viewer_test_environment}"
 	)
@@ -259,9 +259,21 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR "Release" IN_LIST CMAKE_CONFIGURATION_
 			"-DARCHITECTURES=${viewer_architectures}"
 			"-DVIEWER_MINIMUM=${FM24_VIEWER_DEPLOYMENT_TARGET}"
 			"-DRUNNER_MINIMUM=${CMAKE_OSX_DEPLOYMENT_TARGET}"
-			"-DIDENTIFIER=${FM24_VIEWER_IDENTIFIER}"
+			"-DIDENTIFIER=${EDITION_VIEWER_ID}"
+			"-DVIEWER_NAME=${EDITION_VIEWER_NAME}"
+			"-DVIEWER_EXECUTABLE=${EDITION_VIEWER_EXECUTABLE}"
+			"-DPRODUCT=${EDITION_PRODUCT}"
+			"-DCLI=${EDITION_CLI}"
+			"-DSECTION=${EDITION_SECTION}"
 			"-DPROTOCOL=${HARNESS_PROTOCOL}"
 			-P "${viewer_source}/tests/release_viewer_test.cmake"
 		${release_configurations}
 	)
+	# A dry run of scripts/release_macos.sh on this build, and the zip it makes.
+	add_test(NAME release_package
+		COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${viewer_source}" "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+			"-DFM_EDITION=${FM_EDITION}" -P "${viewer_source}/tests/release_package_test.cmake"
+		${release_configurations}
+	)
+	set_tests_properties(release_package PROPERTIES TIMEOUT 300)
 endif()

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -72,8 +73,8 @@ private struct FixturePage: View {
 	}
 }
 
-/// What a harness job is doing, with a spinner, and fm24ctl's latest progress while it starts
-/// FM24 for the job.
+/// What a harness job is doing, with a spinner, and fmNNctl's latest progress while it starts
+/// FMNN for the job.
 private struct ActivityLine: View {
 	let text: String
 	var detail: String?
@@ -99,7 +100,7 @@ private struct ActivityLine: View {
 
 /// What the window shows with no fixture open: the startup export (or a binary fixture's decode)
 /// as it runs, with Cancel, or why it (or the first open) failed or stopped, with Retry; Install
-/// Harness… while Steam's launch option is not set; and Launch FM24…, which starts the game with
+/// Harness… while Steam's launch option is not set; and Launch FMNN…, which starts the game with
 /// the harness and a save.
 private struct StartPanel: View {
 	@ObservedObject var model: ViewerModel
@@ -139,7 +140,7 @@ private struct StartPanel: View {
 				if let monitor = model.monitor {
 					InstallButton(model: model, monitor: monitor)
 				}
-				Button("Launch FM24…") { model.requestLaunch() }
+				Button("Launch \(EDITION_PRODUCT)…") { model.requestLaunch() }
 					.disabled(model.isBusy)
 			}
 		}
@@ -148,8 +149,8 @@ private struct StartPanel: View {
 	}
 }
 
-/// Install Harness… before Launch FM24… while Steam's launch option is not set: the tested route,
-/// as Launch FM24… would then start the game directly.
+/// Install Harness… before Launch FMNN… while Steam's launch option is not set: the tested route,
+/// as Launch FMNN… would then start the game directly.
 private struct InstallButton: View {
 	@ObservedObject var model: ViewerModel
 	@ObservedObject var monitor: GameMonitor

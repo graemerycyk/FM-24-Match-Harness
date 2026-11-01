@@ -51,6 +51,8 @@
 //                          without it, past fm24ctl's timeout, which stops it with status 3
 //   FM24_STAND_IN_SAVED    if set, the fixtures written have the "save" and "game_date" of
 //                          fixtureSamples_savedJson, as the macOS harness's exports do
+// Where the edition's exports record no save, an input without one is checked too: the game must be
+// running (not FM24_STAND_IN_CLOSED), with whatever save it has loaded, waited for while it is busy.
 // `launch [--save <name|path.fm>] [--rosetta] [--timeout <s>]` prints what fm24ctl prints as it
 // starts the game through Steam's launch option and waits for the harness (FM24_STAND_IN_LAUNCH_MS,
 // with a "still waiting" line halfway) and the save (FM24_STAND_IN_LOAD_MS, as for a job), which is
@@ -65,6 +67,7 @@
 // other option, FM24_STAND_IN_NO_GAME says that Steam has no FM24, and FM24_STAND_IN_NO_STEAM that
 // there is no Steam. FM24_STAND_IN_STDOUT replaces what either prints.
 
+#include "edition.h"
 #include "fixture_samples.h"
 #include "fixture_view.h"
 #include "match_config.h"
@@ -82,30 +85,36 @@
 
 // fm24ctl's texts, as src/dll/job_execute.c and src/runner/client_posix.c, commands.c,
 // macos_game.c and session.c print them.
-static const char busyText[] = "error: FM24 is busy (%s); wait until it is idle";
+static const char busyText[] = "error: " EDITION_PRODUCT " is busy (%s); wait until it is idle";
 static const char badSaveText[] =
 	"the input's \"save\" is not a save's name; remove it to use any save\n";
 static const char otherSaveText[] =
-	"FM24 has '%s' loaded, not '%s'; fm24ctl will not switch saves in a running game (unsaved "
-	"progress). Quit FM24 (saving first only if you loaded that save yourself and have done no "
+	EDITION_PRODUCT " has '%s' loaded, not '%s'; " EDITION_CLI " will not switch saves in a running game (unsaved "
+	"progress). Quit " EDITION_PRODUCT " (saving first only if you loaded that save yourself and have done no "
 	"harness work since), then run this again%s.\n";
 static const char anySaveHintText[] = ", or pass --any-save to use the loaded save";
-static const char anySaveText[] = "FM24 has '%s' loaded, not '%s'; using it, as --any-save asks\n";
+static const char anySaveText[] = EDITION_PRODUCT " has '%s' loaded, not '%s'; using it, as --any-save asks\n";
 static const char notRunningText[] =
-	"Football Manager 2024 is not running; starting it to load %s (--no-launch turns this off)\n";
+	EDITION_GAME " is not running; starting it to load %s (--no-launch turns this off)\n";
+#if EDITION_ENGINE_PLUGIN
+static const char unrecordedText[] =
+	EDITION_GAME " is not running: start it with the harness, load the fixture's save and leave the game idle, "
+	"then run this again. " EDITION_PRODUCT " exports do not record their save, so " EDITION_CLI " cannot start the "
+	"game with it.\n";
+#endif
 static const char loadingText[] = "loading %s: %s\n";
 static const char throughSteamText[] =
-	"starting Football Manager 2024 through Steam (its launch option loads the harness%s)\n";
+	"starting " EDITION_GAME " through Steam (its launch option loads the harness%s)\n";
 static const char harnessWaitText[] = "waiting for the game to start the harness%s...\n";
 static const char harnessLoadedText[] =
 	"the harness is loaded; checking that the game keeps running...\n";
 static const char harnessReadyText[] =
-	"the harness is ready in Football Manager 2024 (pid %d%s)%s\n";
+	"the harness is ready in " EDITION_GAME " (pid %d%s)%s\n";
 static const char saveWaitText[] = "waiting for it to load %s (at most %u s)...\n";
-static const char stateText[] = "FM24 state: %s\n";
+static const char stateText[] = EDITION_PRODUCT " state: %s\n";
 static const char readyText[] = "ready: %s %sloaded (pid %d%s%s)\n";
 static const char unnamedText[] =
-	"the harness cannot read which save FM24 has loaded; taking it to be %s\n";
+	"the harness cannot read which save " EDITION_PRODUCT " has loaded; taking it to be %s\n";
 static const char lostText[] = "cannot read a complete result; see harness.log\n";
 static const char datedText[] =
 	"warning: the save is at %s, the fixture was exported at %s; the results reflect the save\n";
@@ -116,52 +125,52 @@ static const char rosettaWaitText[] =
 static const char stillWaitingText[] = "still waiting (%lld s)...\n";
 static const char underRosettaText[] = ", under Rosetta";
 static const char loadYourSaveText[] =
-	". Load your save and leave the game idle before running fm24ctl commands.";
+	". Load your save and leave the game idle before running " EDITION_CLI " commands.";
 static const char runningText[] =
-	"Football Manager 2024 (pid %d) is already running with the harness%s\n";
+	EDITION_GAME " (pid %d) is already running with the harness%s\n";
 static const char nativeText[] =
-	"Football Manager 2024 (pid %d) is already running natively, not under Rosetta; fm24ctl "
+	EDITION_GAME " (pid %d) is already running natively, not under Rosetta; " EDITION_CLI " "
 	"will not restart a running game. Quit it, then run this again.\n";
-static const char stillText[] = "FM24 was still ";
+static const char stillText[] = EDITION_PRODUCT " was still ";
 static const char timedOutText[] = "%s%s after %u s, without %s ready. Check the game window%s.\n";
 static const char notSaveText[] = "%s is not a save: --save takes a save's name or its .fm file\n";
 static const char missingSaveText[] = "cannot find the save %s\n";
 static const char unclearText[] =
-	"Steam's launch option for FM24 sets its data folder (user_data_location) in a way fm24ctl "
+	"Steam's launch option for " EDITION_PRODUCT " sets its data folder (user_data_location) in a way " EDITION_CLI " "
 	"does not follow; %s\n";
 static const char userDataHintText[] = "pass the folder with --user-data";
 static const char installedText[] =
 	"installed harness %s%s: %s/%s\nlauncher: %s\nlog: %s/harness.log\n";
-static const char gameFoundText[] = "Football Manager 2024: %s\n";
+static const char gameFoundText[] = EDITION_GAME ": %s\n";
 static const char gameMissingText[] =
-	"Football Manager 2024 was not found in your Steam libraries\n";
+	EDITION_GAME " was not found in your Steam libraries\n";
 static const char optionSetText[] =
-	"\nSteam's launch option for Football Manager 2024 already uses this launcher: start the game "
+	"\nSteam's launch option for " EDITION_GAME " already uses this launcher: start the game "
 	"from Steam as usual.\n";
 static const char optionText[] =
-	"\nTo start Football Manager 2024 from Steam with the harness, set its launch option once:\n"
-	"  Steam > Library > Football Manager 2024 > Properties > General > Launch Options:\n"
+	"\nTo start " EDITION_GAME " from Steam with the harness, set its launch option once:\n"
+	"  Steam > Library > " EDITION_GAME " > Properties > General > Launch Options:\n"
 	"  /bin/sh \"%s\" %%command%%\n%s";
 static const char checkOptionText[] =
 	"Keep any arguments of your own after %command%. Steam may save the option only when it "
-	"quits: run `fm24ctl install` again until it says that Steam's launch option uses this "
-	"launcher, quitting Steam if it does not. Until then, `fm24ctl launch` starts the game "
+	"quits: run `" EDITION_CLI " install` again until it says that Steam's launch option uses this "
+	"launcher, quitting Steam if it does not. Until then, `" EDITION_CLI " launch` starts the game "
 	"without the launch option, which has not been verified: the game crashed in its one "
 	"attempt.\n";
 static const char reinstallText[] =
-	"\nRun `fm24ctl install` again after updating fm24ctl: it updates the harness and the "
+	"\nRun `" EDITION_CLI " install` again after updating " EDITION_CLI ": it updates the harness and the "
 	"launcher.\n";
 static const char noSteamText[] =
-	"Steam is not in %s, where fm24ctl looks for it: install Steam and Football Manager 2024 "
-	"(24.4.2), then run `fm24ctl install` again.\n";
+	"Steam is not in %s, where " EDITION_CLI " looks for it: install Steam and " EDITION_GAME " "
+	"(" EDITION_GAME_VERSION "), then run `" EDITION_CLI " install` again.\n";
 static const char noGameText[] =
-	"Install Football Manager 2024 (24.4.2) in Steam, then run `fm24ctl install` again; fm24ctl "
+	"Install " EDITION_GAME " (" EDITION_GAME_VERSION ") in Steam, then run `" EDITION_CLI " install` again; " EDITION_CLI " "
 	"looks in the Steam libraries that %s/steamapps/libraryfolders.vdf lists.\n";
 static const char currentOptionText[] =
-	"\nSteam's launch option for Football Manager 2024 is now: %s\n";
+	"\nSteam's launch option for " EDITION_GAME " is now: %s\n";
 static const char dataFolderText[] =
-	"It sets FM24's data folder (user_data_location) in a way fm24ctl does not follow, which "
-	"stops `fm24ctl launch --save` and the commands that start the game for a fixture's save: "
+	"It sets " EDITION_PRODUCT "'s data folder (user_data_location) in a way " EDITION_CLI " does not follow, which "
+	"stops `" EDITION_CLI " launch --save` and the commands that start the game for a fixture's save: "
 	"write it as --user_data_location=<absolute folder>.\n";
 static const char seedsLengthText[] =
 	"the seed pattern must fit in %d characters (this one has %zu)\n";
@@ -171,7 +180,7 @@ static const char seedBoundsText[] = "seeds must be numbers from 0 to 4294967295
 static const char backwardsText[] = "the seed range %.*s runs backwards: write %llu-%llu\n";
 static const char rangeSizeText[] = "the seed range %.*s has more than %d seeds: split it\n";
 static const char runUsageText[] =
-	"usage: fm24ctl run <input.bin|.json> [seeds] [output.csv] [--threads N]"
+	"usage: " EDITION_CLI " run <input.bin|.json> [seeds] [output.csv] [--threads N]"
 	" [--profile <samples.txt>] [--detailed] [--human-control] [--keep-build]";
 
 static long number(const char *name, long fallback);
@@ -179,6 +188,9 @@ static void sleepFor(long milliseconds);
 static bool logArguments(int argc, char **argv);
 static bool checksSave(int argc, char **argv);
 static int checkSave(int argc, char **argv);
+#if EDITION_ENGINE_PLUGIN
+static int checkLoaded(char **argv, const ConfigOrigin *origin);
+#endif
 static void startForSave(const char *save, const char *date);
 static int waitWhileBusy(const char *save);
 static bool hasArgument(int argc, char **argv, const char *argument);
@@ -203,13 +215,13 @@ int main(int argc, char **argv) {
 	if (!logArguments(argc, argv)) {
 		return 70;
 	}
-	const char *errors = getenv("FM24_STAND_IN_STDERR");
+	const char *errors = getenv(EDITION_ENV_PREFIX "STAND_IN_STDERR");
 	if (errors) {
 		fputs(errors, stderr);
 		fflush(stderr);
 	}
-	sleepFor(number("FM24_STAND_IN_DELAY_MS", 0));
-	if (getenv("FM24_STAND_IN_STDIN")) {
+	sleepFor(number(EDITION_ENV_PREFIX "STAND_IN_DELAY_MS", 0));
+	if (getenv(EDITION_ENV_PREFIX "STAND_IN_STDIN")) {
 		size_t length = 0;
 		char buffer[4096];
 		for (size_t got = 1; got > 0; length += got) {
@@ -217,12 +229,12 @@ int main(int argc, char **argv) {
 		}
 		printf("stdin: %zu bytes\n", length);
 	}
-	long flood = number("FM24_STAND_IN_FLOOD", 0);
+	long flood = number(EDITION_ENV_PREFIX "STAND_IN_FLOOD", 0);
 	for (long line = 1; line <= flood; ++line) {
 		printf("out %ld: the harness wrote a line of output to fill the pipe\n", line);
 		fprintf(stderr, "err %ld: the harness wrote a line of errors to fill the pipe\n", line);
 	}
-	int status = (int)number("FM24_STAND_IN_STATUS", 0);
+	int status = (int)number(EDITION_ENV_PREFIX "STAND_IN_STATUS", 0);
 	const char *command = argc > 1 ? argv[1] : "";
 	if (status == 0 && strcmp(command, "run") == 0 && argc > 3 && refusesSeeds(argv[3])) {
 		return 2;
@@ -269,7 +281,7 @@ int main(int argc, char **argv) {
 		printf("error: the stand-in does not do %s\n", command);
 		return 1;
 	}
-	const char *output = getenv("FM24_STAND_IN_STDOUT");
+	const char *output = getenv(EDITION_ENV_PREFIX "STAND_IN_STDOUT");
 	bool own = strcmp(command, "launch") == 0 || strcmp(command, "install") == 0;
 	if (status == 0 && own && !output) {
 		int done = strcmp(command, "launch") == 0 ? launch(argc, argv) : install();
@@ -279,7 +291,7 @@ int main(int argc, char **argv) {
 	} else {
 		fputs(output ? output : "ok: stand-in\n", stdout);
 	}
-	long linger = number("FM24_STAND_IN_LINGER", 0);
+	long linger = number(EDITION_ENV_PREFIX "STAND_IN_LINGER", 0);
 	if (linger > 0 && fork() == 0) {
 		sleepFor(linger);
 		_exit(0);
@@ -300,7 +312,7 @@ static void sleepFor(long milliseconds) {
 }
 
 static bool logArguments(int argc, char **argv) {
-	const char *path = getenv("FM24_STAND_IN_LOG");
+	const char *path = getenv(EDITION_ENV_PREFIX "STAND_IN_LOG");
 	if (!path) {
 		return true;
 	}
@@ -334,6 +346,11 @@ static int checkSave(int argc, char **argv) {
 	ConfigOrigin origin;
 	bool read = text && matchConfig_readOrigin(text, length, &origin);
 	free(text);
+#if EDITION_ENGINE_PLUGIN
+	if (read && !origin.hasSave) {
+		return checkLoaded(argv, &origin);
+	}
+#endif
 	if (!read || !origin.hasSave) {
 		return 0;
 	}
@@ -342,12 +359,12 @@ static int checkSave(int argc, char **argv) {
 		fputs(badSaveText, stderr);
 		return 1;
 	}
-	const char *loaded = getenv("FM24_STAND_IN_LOADED");
-	const char *date = getenv("FM24_STAND_IN_DATE");
+	const char *loaded = getenv(EDITION_ENV_PREFIX "STAND_IN_LOADED");
+	const char *date = getenv(EDITION_ENV_PREFIX "STAND_IN_DATE");
 	const char *loadedDate = date ? date : origin.gameDate;
-	bool closed = getenv("FM24_STAND_IN_CLOSED") != NULL;
-	bool unnamed = getenv("FM24_STAND_IN_UNNAMED") != NULL;
-	int waited = closed || !getenv("FM24_STAND_IN_BUSY") ? -1 : waitWhileBusy(save);
+	bool closed = getenv(EDITION_ENV_PREFIX "STAND_IN_CLOSED") != NULL;
+	bool unnamed = getenv(EDITION_ENV_PREFIX "STAND_IN_UNNAMED") != NULL;
+	int waited = closed || !getenv(EDITION_ENV_PREFIX "STAND_IN_BUSY") ? -1 : waitWhileBusy(save);
 	if (waited > 0) {
 		return waited;
 	}
@@ -376,6 +393,33 @@ static int checkSave(int argc, char **argv) {
 	return 0;
 }
 
+#if EDITION_ENGINE_PLUGIN
+// fmNNctl's check before a job for an input without a "save", as the edition's exports are
+// (macosGame_ensureSave): the game must be running, with whatever save it has loaded idle, which
+// fmNNctl takes to be the fixture's. It never starts the game for one.
+static int checkLoaded(char **argv, const ConfigOrigin *origin) {
+	static const char fixtureSave[] = "the fixture's save";
+	if (getenv(EDITION_ENV_PREFIX "STAND_IN_CLOSED")) {
+		fputs(unrecordedText, stderr);
+		return 1;
+	}
+	const char *date = getenv(EDITION_ENV_PREFIX "STAND_IN_DATE");
+	const char *loadedDate = date ? date : origin->gameDate;
+	int waited = getenv(EDITION_ENV_PREFIX "STAND_IN_BUSY") ? waitWhileBusy(fixtureSave) : -1;
+	if (waited > 0) {
+		return waited;
+	}
+	fprintf(stderr, unnamedText, fixtureSave);
+	if (waited == 0) {
+		printf(readyText, fixtureSave, "is already ", (int)getpid(), loadedDate[0] ? ", " : "", loadedDate);
+	}
+	if (strcmp(argv[1], "run") == 0 && date && origin->gameDate[0] && strcmp(date, origin->gameDate) != 0) {
+		fprintf(stderr, datedText, date, origin->gameDate);
+	}
+	return 0;
+}
+#endif
+
 // What fm24ctl prints as it starts the game through Steam's launch option to load `save`, which is
 // at `date` once loaded, and waits for it (macosGame_ensureSave, launchForJob, session_waitReady).
 static void startForSave(const char *save, const char *date) {
@@ -386,7 +430,7 @@ static void startForSave(const char *save, const char *date) {
 	(void)snprintf(
 		path,
 		sizeof path,
-		"%s/Library/Application Support/Sports Interactive/Football Manager 2024/cloud/games/%s.fm",
+		"%s/Library/Application Support/" EDITION_DATA_FOLDER "/cloud/games/%s.fm",
 		home ? home : "",
 		save
 	);
@@ -397,7 +441,7 @@ static void startForSave(const char *save, const char *date) {
 	printf(harnessReadyText, pid, "", "");
 	printf(saveWaitText, save, 900U);
 	printf(stateText, "loading");
-	sleepFor(number("FM24_STAND_IN_LOAD_MS", 0));
+	sleepFor(number(EDITION_ENV_PREFIX "STAND_IN_LOAD_MS", 0));
 	printf(stateText, "ready");
 	printf(readyText, save, "", pid, date[0] ? ", " : "", date);
 }
@@ -406,9 +450,9 @@ static void startForSave(const char *save, const char *date) {
 // with `save` loaded before a job (useRunningGame, waitForSave, session_waitReady): 0 once it is,
 // else the exit status.
 static int waitWhileBusy(const char *save) {
-	const char *phase = strcmp(getenv("FM24_STAND_IN_BUSY"), "loading") == 0 ? "loading" : "busy";
+	const char *phase = strcmp(getenv(EDITION_ENV_PREFIX "STAND_IN_BUSY"), "loading") == 0 ? "loading" : "busy";
 	printf(stateText, phase);
-	const char *busyFor = getenv("FM24_STAND_IN_BUSY_MS");
+	const char *busyFor = getenv(EDITION_ENV_PREFIX "STAND_IN_BUSY_MS");
 	if (!busyFor) {
 		fprintf(stderr, timedOutText, stillText, phase, 900U, save, "");
 		return 3;
@@ -436,7 +480,7 @@ static bool hasArgument(int argc, char **argv, const char *argument) {
 // The harness's answer to a job while the game loads or processes (FM24_STAND_IN_BUSY), which
 // fm24ctl prints: true if it refused.
 static bool refused(void) {
-	const char *reason = getenv("FM24_STAND_IN_BUSY");
+	const char *reason = getenv(EDITION_ENV_PREFIX "STAND_IN_BUSY");
 	if (!reason || idle) {
 		return false;
 	}
@@ -468,7 +512,7 @@ static char *readFile(const char *path, size_t *length) {
 }
 
 static bool writeFixture(const char *path) {
-	const char *source = getenv("FM24_STAND_IN_FIXTURE");
+	const char *source = getenv(EDITION_ENV_PREFIX "STAND_IN_FIXTURE");
 	char *bytes = NULL;
 	size_t length = 0;
 	if (source) {
@@ -477,8 +521,8 @@ static bool writeFixture(const char *path) {
 			return false;
 		}
 	} else {
-		int sample = (int)number("FM24_STAND_IN_SAMPLE", 0);
-		bytes = getenv("FM24_STAND_IN_SAVED") ? fixtureSamples_savedJson(sample, &length)
+		int sample = (int)number(EDITION_ENV_PREFIX "STAND_IN_SAMPLE", 0);
+		bytes = getenv(EDITION_ENV_PREFIX "STAND_IN_SAVED") ? fixtureSamples_savedJson(sample, &length)
 																					: fixtureSamples_json(sample, &length);
 	}
 	FILE *output = bytes ? fopen(path, "wb") : NULL;
@@ -508,7 +552,7 @@ static int run(int argc, char **argv) {
 	}
 	const char *input = argv[2];
 	const char *output = argv[4];
-	const char *copy = getenv("FM24_STAND_IN_INPUT");
+	const char *copy = getenv(EDITION_ENV_PREFIX "STAND_IN_INPUT");
 	FILE *readable = fopen(input, "rb");
 	if (!readable) {
 		printf("error: cannot read %s\n", input);
@@ -538,10 +582,10 @@ static int run(int argc, char **argv) {
 	}
 	// Unflushed, as the harness writes it: it reaches the file with the first row.
 	fputs("seed,home_goals,away_goals,clock_ticks,finished,rng_final,ms\n", csv);
-	long delay = number("FM24_STAND_IN_ROW_MS", 0);
-	long failAt = number("FM24_STAND_IN_FAIL_AT", -1);
-	long lostAt = number("FM24_STAND_IN_LOST_AT", -1);
-	long badRow = number("FM24_STAND_IN_BAD_ROW", -1);
+	long delay = number(EDITION_ENV_PREFIX "STAND_IN_ROW_MS", 0);
+	long failAt = number(EDITION_ENV_PREFIX "STAND_IN_FAIL_AT", -1);
+	long lostAt = number(EDITION_ENV_PREFIX "STAND_IN_LOST_AT", -1);
+	long badRow = number(EDITION_ENV_PREFIX "STAND_IN_BAD_ROW", -1);
 	for (size_t row = 0; row < count; ++row) {
 		sleepFor(delay);
 		if ((long)row == failAt) {
@@ -607,7 +651,7 @@ static int replace(int argc, char **argv) {
 		return 1;
 	}
 	fclose(readable);
-	const char *copy = getenv("FM24_STAND_IN_INPUT");
+	const char *copy = getenv(EDITION_ENV_PREFIX "STAND_IN_INPUT");
 	if (copy && !copyFile(input, copy)) {
 		printf("error: cannot copy the input\n");
 		return 1;
@@ -619,7 +663,7 @@ static int replace(int argc, char **argv) {
 	if (inject) {
 		printf("ok: fetched player %s\n", argv[4]);
 	}
-	if (inject && getenv("FM24_STAND_IN_DUPLICATE") && !allowDuplicate) {
+	if (inject && getenv(EDITION_ENV_PREFIX "STAND_IN_DUPLICATE") && !allowDuplicate) {
 		fprintf(
 			stderr,
 			"error: %s.person_uid (Stand-in) is already this player; use --allow-duplicate to inject "
@@ -660,7 +704,7 @@ static int list(int argc, char **argv) {
 	if (refused()) {
 		return 1;
 	}
-	const char *source = getenv("FM24_STAND_IN_LIST");
+	const char *source = getenv(EDITION_ENV_PREFIX "STAND_IN_LIST");
 	if (source) {
 		if (!copyFile(source, argv[2])) {
 			printf("error: cannot write %s\n", argv[2]);
@@ -707,7 +751,7 @@ static int launch(int argc, char **argv) {
 		(void)snprintf(
 			path,
 			sizeof path,
-			"%s/Library/Application Support/Sports Interactive/Football Manager 2024/cloud/games/%s.fm",
+			"%s/Library/Application Support/" EDITION_DATA_FOLDER "/cloud/games/%s.fm",
 			home ? home : "",
 			given
 		);
@@ -726,18 +770,18 @@ static int launch(int argc, char **argv) {
 		(void)saves_nameOfPath(given, name, sizeof name);
 		(void)snprintf(path, sizeof path, "%s", given);
 	}
-	bool running = getenv("FM24_STAND_IN_RUNNING") != NULL;
+	bool running = getenv(EDITION_ENV_PREFIX "STAND_IN_RUNNING") != NULL;
 	// A .fm file, or a name looked up while the game is not running, needs the data folder.
-	if (given && getenv("FM24_STAND_IN_UNCLEAR") && (!saves_isName(given) || !running)) {
+	if (given && getenv(EDITION_ENV_PREFIX "STAND_IN_UNCLEAR") && (!saves_isName(given) || !running)) {
 		fprintf(stderr, unclearText, userDataHintText);
 		return 1;
 	}
 	int pid = (int)getpid();
-	const char *date = getenv("FM24_STAND_IN_DATE");
+	const char *date = getenv(EDITION_ENV_PREFIX "STAND_IN_DATE");
 	date = date ? date : "";
 	if (running) {
-		const char *loaded = getenv("FM24_STAND_IN_LOADED");
-		if (rosetta && getenv("FM24_STAND_IN_NATIVE")) {
+		const char *loaded = getenv(EDITION_ENV_PREFIX "STAND_IN_LOADED");
+		if (rosetta && getenv(EDITION_ENV_PREFIX "STAND_IN_NATIVE")) {
 			fprintf(stderr, nativeText, pid);
 			return 3;
 		}
@@ -757,7 +801,7 @@ static int launch(int argc, char **argv) {
 	}
 	printf(throughSteamText, rosetta ? rosettaSteamText : "");
 	printf(harnessWaitText, rosetta ? rosettaWaitText : "");
-	long starting = number("FM24_STAND_IN_LAUNCH_MS", 0);
+	long starting = number(EDITION_ENV_PREFIX "STAND_IN_LAUNCH_MS", 0);
 	sleepFor(starting / 2);
 	if (starting > 0) {
 		printf(stillWaitingText, 60LL);
@@ -768,7 +812,7 @@ static int launch(int argc, char **argv) {
 	if (given) {
 		printf(saveWaitText, name, timeout);
 		printf(stateText, "loading");
-		sleepFor(number("FM24_STAND_IN_LOAD_MS", 0));
+		sleepFor(number(EDITION_ENV_PREFIX "STAND_IN_LOAD_MS", 0));
 		printf(stateText, "ready");
 		printf(readyText, name, "", pid, date[0] ? ", " : "", date);
 	}
@@ -785,29 +829,29 @@ static int install(void) {
 	char app[1200];
 	char steam[1100];
 	(void)snprintf(
-		folder, sizeof folder, "%s/Library/Application Support/fm24-harness", home ? home : ""
+		folder, sizeof folder, "%s/Library/Application Support/" EDITION_HARNESS, home ? home : ""
 	);
 	(void)snprintf(steam, sizeof steam, "%s/Library/Application Support/Steam", home ? home : "");
-	(void)snprintf(launcher, sizeof launcher, "%s/launch-fm24.sh", folder);
-	(void)snprintf(dylib, sizeof dylib, "fm24-harness-%s.dylib", fixtureView_protocol());
+	(void)snprintf(launcher, sizeof launcher, "%s/" EDITION_LAUNCHER, folder);
+	(void)snprintf(dylib, sizeof dylib, EDITION_HARNESS "-%s.dylib", fixtureView_protocol());
 	(void)snprintf(
 		app,
 		sizeof app,
-		"%s/Library/Application Support/Steam/steamapps/common/Football Manager 2024/fm.app",
+		"%s/Library/Application Support/Steam/steamapps/common/" EDITION_GAME "/fm.app",
 		home ? home : ""
 	);
 	printf(installedText, fixtureView_protocol(), "", folder, dylib, launcher, folder);
-	bool noSteam = getenv("FM24_STAND_IN_NO_STEAM") != NULL;
-	if (noSteam || getenv("FM24_STAND_IN_NO_GAME")) {
+	bool noSteam = getenv(EDITION_ENV_PREFIX "STAND_IN_NO_STEAM") != NULL;
+	if (noSteam || getenv(EDITION_ENV_PREFIX "STAND_IN_NO_GAME")) {
 		fputs(gameMissingText, stdout);
 		printf(noSteam ? noSteamText : noGameText, steam);
 	} else {
 		printf(gameFoundText, app);
 	}
-	const char *current = getenv("FM24_STAND_IN_CURRENT_OPTION");
-	if (getenv("FM24_STAND_IN_OPTION_SET")) {
+	const char *current = getenv(EDITION_ENV_PREFIX "STAND_IN_CURRENT_OPTION");
+	if (getenv(EDITION_ENV_PREFIX "STAND_IN_OPTION_SET")) {
 		fputs(optionSetText, stdout);
-		if (getenv("FM24_STAND_IN_UNCLEAR")) {
+		if (getenv(EDITION_ENV_PREFIX "STAND_IN_UNCLEAR")) {
 			fputs(dataFolderText, stdout);
 		}
 	} else {

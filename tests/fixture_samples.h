@@ -48,8 +48,11 @@ bool fixtureSamples_config(
 // small squads; the annotations a venue edit must keep.
 bool fixtureSamples_venue(struct ByteBuffer *out);
 // The unlabelled config, whose home plan gives familiarity settings {16, 5, 10, 20, 10, 15, 5}
-// and whose home players 1 and 2 carry two real players' familiarity entries.
+// and whose home players 1 and 2 carry two real players' familiarity entries. Where tactics have
+// two phases (EDITION_TACTIC_PHASES), its six categories' entries are made up, and each player
+// also has a position and role entry at 7000.
 bool fixtureSamples_familiarity(struct ByteBuffer *out);
 // The value (0-10000) the game's tactic familiarity panel showed for the familiarity sample's
-// player (0 or 1: home players 1 and 2) in a category.
+// player (0 or 1: home players 1 and 2) in a category; with two phases, the category's best amount
+// (0 for none).
 unsigned fixtureSamples_familiarityShown(unsigned player, unsigned category);

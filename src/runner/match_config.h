@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Encodes an "fm24-match-config/1" JSON config (written by the DLL) back into the serialised
+// Encodes an "fmNN-match-config/1" JSON config (written by the DLL) back into the serialised
 // GAME_MATCH bytes the game's deserialiser expects.
 //
 // Each entry of "fields" carries exactly one value, emitted in order:
@@ -88,7 +88,7 @@ bool matchConfig_visit(
 bool matchConfig_readOrigin(const char *json, size_t length, ConfigOrigin *origin);
 
 // As matchConfig_visit, for a file of the same field syntax with another "format"
-// (e.g. "fm24-player/1", a player's database values from `fm24ctl get-player`).
+// (e.g. "fmNN-player/1", a player's database values from `fmNNctl get-player`).
 bool matchConfig_visitFormat(
 	const char *json,
 	size_t length,

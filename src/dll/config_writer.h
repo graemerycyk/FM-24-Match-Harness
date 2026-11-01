@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Writes a traced serialisation as a JSON match config ("fm24-match-config/1"):
+// Writes a traced serialisation as a JSON match config ("fmNN-match-config/1"):
 //
 //   bytes     the serialised length (full only)
 //   paths[]   distinct serialiser call chains, see trace.h (full only)

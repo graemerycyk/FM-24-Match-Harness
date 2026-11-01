@@ -97,7 +97,7 @@ PathsFolder paths_parentFolder(const wchar_t *path) {
 	if (!S_ISDIR(status.st_mode)) {
 		return PATHS_FOLDER_NOT_FOLDER;
 	}
-	// The game and fm24ctl write a file in place ("wb"), as the same user: an existing file needs
+	// The game and fmNNctl write a file in place ("wb"), as the same user: an existing file needs
 	// the user's permission to write it, a new one their permission to write in the folder and
 	// search it (stat needed only the folders above it).
 	struct stat existing;

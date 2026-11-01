@@ -4,6 +4,7 @@
 #include "session.h"
 
 #include "client.h"
+#include "edition.h"
 #include "platform.h"
 
 #include <stdio.h>
@@ -93,7 +94,7 @@ SessionOutcome session_waitReady(SessionWait *wait, SessionPoll *poll, void *con
 			return outcome;
 		}
 		if (changed) {
-			printf("FM24 state: %s\n", saves_phaseName(sample.status.phase));
+			printf(EDITION_PRODUCT " state: %s\n", saves_phaseName(sample.status.phase));
 		}
 		if (sample.at - wait->reported >= SESSION_PROGRESS_S) {
 			printf("still waiting (%lld s)...\n", (long long)(sample.at - wait->started));
@@ -117,6 +118,11 @@ static SessionOutcome judge(SessionWait *wait, const SessionSample *sample) {
 		if (status->phase == STATUS_MENU && !wait->launched) {
 			return SESSION_AT_MENU;
 		}
+#if EDITION_ENGINE_PLUGIN
+		if (status->phase == STATUS_MENU && wait->byHand) {
+			return SESSION_WAITING;
+		}
+#endif
 		if (status->phase == STATUS_MENU && sample->at - wait->menuSince >= SESSION_MENU_GRACE_S) {
 			return status->autoPlayRead ? SESSION_NOT_LOADED : SESSION_NO_AUTOPLAY;
 		}

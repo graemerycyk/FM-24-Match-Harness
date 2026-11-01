@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureSamples
 import Foundation
 
@@ -11,29 +12,38 @@ import Foundation
 @MainActor
 enum LaunchTests {
 	static func register() {
-		Tests.test("the Launch FM24 sheet lists the saves fm24ctl finds", listsSaves)
-		Tests.test("the sheet offers no save where fm24ctl cannot load one", offersNoSave)
-		Tests.test("Launch FM24 starts the game with a save, then exports its fixture", launches)
-		Tests.test("Launch FM24 remembers what it last loaded", remembers)
-		Tests.test("Launch FM24 over a fixture reports how the launch ended", reportsOutcome)
-		Tests.test("Cancel ends fm24ctl launch", cancels)
+		Tests.test(
+			"the Launch \(EDITION_PRODUCT) sheet lists the saves \(EDITION_CLI) finds",
+			listsSaves
+		)
+		Tests.test("the sheet offers no save where \(EDITION_CLI) cannot load one", offersNoSave)
+		Tests.test(
+			"Launch \(EDITION_PRODUCT) starts the game with a save, then exports its fixture",
+			launches
+		)
+		Tests.test("Launch \(EDITION_PRODUCT) remembers what it last loaded", remembers)
+		Tests.test(
+			"Launch \(EDITION_PRODUCT) over a fixture reports how the launch ended",
+			reportsOutcome
+		)
+		Tests.test("Cancel ends \(EDITION_CLI) launch", cancels)
 		Tests.test("--launch-save starts the game, then exports its fixture", launchesFromArgument)
 		Tests.test("the viewer's arguments are read", readsArguments)
 		Tests.test("Install Harness shows the Steam launch option to copy", installs)
 		Tests.test(
-			"the Launch FM24 sheet installs the harness instead without Steam's option",
+			"the Launch \(EDITION_PRODUCT) sheet installs the harness instead without Steam's option",
 			installsFromSheet
 		)
 		Tests.test(
-			"errors offer Launch FM24, or Install Harness without Steam's option, when no harness serves",
+			"errors offer Launch \(EDITION_PRODUCT), or Install Harness without Steam's option, when no harness serves",
 			offersLaunch
 		)
 	}
 
 	private static let readyDate = "2024 day 123 15:00"
 	private static let unclearNote =
-		"Steam's launch option for FM24 sets its data folder (user_data_location) in a way fm24ctl "
-		+ "does not follow, so FM24 Viewer cannot load a save: launch FM24 at its start screen and "
+		"Steam's launch option for \(EDITION_PRODUCT) sets its data folder (user_data_location) in a way \(EDITION_CLI) "
+		+ "does not follow, so \(EDITION_VIEWER_NAME) cannot load a save: launch \(EDITION_PRODUCT) at its start screen and "
 		+ "load the save there, or give the folder in the option as "
 		+ "--user_data_location=<absolute folder>."
 
@@ -43,7 +53,7 @@ enum LaunchTests {
 
 	/// Waits until the launch has ended.
 	private static func waitForLaunch(_ model: ViewerModel) {
-		check(waitUntil { !model.launchRunning }, "fm24ctl launch did not end")
+		check(waitUntil { !model.launchRunning }, "\(EDITION_CLI) launch did not end")
 		wait(model)
 	}
 
@@ -92,9 +102,9 @@ enum LaunchTests {
 				}
 			checkEqual(saves.saves, expected)
 			let notes = [
-				"Saves in ~/Library/Application Support/Sports Interactive/Football Manager 2024, newest "
+				"Saves in ~/Library/Application Support/\(EDITION_DATA_FOLDER), newest "
 					+ "first.",
-				"Saves in ~/FM Data, the data folder Steam's launch option gives FM24, newest first.",
+				"Saves in ~/FM Data, the data folder Steam's launch option gives \(EDITION_PRODUCT), newest first.",
 				unclearNote,
 			]
 			checkEqual(saves.note, notes[unclear ? 2 : steam ? 1 : 0])
@@ -165,9 +175,9 @@ enum LaunchTests {
 		failing.model.launch(save: remembered.path, rosetta: false)
 		waitForLaunch(failing.model)
 		let refusal =
-			"Steam's launch option for FM24 sets its data folder (user_data_location) in a way fm24ctl "
+			"Steam's launch option for \(EDITION_PRODUCT) sets its data folder (user_data_location) in a way \(EDITION_CLI) "
 			+ "does not follow; give it in Steam's launch option as --user_data_location=<absolute "
-			+ "folder>, or launch FM24 at its start screen and load the save there"
+			+ "folder>, or launch \(EDITION_PRODUCT) at its start screen and load the save there"
 		checkEqual(failing.model.launchPrompt?.phase, .failed(refusal))
 		checkEqual(failing.standIn.runs, [["launch", "--save", remembered.path]])
 		check(failing.prompts.errors.isEmpty, "\(failing.prompts.errors)")
@@ -212,7 +222,10 @@ enum LaunchTests {
 			"the wait's progress did not arrive"
 		)
 		check(prompt.isLaunching)
-		check(waitUntil { prompt.lines.contains("FM24 state: loading") }, "the load did not start")
+		check(
+			waitUntil { prompt.lines.contains("\(EDITION_PRODUCT) state: loading") },
+			"the load did not start"
+		)
 		check(prompt.isLaunching)
 		// Ready: the sheet closes and the startup export shows the next fixture.
 		waitForLaunch(model)
@@ -224,7 +237,10 @@ enum LaunchTests {
 			setup.standIn.runs,
 			[
 				["launch", "--save", path],
-				["get-next-fixture", setup.temporary.appendingPathComponent("temp-fixture.json").path],
+				[
+					"get-next-fixture",
+					setup.temporary.appendingPathComponent(EDITION_TEMPORARY_FIXTURE).path,
+				],
 			]
 		)
 		let ready = prompt.lines.last ?? ""
@@ -232,7 +248,10 @@ enum LaunchTests {
 			ready.hasPrefix("ready: LIV_MAIN_FM24 loaded (pid ") && ready.hasSuffix(", \(readyDate))"),
 			ready
 		)
-		check(model.log.text.contains("fm24ctl: FM24 state: ready"), model.log.text)
+		check(
+			model.log.text.contains("\(EDITION_CLI): \(EDITION_PRODUCT) state: ready"),
+			model.log.text
+		)
 		checkEqual(setup.settings.launchSave, path)
 		checkEqual(setup.settings.launchRosetta, false)
 		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
@@ -262,19 +281,19 @@ enum LaunchTests {
 		model.requestLaunch()
 		checkEqual(
 			model.launchPrompt?.launchingText,
-			"Starting FM24 with LIV_MAIN_FM24; this can take several minutes."
+			"Starting \(EDITION_PRODUCT) with LIV_MAIN_FM24; this can take several minutes."
 		)
 		model.chooseLaunch(.startScreen)
 		checkEqual(
 			model.launchPrompt?.launchingText,
-			"Starting FM24 at its start screen; this can take several minutes."
+			"Starting \(EDITION_PRODUCT) at its start screen; this can take several minutes."
 		)
 		model.setLaunchRosetta(true)
 		model.confirmLaunch()
 		waitForLaunch(model)
 		checkEqual(setup.standIn.runs.last, ["launch", "--rosetta"])
 		check(
-			model.log.text.contains("Launching FM24 at its start screen, under Rosetta"),
+			model.log.text.contains("Launching \(EDITION_PRODUCT) at its start screen, under Rosetta"),
 			model.log.text
 		)
 		check(model.launchPrompt == nil)
@@ -375,14 +394,14 @@ enum LaunchTests {
 		check(model.launchPrompt == nil)
 		// Failures: fm24ctl's reason in the sheet, which stays open to try again.
 		let otherSave =
-			"FM24 has 'Other Career' loaded, not 'LIV_MAIN_FM24'; fm24ctl will not switch saves in a "
-			+ "running game (unsaved progress). Quit FM24 (saving first only if you loaded that save "
+			"\(EDITION_PRODUCT) has 'Other Career' loaded, not 'LIV_MAIN_FM24'; \(EDITION_CLI) will not switch saves in a "
+			+ "running game (unsaved progress). Quit \(EDITION_PRODUCT) (saving first only if you loaded that save "
 			+ "yourself and have done no harness work since), then run this again."
 		let cases: [([String: String], Bool, String)] = [
 			(["RUNNING": "1", "LOADED": "Other Career"], false, otherSave),
 			(
 				["RUNNING": "1", "NATIVE": "1"], true,
-				"natively, not under Rosetta; fm24ctl will not restart a running game. Quit it, then run "
+				"natively, not under Rosetta; \(EDITION_CLI) will not restart a running game. Quit it, then run "
 					+ "this again."
 			),
 			(
@@ -433,15 +452,15 @@ enum LaunchTests {
 		model.confirmLaunch()
 		check(
 			waitUntil { prompt.lines.contains("waiting for the game to start the harness...") },
-			"fm24ctl did not start"
+			"\(EDITION_CLI) did not start"
 		)
 		checkEqual(model.closeCheck(), .close)
 		let cancelled = Date()
 		model.cancelLaunch()
 		checkEqual(prompt.phase, .stopped)
 		check(model.launchPrompt === prompt)
-		check(waitUntil(seconds: 3) { !model.launchRunning }, "fm24ctl launch ran on")
-		check(Date().timeIntervalSince(cancelled) < 2, "fm24ctl launch ran on")
+		check(waitUntil(seconds: 3) { !model.launchRunning }, "\(EDITION_CLI) launch ran on")
+		check(Date().timeIntervalSince(cancelled) < 2, "\(EDITION_CLI) launch ran on")
 		// Nothing more arrives from it, and nothing is exported.
 		let lines = prompt.lines
 		RunLoop.main.run(until: Date().addingTimeInterval(0.5))
@@ -461,8 +480,8 @@ enum LaunchTests {
 		check(model.launchRunning)
 		let quit = Date()
 		model.stopJobs()
-		check(waitUntil(seconds: 3) { !model.launchRunning }, "fm24ctl launch ran on")
-		check(Date().timeIntervalSince(quit) < 2, "fm24ctl launch ran on")
+		check(waitUntil(seconds: 3) { !model.launchRunning }, "\(EDITION_CLI) launch ran on")
+		check(Date().timeIntervalSince(quit) < 2, "\(EDITION_CLI) launch ran on")
 		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
 	}
 
@@ -491,7 +510,7 @@ enum LaunchTests {
 		checkEqual(setup.standIn.runs.last?.first, "get-next-fixture")
 		check(
 			prompt.lines.contains(
-				"starting Football Manager 2024 through Steam (its launch option loads the harness and "
+				"starting \(EDITION_GAME) through Steam (its launch option loads the harness and "
 					+ "starts the x86_64 slice under Rosetta)"
 			),
 			"\(prompt.lines)"
@@ -519,11 +538,14 @@ enum LaunchTests {
 		// So does Cancel.
 		failing.standIn.set(["LAUNCH_MS": "6000"])
 		failing.model.launch(save: "LIV_MAIN_FM24", rosetta: false)
-		check(waitUntil { failing.model.launchPrompt?.lines.isEmpty == false }, "fm24ctl did not start")
+		check(
+			waitUntil { failing.model.launchPrompt?.lines.isEmpty == false },
+			"\(EDITION_CLI) did not start"
+		)
 		failing.model.cancelLaunch()
 		checkEqual(failing.model.status, ViewerModel.launchStopped)
 		checkEqual(failing.model.retry, .export)
-		check(waitUntil { !failing.model.launchRunning }, "fm24ctl launch ran on")
+		check(waitUntil { !failing.model.launchRunning }, "\(EDITION_CLI) launch ran on")
 		failing.model.cancelLaunch()
 		failing.model.retryStart()
 		wait(failing.model)
@@ -542,7 +564,10 @@ enum LaunchTests {
 		waitForLaunch(intel.model)
 		checkEqual(intel.standIn.runs.first, ["launch", "--save", "LIV_MAIN_FM24"])
 		check(intel.model.log.text.contains(ViewerModel.rosettaIgnored), intel.model.log.text)
-		check(intel.model.log.text.contains("Launching FM24 with LIV_MAIN_FM24"), intel.model.log.text)
+		check(
+			intel.model.log.text.contains("Launching \(EDITION_PRODUCT) with LIV_MAIN_FM24"),
+			intel.model.log.text
+		)
 		check(!intel.model.log.text.contains("under Rosetta"), intel.model.log.text)
 		check(intel.model.isTemporary)
 		check(intel.prompts.errors.isEmpty, "\(intel.prompts.errors)")
@@ -600,8 +625,8 @@ enum LaunchTests {
 		let model = setup.model
 		var copied: [String] = []
 		model.copyText = { copied.append($0) }
-		let folder = setup.home.path + "/Library/Application Support/fm24-harness"
-		let launcher = folder + "/launch-fm24.sh"
+		let folder = setup.home.path + "/Library/Application Support/\(EDITION_HARNESS)"
+		let launcher = folder + "/\(EDITION_LAUNCHER)"
 		let option = "/bin/sh \"\(launcher)\" %command%"
 		let version = FixtureHandle.protocolVersion
 		model.requestInstall()
@@ -612,7 +637,7 @@ enum LaunchTests {
 		check(waitUntil { model.installState != .installing }, "install did not finish")
 		let game =
 			setup.home.path
-			+ "/Library/Application Support/Steam/steamapps/common/Football Manager 2024/fm.app"
+			+ "/Library/Application Support/Steam/steamapps/common/\(EDITION_GAME)/fm.app"
 		let expected = InstallReport(
 			version: version,
 			folder: folder,
@@ -635,8 +660,8 @@ enum LaunchTests {
 		// macos_game.c).
 		let steamFolder = setup.home.path + "/Library/Application Support/Steam"
 		let noGame =
-			"Install Football Manager 2024 (24.4.2) in Steam, then run `fm24ctl install` again; "
-			+ "fm24ctl looks in the Steam libraries that \(steamFolder)/steamapps/libraryfolders.vdf "
+			"Install \(EDITION_GAME) (\(EDITION_GAME_VERSION)) in Steam, then run `\(EDITION_CLI) install` again; "
+			+ "\(EDITION_CLI) looks in the Steam libraries that \(steamFolder)/steamapps/libraryfolders.vdf "
 			+ "lists."
 		setup.standIn.set(["OPTION_SET": "1", "NO_GAME": "1"])
 		model.requestInstall()
@@ -650,8 +675,8 @@ enum LaunchTests {
 		model.closeInstall()
 		// No Steam, and the account's own option.
 		let noSteam =
-			"Steam is not in \(steamFolder), where fm24ctl looks for it: install Steam and Football "
-			+ "Manager 2024 (24.4.2), then run `fm24ctl install` again."
+			"Steam is not in \(steamFolder), where \(EDITION_CLI) looks for it: install Steam and "
+			+ "\(EDITION_GAME) (\(EDITION_GAME_VERSION)), then run `\(EDITION_CLI) install` again."
 		let own = "-windowed %command% -skip_intro"
 		setup.standIn.set(["NO_STEAM": "1", "CURRENT_OPTION": own])
 		model.requestInstall()
@@ -664,8 +689,8 @@ enum LaunchTests {
 		model.closeInstall()
 		// The option set, with a data folder fm24ctl does not follow.
 		let unclear =
-			"It sets FM24's data folder (user_data_location) in a way fm24ctl does not follow, "
-			+ "which stops `fm24ctl launch --save` and the commands that start the game for a "
+			"It sets \(EDITION_PRODUCT)'s data folder (user_data_location) in a way \(EDITION_CLI) does not follow, "
+			+ "which stops `\(EDITION_CLI) launch --save` and the commands that start the game for a "
 			+ "fixture's save: write it as --user_data_location=<absolute folder>."
 		setup.standIn.set(["OPTION_SET": "1", "UNCLEAR": "1"])
 		model.requestInstall()
@@ -690,21 +715,22 @@ enum LaunchTests {
 		model.closeInstall()
 		// A development build's harness, as fm24ctl reports it.
 		let report = InstallReport.parse([
-			"installed harness 1.3.0 (the development build next to fm24ctl): /H/f/fm24-harness-1.3.0.dylib",
-			"launcher: /H/f/launch-fm24.sh", "log: /H/f/harness.log",
-			"Football Manager 2024 was not found in your Steam libraries",
+			"installed harness 1.3.0 (the development build next to \(EDITION_CLI)): /H/f/\(EDITION_HARNESS)-1.3.0.dylib",
+			"launcher: /H/f/\(EDITION_LAUNCHER)", "log: /H/f/harness.log",
+			"\(EDITION_GAME) was not found in your Steam libraries",
 		])
 		checkEqual(report?.version, "1.3.0")
 		checkEqual(report?.folder, "/H/f")
-		checkEqual(report?.launchOption, "/bin/sh \"/H/f/launch-fm24.sh\" %command%")
+		checkEqual(report?.launchOption, "/bin/sh \"/H/f/\(EDITION_LAUNCHER)\" %command%")
 		checkEqual(report?.game, nil)
 		checkEqual(report?.currentOption, nil)
 		checkEqual(report?.notes, [])
 		// Every piece of advice, in the order install gives it.
 		let advised = InstallReport.parse([
-			"installed harness 1.3.0: /H/f/fm24-harness-1.3.0.dylib", "launcher: /H/f/launch-fm24.sh",
-			"Football Manager 2024 was not found in your Steam libraries", noSteam, noGame, "",
-			"Steam's launch option for Football Manager 2024 is now: \(own)", "", unclear,
+			"installed harness 1.3.0: /H/f/\(EDITION_HARNESS)-1.3.0.dylib",
+			"launcher: /H/f/\(EDITION_LAUNCHER)",
+			"\(EDITION_GAME) was not found in your Steam libraries", noSteam, noGame, "",
+			"Steam's launch option for \(EDITION_GAME) is now: \(own)", "", unclear,
 		])
 		checkEqual(advised?.currentOption, own)
 		checkEqual(advised?.notes, [noSteam, noGame, unclear])
@@ -733,13 +759,13 @@ enum LaunchTests {
 		model.confirmLaunch()
 		check(
 			waitUntil { prompt.lines.contains("waiting for the game to start the harness...") },
-			"fm24ctl did not start"
+			"\(EDITION_CLI) did not start"
 		)
 		model.installInsteadOfLaunch()
 		check(model.launchPrompt === prompt && model.installState == nil)
 		model.cancelLaunch()
 		checkEqual(prompt.phase, .stopped)
-		check(waitUntil(seconds: 3) { !model.launchRunning }, "fm24ctl launch ran on")
+		check(waitUntil(seconds: 3) { !model.launchRunning }, "\(EDITION_CLI) launch ran on")
 		model.installInsteadOfLaunch()
 		check(model.launchPrompt == nil)
 		checkEqual(model.installState, .installing)
@@ -780,13 +806,13 @@ enum LaunchTests {
 		wait(model)
 		setup.standIn.set([
 			"STATUS": "1", "STDOUT": "",
-			"STDERR": "Football Manager 2024 is not running.\n",
+			"STDERR": "\(EDITION_GAME) is not running.\n",
 		])
 		model.setSeeds("1")
 		model.simulate()
 		check(waitUntil { !model.simulation.running }, "the simulation did not finish")
 		let message =
-			"FM24 isn't running with harness \(FixtureHandle.protocolVersion).\nFootball Manager 2024 is "
+			"\(EDITION_PRODUCT) isn't running with harness \(FixtureHandle.protocolVersion).\n\(EDITION_GAME) is "
 			+ "not running."
 		checkEqual(setup.prompts.launchOffers.count, 1)
 		checkEqual(
@@ -821,7 +847,7 @@ enum LaunchTests {
 		// With the option set, Launch FM24…, which opens the sheet.
 		setup.standIn.set([
 			"STATUS": "1", "STDOUT": "",
-			"STDERR": "Football Manager 2024 is not running.\n",
+			"STDERR": "\(EDITION_GAME) is not running.\n",
 		])
 		model.simulate()
 		check(waitUntil { !model.simulation.running }, "the simulation did not finish")
@@ -834,7 +860,7 @@ enum LaunchTests {
 		model.simulate()
 		check(waitUntil { !model.simulation.running }, "the simulation did not finish")
 		checkEqual(setup.prompts.launchOffers.count, 4)
-		check(model.launchPrompt != nil, "Launch FM24… did not open the sheet")
+		check(model.launchPrompt != nil, "Launch \(EDITION_PRODUCT)… did not open the sheet")
 		check(model.launchPrompt?.saves.optionSet == true)
 		model.cancelLaunch()
 		// With a harness serving, a plain error box.

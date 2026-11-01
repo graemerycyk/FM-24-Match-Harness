@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "edition.h"
 #include "player_inject.h"
 #include "test.h"
 #include "tests.h"
@@ -8,7 +9,7 @@
 
 
 static const char config[] =
-	"{\"format\": \"fm24-match-config/1\", \"home_team\": 678, \"fields\": [\n"
+	"{\"format\": \"" EDITION_MATCH_CONFIG_FORMAT "\", \"home_team\": 678, \"fields\": [\n"
 	"  {\"name\": \"home.player[0]\", \"player\": \"Old Keeper\", \"u8\": 255},\n"
 	"  {\"name\": \"home.player[0].ratings\", \"u8map\": {\"a\": 1, \"b\": 2}},\n"
 	"  {\"name\": \"home.player[0].condition\", \"u16\": 9000},\n"
@@ -27,7 +28,7 @@ static const char config[] =
 	"]}\n";
 
 static const char player[] =
-	"{\"format\": \"fm24-player/1\", \"fields\": [\n"
+	"{\"format\": \"" EDITION_PLAYER_FORMAT "\", \"fields\": [\n"
 	"  {\"name\": \"person_uid\", \"player\": \"New \\\"Star\\\"\", \"u32\": 33},\n"
 	"  {\"name\": \"ratings\", \"u8map\": {\"a\": 19, \"b\": 20}},\n"
 	"  {\"name\": \"condition\", \"u16\": 10000},\n"
@@ -59,7 +60,7 @@ static bool inject(
 
 TEST(replaces_only_the_named_values_of_the_block) {
 	static const char expected[] =
-		"{\"format\": \"fm24-match-config/1\", \"home_team\": 678, \"fields\": [\n"
+		"{\"format\": \"" EDITION_MATCH_CONFIG_FORMAT "\", \"home_team\": 678, \"fields\": [\n"
 		"  {\"name\": \"home.player[0]\", \"player\": \"Old Keeper\", \"u8\": 255},\n"
 		"  {\"name\": \"home.player[0].ratings\", \"u8map\": {\"a\": 1, \"b\": 2}},\n"
 		"  {\"name\": \"home.player[0].condition\", \"u16\": 9000},\n"
@@ -104,7 +105,7 @@ TEST(allows_a_duplicate_with_its_own_unique_id_when_asked) {
 }
 
 TEST(rejects_a_player_already_in_the_match) {
-	static const char twin[] = "{\"format\": \"fm24-player/1\", \"fields\": [\n"
+	static const char twin[] = "{\"format\": \"" EDITION_PLAYER_FORMAT "\", \"fields\": [\n"
 														 "  {\"name\": \"person_uid\", \"u32\": 22}\n"
 														 "]}\n";
 	ByteBuffer out = {0};
@@ -118,11 +119,11 @@ TEST(rejects_a_player_already_in_the_match) {
 }
 
 TEST(rejects_missing_blocks_and_mismatched_values) {
-	static const char wrongType[] = "{\"format\": \"fm24-player/1\", \"fields\": [\n"
+	static const char wrongType[] = "{\"format\": \"" EDITION_PLAYER_FORMAT "\", \"fields\": [\n"
 																	"  {\"name\": \"person_uid\", \"u32\": 33},\n"
 																	"  {\"name\": \"condition\", \"u32\": 10000}\n"
 																	"]}\n";
-	static const char noUid[] = "{\"format\": \"fm24-player/1\", \"fields\": [\n"
+	static const char noUid[] = "{\"format\": \"" EDITION_PLAYER_FORMAT "\", \"fields\": [\n"
 															"  {\"name\": \"condition\", \"u16\": 10000}\n"
 															"]}\n";
 	ByteBuffer out = {0};
@@ -138,7 +139,7 @@ TEST(rejects_missing_blocks_and_mismatched_values) {
 	ASSERT_BOOL_EQ(inject(noUid, "home.player[0]", false, &out, &result, error, sizeof error), false);
 	ASSERT_BOOL_EQ(strstr(error, "person_uid") != NULL, true);
 	ASSERT_BOOL_EQ(inject(config, "home.player[0]", false, &out, &result, error, sizeof error), false);
-	ASSERT_BOOL_EQ(strstr(error, "fm24-player/1") != NULL, true);
+	ASSERT_BOOL_EQ(strstr(error, EDITION_PLAYER_FORMAT) != NULL, true);
 	buffer_free(&out);
 }
 

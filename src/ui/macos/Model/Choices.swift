@@ -5,8 +5,8 @@ import Combine
 import FixtureCore
 import Foundation
 
-/// A team the team pickers offer (`fm24ctl list-teams`), or a player the swap prompt offers
-/// (`fm24ctl list-players`).
+/// A team the team pickers offer (`fmNNctl list-teams`), or a player the swap prompt offers
+/// (`fmNNctl list-players`).
 struct Choice: Equatable {
 	let id: UInt32
 	/// "Name (ID)", or "Common name (Forename Surname) – Club (ID)".

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import Edition
 import UniformTypeIdentifiers
 
 /// The viewer's prompts as sheets on its window: error alerts, and the Open and Save panels with
@@ -9,12 +10,12 @@ import UniformTypeIdentifiers
 @MainActor
 final class SystemPrompts: ViewerPrompts {
 	private static let binary = UTType(filenameExtension: "bin") ?? .data
-	/// FM24's saves, which no app registers a type for.
+	/// FMNN's saves, which no app registers a type for.
 	private static let save = UTType(filenameExtension: "fm") ?? .data
 
 	/// The window the sheets attach to; alerts are app-modal without one.
 	weak var window: NSWindow?
-	/// A sheet of the viewer's own on the window (the swap prompt, or the Launch FM24 or Install
+	/// A sheet of the viewer's own on the window (the swap prompt, or the Launch FMNN or Install
 	/// Harness sheet), to which alerts and panels attach.
 	weak var sheet: NSWindow?
 
@@ -27,7 +28,7 @@ final class SystemPrompts: ViewerPrompts {
 		present(alert) { _ in }
 	}
 
-	/// OK (Return and Escape) and `action`: Launch FM24… or Install Harness….
+	/// OK (Return and Escape) and `action`: Launch FMNN… or Install Harness….
 	func offerLaunch(
 		_ message: String,
 		title: String,
@@ -177,7 +178,7 @@ final class SystemPrompts: ViewerPrompts {
 	func chooseSave(directory: URL?, completion: @escaping (URL?) -> Void) {
 		let panel = NSOpenPanel()
 		panel.title = "Choose a save"
-		panel.message = "Choose an FM24 save (.fm) for the game to load as it starts."
+		panel.message = "Choose an \(EDITION_PRODUCT) save (.fm) for the game to load as it starts."
 		panel.prompt = "Choose"
 		panel.canChooseFiles = true
 		panel.canChooseDirectories = false

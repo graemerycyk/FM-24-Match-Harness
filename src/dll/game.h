@@ -11,19 +11,21 @@
 // objects out differently from MSVC (docs/MACOS.md).
 #pragma once
 
+#include "edition.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 
 // PE timestamps of the builds these addresses are valid for. The Epic Games build is a separate
-// link of the same source; `fm24ctl probe` found every function and data address below at the
+// link of the same source; `fmNNctl probe` found every function and data address below at the
 // same RVA in it (docs/PLAN.md, Phase 20).
 enum {
 	GAME_PE_TIMESTAMP_STEAM = 1744804480,
 	GAME_PE_TIMESTAMP_EPIC = 1744804949,
 	// An older Steam build (March 2024). Its code sits at other addresses; game.c translates the
-	// Steam RVAs used throughout the harness using the shifts `fm24ctl probe` reported for it.
+	// Steam RVAs used throughout the harness using the shifts `fmNNctl probe` reported for it.
 	GAME_PE_TIMESTAMP_STEAM_OLD = 1710868029,
 };
 
@@ -79,7 +81,22 @@ enum MacosGameData {
 };
 #endif
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && EDITION_ENGINE_PLUGIN
+// The engine plugin's code and data with no counterpart in the executable's builds.
+enum PluginGameFunction {
+	// Makes a GAME_MATCH: allocates, constructs, sets its vtable and clears its build flag.
+	RVA_MACOS_MATCH_FACTORY = 0x7F000007,
+};
+
+enum PluginGameData {
+	// [p]: the serialisation context that create, serialise and deserialise take.
+	RVA_MACOS_MATCH_CONTEXT = 0x7F000008,
+};
+#endif
+
+#if defined(__APPLE__) && FM_EDITION == 27
+#include "game_layout_fm27.h"
+#elif defined(__APPLE__)
 // GAME_MATCH layout.
 enum MatchLayout {
 	MATCH_SIZE = 0xE630,       // what MatchBuilder_Create allocates
@@ -239,6 +256,31 @@ enum ThreadRngLayout {
 
 enum { PLAYER_RATING_COUNT = 69, STAFF_ATTRIBUTE_COUNT = 52 };
 
+#if defined(__APPLE__) && EDITION_ENGINE_PLUGIN
+// Second argument of GAME_MATCH__init_from_fixture, as the engine plugin's match builder lays it
+// out on its stack: 0x38 bytes. Its third is the flags block of MATCH_BUILD_FLAGS_SIZE bytes.
+typedef struct InitArgs {
+	uint8_t *fixture;
+	void *scratch; // 16 bytes filled by fixture_prepare_teams
+	uint64_t zero1;
+	uint64_t zero2;
+	uint32_t seed;
+	uint8_t mode;
+	uint8_t zero3[19];
+} InitArgs;
+_Static_assert(sizeof(InitArgs) == 0x38, "the builder's InitArgs are 0x38 bytes");
+_Static_assert(offsetof(InitArgs, scratch) == 0x08, "the scratch pointer is at +0x08");
+_Static_assert(offsetof(InitArgs, seed) == 0x20, "the seed is at +0x20");
+_Static_assert(offsetof(InitArgs, mode) == 0x24, "the mode is at +0x24");
+
+enum { MATCH_BUILD_FLAGS_SIZE = 16 };
+
+// Serialise and deserialise also take the engine's serialisation context (match_context).
+typedef char (*MatchStreamFn)(uint8_t *match, void **streamHandle, void *context, unsigned flags);
+
+// The format version of the build's serialised matches, from its tables; 0 before one is accepted.
+uint16_t game_formatVersion(void);
+#else
 // Second argument of GAME_MATCH__init_from_fixture, as laid out on MatchBuilder_Create's stack.
 typedef struct InitArgs {
 	uint8_t *fixture;
@@ -253,9 +295,11 @@ typedef struct InitArgs {
 	uint8_t padding2[7];
 } InitArgs;
 
+typedef char (*MatchStreamFn)(uint8_t *match, void **streamHandle, unsigned flags);
+#endif
+
 typedef uint8_t *(*MatchCreateFn)(void);
 typedef uint8_t *(*MatchAllocFn)(size_t size); // macOS: GAME_MATCH's operator new
-typedef char (*MatchStreamFn)(uint8_t *match, void **streamHandle, unsigned flags);
 typedef void (*MatchPrepareFn)(uint8_t *match, char unknown);
 typedef int (*MatchRunFn)(uint8_t *match, unsigned mode, int untilTick);
 typedef void (*MatchFn)(uint8_t *match);
@@ -291,6 +335,44 @@ uint32_t game_rva(const void *address);
 // returning how many. On macOS a frame translates into the frames the Windows build has for the
 // same code, which may be several or none (game_macos.h).
 size_t game_translateFrames(void *const *frames, size_t count, uint32_t *out, size_t capacity);
+
+#if defined(__APPLE__) && EDITION_ENGINE_PLUGIN
+// Where the game keeps its match engine in a plugin bundle (EDITION_ENGINE_PLUGIN), the engine is
+// not there when the harness loads: the game loads the plugin once it has started, and unloads it
+// as it quits. game_init is not used; the harness watches for the plugin instead.
+typedef enum GameEngineState {
+	GAME_ENGINE_STARTING, // the engine plugin has not been loaded (yet)
+	GAME_ENGINE_ACCEPTED, // it is loaded, a supported build, and the tables match it
+	GAME_ENGINE_REFUSED,  // it is loaded, but not a build these tables are for
+	GAME_ENGINE_GONE,     // it has been unloaded: the game is quitting
+} GameEngineState;
+
+// Starts watching for the engine plugin, from the harness's initialiser (before the game can load
+// it). False if it cannot.
+bool game_watch(void);
+
+// A descriptor that becomes readable when the game has loaded a bundle or unloaded the engine
+// plugin: then call game_update.
+int game_watchDescriptor(void);
+
+// On the job thread, between jobs: notes what the game has loaded or unloaded since the last call,
+// identifies a newly loaded engine plugin and checks its tables (logging each), and returns the
+// state after that.
+GameEngineState game_update(void);
+
+// The engine plugin's state as game_update last found it.
+GameEngineState game_engineState(void);
+
+// Around a job that uses the engine: while held, the game's unloading of the plugin waits for
+// game_release (up to a limit; see game_macos.c). False, with nothing held, if the plugin is being
+// unloaded.
+bool game_hold(void);
+void game_release(void);
+
+// False once the game has begun to unload the engine plugin: a job stops at its next boundary,
+// such as a seed.
+bool game_loaded(void);
+#endif
 
 // Runs the calling thread's thread_local constructors in fm.exe if the game has not done so yet
 // (every thread that calls into the engine needs them); returns the thread's TLS block. On macOS,

@@ -4,6 +4,7 @@
 #include "commands.h"
 
 #include "client.h"
+#include "edition.h"
 #include "files.h"
 #include "match_config.h"
 #include "paths.h"
@@ -80,6 +81,9 @@ typedef struct SaveCheck {
 	bool badSave;                 // the fixture's "save" is not a save's name
 	bool noLaunch;                // --no-launch
 	bool anySave;                 // --any-save
+#if EDITION_ENGINE_PLUGIN
+	bool unrecorded; // a fixture without a "save", as the edition's exports are (see ensureSave)
+#endif
 } SaveCheck;
 
 typedef struct RunOptions {
@@ -167,7 +171,7 @@ int commands_runWithProgress(int argc, wchar_t **argv, uintptr_t progressWindow)
 	if (!parseRunArguments(argc, argv, &options)) {
 		fprintf(
 			stderr,
-			"usage: fm24ctl run <input.bin|.json> [seeds] [output.csv] [--threads N]"
+			"usage: " EDITION_CLI " run <input.bin|.json> [seeds] [output.csv] [--threads N]"
 			" [--profile <samples.txt>] [--detailed] [--human-control] [--keep-build]" SAVE_FLAGS_USAGE
 			"\n"
 		);
@@ -251,8 +255,8 @@ int commands_getNextFixture(int argc, wchar_t **argv) {
 	if (argc < 3 || !parseFixtureOptions(argc, argv, seed, sizeof seed, &full, &check)) {
 		fprintf(
 			stderr,
-			"usage: fm24ctl get-next-fixture <output.json|.bin> [--seed N] [--full]" SAVE_OPTIONS_USAGE
-			"\n"
+			"usage: " EDITION_CLI
+			" get-next-fixture <output.json|.bin> [--seed N] [--full]" SAVE_OPTIONS_USAGE "\n"
 		);
 		return EXIT_USAGE;
 	}
@@ -282,7 +286,7 @@ int commands_replaceTeamWithResult(int argc, wchar_t **argv, char *result, size_
 		(void)snprintf(result, resultSize, "Team replacement requires a .json fixture and output.");
 		fprintf(
 			stderr,
-			"usage: fm24ctl replace-%s <input.json> <team ID or club name> <output.json>"
+			"usage: " EDITION_CLI " replace-%s <input.json> " COMMANDS_TEAM_ARGUMENT " <output.json>"
 			" [--full]" SAVE_FLAGS_USAGE "\n",
 			home ? "home" : "away"
 		);
@@ -297,9 +301,7 @@ int commands_replaceTeamWithResult(int argc, wchar_t **argv, char *result, size_
 	uint32_t teams[2] = {0};
 	if (!paths_toUtf8(argv[3], team, sizeof team) || !team[0] || strpbrk(team, "\r\n") ||
 			wcsspn(argv[3], L" \t") == wcslen(argv[3])) {
-		(void)snprintf(
-			result, resultSize, "Enter a team ID or club short name (up to 255 UTF-8 bytes)."
-		);
+		(void)snprintf(result, resultSize, COMMANDS_TEAM_PROMPT);
 		fprintf(stderr, "%s\n", result);
 		return EXIT_FAILED;
 	}
@@ -314,7 +316,9 @@ int commands_replaceTeamWithResult(int argc, wchar_t **argv, char *result, size_
 	}
 	int ready = ensureSave(&check, CLIENT_SHORT_TIMEOUT_MS, NULL, 0);
 	if (ready != EXIT_OK) {
-		(void)snprintf(result, resultSize, "FM24 does not have the fixture's save loaded and idle.");
+		(void)snprintf(
+			result, resultSize, EDITION_PRODUCT " does not have the fixture's save loaded and idle."
+		);
 		removeJobInput(&bin);
 		return ready;
 	}
@@ -334,7 +338,8 @@ int commands_replaceTeamWithResult(int argc, wchar_t **argv, char *result, size_
 	(void)snprintf(
 		result,
 		resultSize,
-		"Cannot replace team; FM24 must be running and idle. See the console and harness.log."
+		"Cannot replace team; " EDITION_PRODUCT
+		" must be running and idle. See the console and harness.log."
 	);
 	bool submitted = client_submit(job, CLIENT_SHORT_TIMEOUT_MS, result, resultSize);
 	removeJobInput(&bin);
@@ -355,7 +360,7 @@ int commands_listTeamsWithResult(int argc, wchar_t **argv, char *result, size_t 
 	SaveCheck check = {0};
 	if (argc < 3 || !parseOptions(argc, argv, 3, SAVE_OPTIONS, &options, &check)) {
 		(void)snprintf(result, resultSize, "List teams requires an output file.");
-		fprintf(stderr, "usage: fm24ctl list-teams <output.txt>" SAVE_OPTIONS_USAGE "\n");
+		fprintf(stderr, "usage: " EDITION_CLI " list-teams <output.txt>" SAVE_OPTIONS_USAGE "\n");
 		return EXIT_USAGE;
 	}
 	Path output;
@@ -365,13 +370,15 @@ int commands_listTeamsWithResult(int argc, wchar_t **argv, char *result, size_t 
 	}
 	int ready = ensureSave(&check, CLIENT_SHORT_TIMEOUT_MS, NULL, 0);
 	if (ready != EXIT_OK) {
-		(void)snprintf(result, resultSize, "FM24 does not have that save loaded and idle.");
+		(void)snprintf(result, resultSize, EDITION_PRODUCT " does not have that save loaded and idle.");
 		return ready;
 	}
 	char job[JOB_LENGTH];
 	(void)snprintf(job, sizeof job, "command=list_teams\noutput=%s\n", output.utf8);
 	(void)snprintf(
-		result, resultSize, "Cannot list teams; FM24 must be running and idle. See harness.log."
+		result,
+		resultSize,
+		"Cannot list teams; " EDITION_PRODUCT " must be running and idle. See harness.log."
 	);
 	if (!client_submit(job, CLIENT_SHORT_TIMEOUT_MS, result, resultSize)) {
 		return EXIT_FAILED;
@@ -390,7 +397,7 @@ int commands_listPlayersWithResult(int argc, wchar_t **argv, char *result, size_
 	SaveCheck check = {0};
 	if (argc < 3 || !parseOptions(argc, argv, 3, SAVE_OPTIONS, &options, &check)) {
 		(void)snprintf(result, resultSize, "List players requires an output file.");
-		fprintf(stderr, "usage: fm24ctl list-players <output.txt>" SAVE_OPTIONS_USAGE "\n");
+		fprintf(stderr, "usage: " EDITION_CLI " list-players <output.txt>" SAVE_OPTIONS_USAGE "\n");
 		return EXIT_USAGE;
 	}
 	Path output;
@@ -400,13 +407,15 @@ int commands_listPlayersWithResult(int argc, wchar_t **argv, char *result, size_
 	}
 	int ready = ensureSave(&check, CLIENT_SHORT_TIMEOUT_MS, NULL, 0);
 	if (ready != EXIT_OK) {
-		(void)snprintf(result, resultSize, "FM24 does not have that save loaded and idle.");
+		(void)snprintf(result, resultSize, EDITION_PRODUCT " does not have that save loaded and idle.");
 		return ready;
 	}
 	char job[JOB_LENGTH];
 	(void)snprintf(job, sizeof job, "command=list_players\noutput=%s\n", output.utf8);
 	(void)snprintf(
-		result, resultSize, "Cannot list players; FM24 must be running and idle. See harness.log."
+		result,
+		resultSize,
+		"Cannot list players; " EDITION_PRODUCT " must be running and idle. See harness.log."
 	);
 	if (!client_submit(job, CLIENT_SHORT_TIMEOUT_MS, result, resultSize)) {
 		return EXIT_FAILED;
@@ -423,7 +432,8 @@ int commands_getPlayer(int argc, wchar_t **argv) {
 	if (argc < 4 || !parsePersonId(argv[2], person, sizeof person) ||
 			!parseOptions(argc, argv, 4, SAVE_OPTIONS, &options, &check)) {
 		fprintf(
-			stderr, "usage: fm24ctl get-player <person unique ID> <output.json>" SAVE_OPTIONS_USAGE "\n"
+			stderr,
+			"usage: " EDITION_CLI " get-player <person unique ID> <output.json>" SAVE_OPTIONS_USAGE "\n"
 		);
 		return EXIT_USAGE;
 	}
@@ -454,7 +464,7 @@ int commands_injectPlayerWithResult(int argc, wchar_t **argv, char *result, size
 		(void)snprintf(result, resultSize, "Player injection requires a .json fixture and output.");
 		fprintf(
 			stderr,
-			"usage: fm24ctl inject-player <input.json> <home|away>.player[N]"
+			"usage: " EDITION_CLI " inject-player <input.json> <home|away>.player[N]"
 			" <person unique ID|player.json> <output.json> [--allow-duplicate]" SAVE_FLAGS_USAGE "\n"
 		);
 		return EXIT_USAGE;
@@ -536,7 +546,7 @@ int commands_injectPlayerWithResult(int argc, wchar_t **argv, char *result, size
 
 int commands_encode(int argc, wchar_t **argv) {
 	if (argc != 4) {
-		fprintf(stderr, "usage: fm24ctl encode <input.json> <output.bin>\n");
+		fprintf(stderr, "usage: " EDITION_CLI " encode <input.json> <output.bin>\n");
 		return EXIT_USAGE;
 	}
 	Path input;
@@ -553,7 +563,7 @@ int commands_encode(int argc, wchar_t **argv) {
 int commands_decode(int argc, wchar_t **argv) {
 	bool full = false;
 	if (!parseDecodeArguments(argc, argv, &full)) {
-		fprintf(stderr, "usage: fm24ctl decode <input.bin> <output.json> [--full]\n");
+		fprintf(stderr, "usage: " EDITION_CLI " decode <input.bin> <output.json> [--full]\n");
 		return EXIT_USAGE;
 	}
 	Path input;
@@ -577,7 +587,7 @@ int commands_decode(int argc, wchar_t **argv) {
 int commands_status(int argc, wchar_t **argv) {
 	(void)argv;
 	if (argc != 2) {
-		fprintf(stderr, "usage: fm24ctl status\n");
+		fprintf(stderr, "usage: " EDITION_CLI " status\n");
 		return EXIT_USAGE;
 	}
 	char result[CLIENT_RESULT_LENGTH];
@@ -602,11 +612,11 @@ static bool absolutePath(const wchar_t *argument, Path *out) {
 	return ok;
 }
 
-// absolutePath for a file the game or fm24ctl writes: false, with why, also if it is a folder, if
+// absolutePath for a file the game or fmNNctl writes: false, with why, also if it is a folder, if
 // its folder is missing or is a file, or if the file cannot be written there, before the game is
 // started or given the job (which would only report a failed write). macOS's privacy protection
-// judges each app on its own: a folder it keeps the app fm24ctl runs in (such as Terminal) out of
-// may still be open to the game, so it stops only a file fm24ctl `opened` itself (run's results,
+// judges each app on its own: a folder it keeps the app fmNNctl runs in (such as Terminal) out of
+// may still be open to the game, so it stops only a file fmNNctl `opened` itself (run's results,
 // which it reads back, and inject-player's output, which it writes). Otherwise, as a folder that
 // could not be checked, it is left to the game.
 static bool outputPath(const wchar_t *argument, Path *out, bool opened) {
@@ -642,8 +652,9 @@ static bool outputPath(const wchar_t *argument, Path *out, bool opened) {
 		case PATHS_FOLDER_PRIVACY:
 			if (opened) {
 				problem =
-					"macOS does not let fm24ctl into its folder (operation not permitted): choose another "
-					"folder or, for a folder macOS protects, allow the app fm24ctl runs in (such as "
+					"macOS does not let " EDITION_CLI
+					" into its folder (operation not permitted): choose another "
+					"folder or, for a folder macOS protects, allow the app " EDITION_CLI " runs in (such as "
 					"Terminal) under System Settings > Privacy & Security";
 			}
 			break;
@@ -657,7 +668,7 @@ static bool outputPath(const wchar_t *argument, Path *out, bool opened) {
 	return true;
 }
 
-// A new file in the job directory (next to fm24ctl.exe on Windows) for one job's encoded input (or
+// A new file in the job directory (next to fmNNctl.exe on Windows) for one job's encoded input (or
 // output): jobs wait in line for the DLL, so each needs its own (several runners, or a viewer's
 // simulation and replacement, may be queued).
 static bool jobInputPath(Path *out, const wchar_t *extension) {
@@ -667,7 +678,7 @@ static bool jobInputPath(Path *out, const wchar_t *extension) {
 	(void)swprintf(
 		name,
 		sizeof name / sizeof name[0],
-		L"_job_input-%lu-%ld%ls",
+		L"" EDITION_JOB_INPUT_PREFIX "%lu-%ld%ls",
 		platform_processId(),
 		atomic_fetch_add(&count, 1) + 1,
 		extension
@@ -803,7 +814,7 @@ static int printSummary(const Path *csvPath) {
 }
 
 // Turns a .json config into the .bin the DLL plays, and reads its team overrides and the save it
-// asks for; a .bin is played as it is, once fm24ctl has seen that it is there.
+// asks for; a .bin is played as it is, once fmNNctl has seen that it is there.
 static bool prepareInput(Path *input, uint32_t teams[2], bool *encoded, SaveCheck *check) {
 	teams[0] = 0;
 	teams[1] = 0;
@@ -827,7 +838,7 @@ static bool prepareInput(Path *input, uint32_t teams[2], bool *encoded, SaveChec
 
 // The game reads a .bin input itself, but one that is not there (in a mistyped folder, say) is
 // reported here, as a JSON input is, and not as its default results' folder. macOS's privacy
-// protection may keep fm24ctl out of a file the game can still read ("operation not permitted"):
+// protection may keep fmNNctl out of a file the game can still read ("operation not permitted"):
 // that is left to the game.
 static bool binaryFound(const Path *input) {
 	errno = 0;
@@ -871,7 +882,7 @@ static bool seedNumber(const char *text, const char **end, unsigned long long *v
 }
 
 // True if the harness takes seed pattern `pattern` (an isSeedList), as job.c's parseSeeds would;
-// otherwise prints why, so that a typo stops fm24ctl before it starts the game or submits the job.
+// otherwise prints why, so that a typo stops fmNNctl before it starts the game or submits the job.
 static bool checkSeedPattern(const wchar_t *pattern) {
 	size_t length = wcslen(pattern);
 	if (length > SEED_PATTERN_LENGTH) {
@@ -1146,7 +1157,7 @@ static bool parsePlayerBlock(const wchar_t *text, char *out, size_t size) {
 	return true;
 }
 
-// Has the DLL write a player's database values ("fm24-player/1") to `output`; `result` receives
+// Has the DLL write a player's database values ("fmNN-player/1") to `output`; `result` receives
 // its result line.
 static int fetchPlayer(const char *person, const Path *output, char *result, size_t resultSize) {
 	char job[JOB_LENGTH];
@@ -1154,7 +1165,9 @@ static int fetchPlayer(const char *person, const Path *output, char *result, siz
 		job, sizeof job, "command=get_player\nperson=%s\noutput=%s\n", person, output->utf8
 	);
 	(void)snprintf(
-		result, resultSize, "Cannot fetch the player; FM24 must be running and idle. See harness.log."
+		result,
+		resultSize,
+		"Cannot fetch the player; " EDITION_PRODUCT " must be running and idle. See harness.log."
 	);
 	if (!client_submit(job, CLIENT_SHORT_TIMEOUT_MS, result, resultSize)) {
 		return EXIT_FAILED;
@@ -1176,7 +1189,9 @@ static int fetchForFixture(
 	readFixtureSave(config, check);
 	int ready = ensureSave(check, CLIENT_SHORT_TIMEOUT_MS, NULL, 0);
 	if (ready != EXIT_OK) {
-		(void)snprintf(result, resultSize, "FM24 does not have the fixture's save loaded and idle.");
+		(void)snprintf(
+			result, resultSize, EDITION_PRODUCT " does not have the fixture's save loaded and idle."
+		);
 		return ready;
 	}
 	return fetchPlayer(person, player, result, resultSize);
@@ -1270,13 +1285,18 @@ static void readFixtureSave(const ByteBuffer *config, SaveCheck *check) {
 	if (!origin.hasSave || check->badSave) {
 		check->save[0] = 0;
 	}
+#if EDITION_ENGINE_PLUGIN
+	check->unrecorded = !origin.hasSave;
+#endif
 }
 
 // Before a job for `check`'s save: makes sure the game has it loaded and idle (see
 // macosGame_ensureSave), letting each status query wait for another runner's job as long as the job
 // itself may (`timeoutMs`), and writes the save's in-game date to `date` if given ("" if unknown).
 // 0 to submit the job, else the exit code. Without a save, and on Windows, whose harness has no
-// status job yet, the job goes ahead as before.
+// status job yet, the job goes ahead as before. Where the edition's exports record no save, a
+// fixture without one is for whatever save the running game has loaded: the game must have one
+// loaded and idle first, as it must for a save.
 static int ensureSave(const SaveCheck *check, unsigned timeoutMs, char *date, size_t size) {
 	if (date && size) {
 		date[0] = 0;
@@ -1290,10 +1310,21 @@ static int ensureSave(const SaveCheck *check, unsigned timeoutMs, char *date, si
 		fprintf(stderr, "the input's \"save\" is not a save's name; remove it to use any save\n");
 		return EXIT_FAILED;
 	}
+#if EDITION_ENGINE_PLUGIN
+	if (check->unrecorded) {
+		SessionNeed loaded = {.anySave = true, .timeoutMs = timeoutMs, .unrecorded = true};
+		return macosGame_ensureSave(&loaded, date, size);
+	}
+#endif
 	if (!check->save[0]) {
 		return EXIT_OK;
 	}
-	SessionNeed need = {check->save, !check->noLaunch, check->anySave, timeoutMs};
+	SessionNeed need = {
+		.save = check->save,
+		.launch = !check->noLaunch,
+		.anySave = check->anySave,
+		.timeoutMs = timeoutMs,
+	};
 	return macosGame_ensureSave(&need, date, size);
 #endif
 }

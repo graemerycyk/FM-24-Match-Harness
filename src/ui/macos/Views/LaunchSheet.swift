@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import SwiftUI
 
-/// The Launch FM24 sheet: the saves fm24ctl finds, newest first, then the start screen and a .fm
-/// file chosen with Other…; a warning while Steam's launch option is not set, as fm24ctl then
+/// The Launch FMNN sheet: the saves fmNNctl finds, newest first, then the start screen and a .fm
+/// file chosen with Other…; a warning while Steam's launch option is not set, as fmNNctl then
 /// starts the game directly, with Install Harness… in place of the sheet; on Apple silicon,
-/// Rosetta; then fm24ctl's progress as the game starts, or how the launch ended. Launch FM24 is the
+/// Rosetta; then fmNNctl's progress as the game starts, or how the launch ended. Launch FMNN is the
 /// default button and Cancel ends a launch that runs.
 struct LaunchSheet: View {
 	static let width: CGFloat = 560
@@ -26,7 +27,7 @@ struct LaunchSheet: View {
 		VStack(alignment: .leading, spacing: 10) {
 			Text(LaunchPrompt.title)
 				.font(.headline)
-			Text("Start FM24 with harness \(FixtureHandle.protocolVersion), loading:")
+			Text("Start \(EDITION_PRODUCT) with harness \(FixtureHandle.protocolVersion), loading:")
 			List(selection: selection) {
 				ForEach(prompt.saves.saves, id: \.url) { save in
 					SaveRow(
@@ -46,8 +47,11 @@ struct LaunchSheet: View {
 					SaveRow(name: save, detail: "given to --launch-save")
 						.tag(LaunchPrompt.Choice.named(save))
 				}
-				SaveRow(name: LaunchPrompt.startScreenLabel, detail: "Load a save in FM24 yourself")
-					.tag(LaunchPrompt.Choice.startScreen)
+				SaveRow(
+					name: LaunchPrompt.startScreenLabel,
+					detail: "Load a save in \(EDITION_PRODUCT) yourself"
+				)
+				.tag(LaunchPrompt.Choice.startScreen)
 			}
 			.disabled(launching)
 			.frame(height: 210)
@@ -134,7 +138,7 @@ private struct SaveRow: View {
 	}
 }
 
-/// How the launch is going: fm24ctl's latest lines as it starts the game, or how it ended.
+/// How the launch is going: fmNNctl's latest lines as it starts the game, or how it ended.
 private struct LaunchStatus: View {
 	static let shownLines = 6
 	static let height: CGFloat = 132
@@ -163,7 +167,7 @@ private struct LaunchStatus: View {
 					.textSelection(.enabled)
 					.fixedSize(horizontal: false, vertical: true)
 			case .succeeded:
-				Text("FM24 is running with harness \(FixtureHandle.protocolVersion).")
+				Text("\(EDITION_PRODUCT) is running with harness \(FixtureHandle.protocolVersion).")
 			}
 			// The latest lines, one each, so that the newest always shows.
 			if !prompt.lines.isEmpty, prompt.phase != .choosing {

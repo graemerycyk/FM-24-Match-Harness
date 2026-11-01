@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureSamples
 import Foundation
 
@@ -20,7 +21,7 @@ enum HarnessModelTests {
 		Tests.test("viewer never overwrites a file when exporting", exportsWithoutOverwriting)
 		Tests.test("viewer exports where a new name cannot be renamed into (exFAT)", exportsToExFAT)
 		Tests.test("viewer exports pending edits and checks the venue first", exportsEdits)
-		Tests.test("viewer opens fm24ctl's export as not yet saved", opensTemporaryFixture)
+		Tests.test("viewer opens \(EDITION_CLI)'s export as not yet saved", opensTemporaryFixture)
 	}
 
 	private typealias Setup = HarnessSetup
@@ -70,12 +71,17 @@ enum HarnessModelTests {
 		checkEqual(noted, [])
 		checkEqual(
 			setup.standIn.runs,
-			[["get-next-fixture", setup.temporary.appendingPathComponent("temp-fixture.json").path]]
+			[
+				[
+					"get-next-fixture",
+					setup.temporary.appendingPathComponent(EDITION_TEMPORARY_FIXTURE).path,
+				]
+			]
 		)
 		setup.checkTemporaryOnly()
 		// An export not yet saved closes without asking, as on Windows.
 		checkEqual(model.closeCheck(), .close)
-		check(model.log.text.contains("fm24ctl: ok: stand-in"), model.log.text)
+		check(model.log.text.contains("\(EDITION_CLI): ok: stand-in"), model.log.text)
 	}
 
 	static func explainsStartup() {
@@ -95,14 +101,14 @@ enum HarnessModelTests {
 		check(model.log.text.contains("Error: error: no upcoming fixture"), model.log.text)
 		// No harness serving: fm24ctl's explanation, and the game's state for the start panel.
 		let explanation =
-			"Football Manager 2024 is not running.\nSet Steam's launch option for it once, then start "
-			+ "it from Steam (`fm24ctl install` says how, and when Steam has saved the option):\n"
+			"\(EDITION_GAME) is not running.\nSet Steam's launch option for it once, then start "
+			+ "it from Steam (`\(EDITION_CLI) install` says how, and when Steam has saved the option):\n"
 		setup.standIn.set(["STATUS": "1", "STDERR": explanation])
 		model.retryStart()
 		wait(model)
 		checkEqual(
 			model.status,
-			"FM24 isn't running with harness \(FixtureHandle.protocolVersion).\nFootball Manager 2024 "
+			"\(EDITION_PRODUCT) isn't running with harness \(FixtureHandle.protocolVersion).\n\(EDITION_GAME) "
 				+ "is not running."
 		)
 		checkEqual(setup.monitor.state, .notRunning)
@@ -282,7 +288,7 @@ enum HarnessModelTests {
 		wait(model)
 		checkEqual(
 			setup.prompts.lastError,
-			"cannot decode binary fixture; FM24 must be running and idle. See the log and harness.log."
+			"cannot decode binary fixture; \(EDITION_PRODUCT) must be running and idle. See the log and harness.log."
 		)
 		// A decode that writes nothing.
 		setup.standIn.set([
@@ -461,7 +467,7 @@ enum HarnessModelTests {
 		checkEqual(try Data(contentsOf: setup.exports.appendingPathComponent(exportName)), written)
 		check(!model.hasUnsavedEdits && !model.isTemporary)
 		checkEqual(model.source?.json, written)
-		checkEqual(fixture.cell(side: 0, row: 0, column: 5), "20")
+		checkEqual(fixture.cell(side: 0, row: 0, column: moraleColumn), "20")
 	}
 
 	static func opensTemporaryFixture() {
@@ -470,7 +476,7 @@ enum HarnessModelTests {
 		}
 		let model = setup.model
 		// What fm24ctl with no arguments exported and handed over.
-		let exported = setup.temporary.appendingPathComponent("temp-fixture.json")
+		let exported = setup.temporary.appendingPathComponent(EDITION_TEMPORARY_FIXTURE)
 		try? plainJSON().write(to: exported)
 		model.requestOpen(exported)
 		wait(model)
@@ -491,7 +497,7 @@ enum HarnessModelTests {
 		let resolved = setup.temporary.resolvingSymlinksInPath().path
 		let respelt =
 			resolved.hasPrefix("/private/") ? String(resolved.dropFirst(8)) : "/private" + resolved
-		model.requestOpen(URL(fileURLWithPath: respelt + "/temp-fixture.json"))
+		model.requestOpen(URL(fileURLWithPath: respelt + "/" + EDITION_TEMPORARY_FIXTURE))
 		wait(model)
 		check(model.isTemporary)
 	}

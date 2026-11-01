@@ -10,6 +10,8 @@ Examples run in Terminal, in the folder that holds `fm24ctl`: the release's
 folder, or `bin/` in a build. Quote paths and names containing spaces.
 `<...>` means a required argument; `[...]` means optional. The
 [macOS guide](MACOS.md) covers setting up, working headless and the viewer.
+For FM27, `fm27ctl` has the same commands: see
+[FM27 CLI differences](CLI-FM27.md) for what is different.
 
 ## Requirements and conventions
 

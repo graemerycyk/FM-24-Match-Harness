@@ -1,48 +1,49 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import Foundation
 
-/// A line fm24ctl printed: on standard output (the harness's result lines) or on standard error
-/// (why fm24ctl itself failed, and its notices).
+/// A line fmNNctl printed: on standard output (the harness's result lines) or on standard error
+/// (why fmNNctl itself failed, and its notices).
 enum HarnessLine: Equatable {
 	case output(String)
 	case error(String)
 }
 
-/// How an fm24ctl run ended: its exit status and what it printed, line by line.
+/// How an fmNNctl run ended: its exit status and what it printed, line by line.
 struct HarnessResult: Equatable {
-	/// What fm24ctl prints while another job keeps the harness busy.
+	/// What fmNNctl prints while another job keeps the harness busy.
 	static let waitingNotice = "the harness is running another job; waiting for it to finish"
-	/// The start of what fm24ctl prints when FM24 is not running and it starts the game to load the
+	/// The start of what fmNNctl prints when FMNN is not running and it starts the game to load the
 	/// save of the fixture a job is for.
-	static let startingGamePrefix = "Football Manager 2024 is not running; starting it to load "
-	/// fm24ctl's exit status when the game is not in the state the job needs: it has another save
+	static let startingGamePrefix = "\(EDITION_GAME) is not running; starting it to load "
+	/// fmNNctl's exit status when the game is not in the state the job needs: it has another save
 	/// loaded, is at its start screen, or stayed busy (commands.h).
 	static let wrongState: Int32 = 3
-	/// fm24ctl's exit status for arguments it refuses (commands.h), such as a seed pattern the
+	/// fmNNctl's exit status for arguments it refuses (commands.h), such as a seed pattern the
 	/// harness would not take: the reason comes before the usage line.
 	static let usage: Int32 = 2
 	static let usagePrefix = "usage: "
-	/// How fm24ctl's refusal of a job for another save than the one loaded ends: --any-save would
+	/// How fmNNctl's refusal of a job for another save than the one loaded ends: --any-save would
 	/// use the loaded save.
 	static let anySaveHint = ", or pass --any-save to use the loaded save"
-	/// The start of the line with which fm24ctl reports the save loaded and idle.
+	/// The start of the line with which fmNNctl reports the save loaded and idle.
 	static let readyPrefix = "ready: "
-	/// The start of the lines with which fm24ctl reports the game's state while it waits for it.
-	static let statePrefix = "FM24 state: "
-	/// The starts of fm24ctl's notices before a job, which say nothing about why the job failed:
+	/// The start of the lines with which fmNNctl reports the game's state while it waits for it.
+	static let statePrefix = "\(EDITION_PRODUCT) state: "
+	/// The starts of fmNNctl's notices before a job, which say nothing about why the job failed:
 	/// run's warning that the loaded save is at another date than the fixture's, and that it cannot
 	/// read or check which save is loaded.
 	static let noticePrefixes = [
-		"warning: ", "the harness cannot read which save FM24 has loaded; ",
-		"cannot check which save FM24 has loaded; ",
+		"warning: ", "the harness cannot read which save \(EDITION_PRODUCT) has loaded; ",
+		"cannot check which save \(EDITION_PRODUCT) has loaded; ",
 	]
 
 	var status: Int32
 	var output: [String] = []
 	var errors: [String] = []
-	/// False if fm24ctl could not be started at all; `errors` then says why.
+	/// False if fmNNctl could not be started at all; `errors` then says why.
 	var started = true
 
 	var succeeded: Bool {
@@ -51,10 +52,10 @@ struct HarnessResult: Equatable {
 
 	/// The headline when no harness of this protocol serves the job socket.
 	static var notServing: String {
-		"FM24 isn't running with harness \(FixtureHandle.protocolVersion)."
+		"\(EDITION_PRODUCT) isn't running with harness \(FixtureHandle.protocolVersion)."
 	}
 
-	/// fm24ctl refused the job because FM24 has another save loaded than the fixture's, which
+	/// fmNNctl refused the job because FMNN has another save loaded than the fixture's, which
 	/// --any-save would use.
 	var refusedOtherSave: Bool {
 		started && status == HarnessResult.wrongState
@@ -68,12 +69,12 @@ struct HarnessResult: Equatable {
 
 	/// Why the run failed, or nil if it succeeded. In order of preference: the harness's last
 	/// "error:" line (such as its refusal while the game loads or processes); for the usage status,
-	/// fm24ctl's first line of errors that is not its usage line, which says what it refused; for
-	/// the wrongState status, fm24ctl's last line of errors, which says what the game is doing
+	/// fmNNctl's first line of errors that is not its usage line, which says what it refused; for
+	/// the wrongState status, fmNNctl's last line of errors, which says what the game is doing
 	/// instead; if no harness of this protocol serves the job socket (`serving`, asked only then),
-	/// notServing with fm24ctl's first line of errors, which names the case (the game is not
+	/// notServing with fmNNctl's first line of errors, which names the case (the game is not
 	/// running, runs without the harness, or has another version), offering to launch the game;
-	/// fm24ctl's last line of errors; or `fallback`. fm24ctl's notices (noticePrefixes) never
+	/// fmNNctl's last line of errors; or `fallback`. fmNNctl's notices (noticePrefixes) never
 	/// explain a failure.
 	func diagnosis(fallback: String, serving: () -> Bool) -> HarnessProblem? {
 		guard !succeeded else {
@@ -102,7 +103,7 @@ struct HarnessResult: Equatable {
 		return HarnessProblem(message: explained.last ?? fallback)
 	}
 
-	/// Why `launch` or `install` failed, or nil if it succeeded: every line of errors fm24ctl
+	/// Why `launch` or `install` failed, or nil if it succeeded: every line of errors fmNNctl
 	/// printed (which is all it prints about the failure), else the harness's last "error:" line,
 	/// else `fallback`.
 	func explanation(fallback: String) -> String? {
@@ -116,13 +117,13 @@ struct HarnessResult: Equatable {
 		return (started ? output.last(where: { $0.hasPrefix("error:") }) : nil) ?? fallback
 	}
 
-	/// fm24ctl's lines of errors, trimmed, without blank ones or its notice of waiting.
+	/// fmNNctl's lines of errors, trimmed, without blank ones or its notice of waiting.
 	private var explanations: [String] {
 		errors.map { $0.trimmingCharacters(in: .whitespaces) }
 			.filter { !$0.isEmpty && $0 != HarnessResult.waitingNotice }
 	}
 
-	/// Those lines without fm24ctl's notices before a job.
+	/// Those lines without fmNNctl's notices before a job.
 	private var reasons: [String] {
 		explanations.filter { line in !HarnessResult.noticePrefixes.contains { line.hasPrefix($0) } }
 	}
@@ -135,7 +136,7 @@ struct HarnessProblem: Equatable {
 	var offersLaunch = false
 }
 
-/// The harness jobs the viewer has fm24ctl run (Fm24ctl), or tests fake. Paths are absolute, and
+/// The harness jobs the viewer has fmNNctl run (Fm24ctl), or tests fake. Paths are absolute, and
 /// every one the game reads or writes is in the user's temporary directory (WorkFiles). `onLine`
 /// gets each line as it is printed, on the main thread, before the result comes back. Cancelling
 /// the task that awaits a job stops it where it can.

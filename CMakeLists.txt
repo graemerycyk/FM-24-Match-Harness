@@ -4,12 +4,15 @@ set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "C compiler flags for Rele
 # newer than the game's own minimum system version. Ignored elsewhere.
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures to build")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS to support")
-project(fm24_harness C)
+project(fm_match_harness C)
 if(WIN32)
 	enable_language(RC)
 elseif(NOT APPLE)
 	message(FATAL_ERROR "The harness supports Windows (MinGW-w64) and macOS")
 endif()
+
+# FM_EDITION and the names of its edition (EDITION_*, and edition.h).
+include(cmake/edition.cmake)
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -61,16 +64,21 @@ else()
 		src/common/macos_builds.c
 		src/common/platform_posix.c
 	)
+	# An edition whose game is a Unity app reads its names from its Info.plist.
+	if(EDITION_ENGINE_PLUGIN)
+		target_sources(common PRIVATE src/common/info_plist.c)
+	endif()
 	# Linked into the dylib, which exports nothing.
 	set_target_properties(common PROPERTIES C_VISIBILITY_PRESET hidden)
 endif()
-target_include_directories(common PUBLIC src/common)
+target_include_directories(common PUBLIC src/common "${EDITION_INCLUDE_DIR}")
 target_compile_options(common PRIVATE ${warnings})
 if(WIN32)
 	target_compile_definitions(common PRIVATE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
 endif()
 
-add_library(harness SHARED
+# The harness's sources but for the platform's: also built into the stand-in harness (tests).
+set(harness_sources
 	src/dll/config_writer.c
 	src/dll/database.c
 	src/dll/fixture.c
@@ -98,9 +106,16 @@ add_library(harness SHARED
 	src/dll/tactic_flags.c
 	src/dll/trace.c
 )
-set_target_properties(harness PROPERTIES PREFIX "" OUTPUT_NAME "fm24-harness-${HARNESS_PROTOCOL}")
+add_library(harness SHARED ${harness_sources})
+set_target_properties(harness PROPERTIES PREFIX "" OUTPUT_NAME "${EDITION_HARNESS}-${HARNESS_PROTOCOL}")
 target_link_libraries(harness PRIVATE common)
 target_compile_options(harness PRIVATE ${warnings})
+# The build tables of the edition's supported builds (see src/dll/game_macos.h).
+if(FM_EDITION STREQUAL "24")
+	set(edition_tables src/dll/game_macos_tables.c)
+else()
+	set(edition_tables src/dll/game_macos_tables_fm${FM_EDITION}.c)
+endif()
 if(WIN32)
 	target_sources(harness PRIVATE
 		src/dll/game.c
@@ -116,7 +131,7 @@ else()
 	# main_macos.c starts the job thread.
 	target_sources(harness PRIVATE
 		src/dll/game_macos.c
-		src/dll/game_macos_tables.c
+		${edition_tables}
 		src/dll/main_macos.c
 		src/dll/memory_macos.c
 		src/dll/profiler_macos.c
@@ -136,7 +151,7 @@ set(runner_sources
 	src/ui/fixture_export.c
 )
 if(WIN32)
-	add_executable(fm24ctl
+	add_executable(${EDITION_CLI}
 		${runner_sources}
 		src/runner/client.c
 		src/runner/embedded.c
@@ -149,7 +164,7 @@ if(WIN32)
 		src/ui/viewer.rc
 		"${CMAKE_BINARY_DIR}/harness_dll.rc"
 	)
-	# fm24ctl carries a stripped copy of the DLL as a resource and extracts it before injecting (see
+	# The CLI carries a stripped copy of the DLL as a resource and extracts it before injecting (see
 	# src/runner/embedded.h), so a release is the one executable.
 	set(embedded_dll "${CMAKE_BINARY_DIR}/harness-embedded.dll")
 	add_custom_command(
@@ -162,13 +177,13 @@ if(WIN32)
 		CONTENT "#include \"resources.h\"\nIDR_HARNESS_DLL RCDATA \"${embedded_dll}\"\n"
 	)
 	set_source_files_properties("${CMAKE_BINARY_DIR}/harness_dll.rc" PROPERTIES OBJECT_DEPENDS "${embedded_dll}")
-	target_include_directories(fm24ctl PRIVATE src/runner src/ui)
-	target_link_libraries(fm24ctl PRIVATE common comctl32 user32 gdi32 ole32 shell32 uuid)
-	target_compile_definitions(fm24ctl PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
-	target_compile_options(fm24ctl PRIVATE ${warnings})
-	target_link_options(fm24ctl PRIVATE -municode -static -static-libgcc)
+	target_include_directories(${EDITION_CLI} PRIVATE src/runner src/ui)
+	target_link_libraries(${EDITION_CLI} PRIVATE common comctl32 user32 gdi32 ole32 shell32 uuid)
+	target_compile_definitions(${EDITION_CLI} PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+	target_compile_options(${EDITION_CLI} PRIVATE ${warnings})
+	target_link_options(${EDITION_CLI} PRIVATE -municode -static -static-libgcc)
 else()
-	add_executable(fm24ctl
+	add_executable(${EDITION_CLI}
 		${runner_sources}
 		src/runner/client_posix.c
 		src/runner/embedded_macos.c
@@ -178,7 +193,7 @@ else()
 		src/runner/paths_posix.c
 		src/runner/probe_macos.c
 	)
-	# fm24ctl carries a stripped, ad-hoc signed copy of the universal dylib in a section and installs
+	# The CLI carries a stripped, ad-hoc signed copy of the universal dylib in a section and installs
 	# it for the game to load (see src/runner/embedded.h), so a release is the one executable.
 	set(embedded_dll "${CMAKE_BINARY_DIR}/harness-embedded.dylib")
 	add_custom_command(
@@ -189,22 +204,24 @@ else()
 		VERBATIM
 	)
 	add_custom_target(embedded_harness DEPENDS "${embedded_dll}")
-	add_dependencies(fm24ctl embedded_harness)
-	set_property(TARGET fm24ctl APPEND PROPERTY LINK_DEPENDS "${embedded_dll}")
-	target_include_directories(fm24ctl PRIVATE src/runner src/ui)
-	target_link_libraries(fm24ctl PRIVATE common)
-	target_compile_options(fm24ctl PRIVATE ${warnings})
-	target_link_options(fm24ctl PRIVATE "LINKER:-sectcreate,__TEXT,__fm24_harness,${embedded_dll}")
+	add_dependencies(${EDITION_CLI} embedded_harness)
+	set_property(TARGET ${EDITION_CLI} APPEND PROPERTY LINK_DEPENDS "${embedded_dll}")
+	target_include_directories(${EDITION_CLI} PRIVATE src/runner src/ui)
+	target_link_libraries(${EDITION_CLI} PRIVATE common)
+	target_compile_options(${EDITION_CLI} PRIVATE ${warnings})
+	target_link_options(${EDITION_CLI} PRIVATE "LINKER:-sectcreate,__TEXT,${EDITION_SECTION},${embedded_dll}")
 endif()
 
-install(TARGETS fm24ctl RUNTIME DESTINATION . COMPONENT Runtime)
+install(TARGETS ${EDITION_CLI} RUNTIME DESTINATION . COMPONENT Runtime)
 
 option(FM24_BUILD_TESTS "Build regression checks" OFF)
 if(FM24_BUILD_TESTS)
 	enable_testing()
+	# The tests and their stand-ins carry the edition in their names (EDITION_LOWER).
+	set(tests ${EDITION_LOWER}_tests)
 	if(WIN32)
 		set(test_suites job dll fixture_data runner runner_main fixture_export fixture_view fixture_window fixture_load player_inject)
-		add_executable(fm24_tests
+		add_executable(${tests}
 			tests/test.c
 			tests/job_test.c
 			tests/dll_test.c
@@ -234,12 +251,12 @@ if(FM24_BUILD_TESTS)
 			src/dll/site_members.c
 			src/dll/tactic_flags.c
 		)
-		target_link_libraries(fm24_tests PRIVATE common comctl32 user32 gdi32 ole32 shell32 uuid)
-		target_compile_definitions(fm24_tests PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
-		target_link_options(fm24_tests PRIVATE -static -static-libgcc)
+		target_link_libraries(${tests} PRIVATE common comctl32 user32 gdi32 ole32 shell32 uuid)
+		target_compile_definitions(${tests} PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+		target_link_options(${tests} PRIVATE -static -static-libgcc)
 	else()
-		set(test_suites job dll fixture_data runner runner_main fixture_export fixture_view player_inject macos)
-		add_executable(fm24_tests
+		set(test_suites job dll fixture_data runner runner_main fixture_export fixture_view player_inject macos match)
+		add_executable(${tests}
 			tests/test.c
 			tests/job_test.c
 			tests/dll_test.c
@@ -251,6 +268,7 @@ if(FM24_BUILD_TESTS)
 			tests/fixture_view_test.c
 			tests/player_inject_test.c
 			tests/macos_test.c
+			tests/match_test.c
 			tests/save_samples.c
 			src/ui/fixture_export.c
 			src/ui/fixture_view.c
@@ -264,38 +282,123 @@ if(FM24_BUILD_TESTS)
 			src/runner/player_inject.c
 			src/runner/saves.c
 			src/runner/session.c
-			src/dll/game_macos_tables.c
+			${edition_tables}
 			src/dll/memory_macos.c
 			src/dll/site_lookup.c
 			src/dll/site_members.c
 			src/dll/tactic_flags.c
 		)
-		target_link_libraries(fm24_tests PRIVATE common)
-		target_compile_definitions(fm24_tests PRIVATE FM24_DLL_TESTS FM24_RUNNER_TESTS FM24_MACOS_TESTS)
-		# The launcher test starts these next to fm24_tests in place of the game, the harness and
+		target_link_libraries(${tests} PRIVATE common)
+		target_compile_definitions(${tests} PRIVATE TESTS_DLL TESTS_RUNNER TESTS_MACOS)
+		# The launcher test starts these next to the tests in place of the game, the harness and
 		# Steam's overlay.
-		add_executable(fm24_stand_in_game tests/macos_stand_in_game.c)
-		add_library(fm24_stand_in_library SHARED tests/macos_stand_in_library.c)
-		foreach(stand_in fm24_stand_in_game fm24_stand_in_library)
+		set(stand_in_game ${EDITION_LOWER}_stand_in_game)
+		set(stand_in_library ${EDITION_LOWER}_stand_in_library)
+		add_executable(${stand_in_game} tests/macos_stand_in_game.c)
+		add_library(${stand_in_library} SHARED tests/macos_stand_in_library.c)
+		foreach(stand_in ${stand_in_game} ${stand_in_library})
+			target_include_directories(${stand_in} PRIVATE "${EDITION_INCLUDE_DIR}")
 			target_compile_options(${stand_in} PRIVATE ${warnings})
 		endforeach()
-		add_dependencies(fm24_tests fm24_stand_in_game fm24_stand_in_library)
-		target_compile_definitions(fm24_tests PRIVATE
-			"FM24_STAND_IN_GAME=\"$<TARGET_FILE_NAME:fm24_stand_in_game>\""
-			"FM24_STAND_IN_LIBRARY=\"$<TARGET_FILE_NAME:fm24_stand_in_library>\""
+		add_dependencies(${tests} ${stand_in_game} ${stand_in_library})
+		target_compile_definitions(${tests} PRIVATE
+			"STAND_IN_GAME=\"$<TARGET_FILE_NAME:${stand_in_game}>\""
+			"STAND_IN_LIBRARY=\"$<TARGET_FILE_NAME:${stand_in_library}>\""
 		)
-		install(TARGETS fm24_stand_in_game fm24_stand_in_library
+		install(TARGETS ${stand_in_game} ${stand_in_library}
 			RUNTIME DESTINATION . COMPONENT Tests
 			LIBRARY DESTINATION . COMPONENT Tests
 		)
+		if(EDITION_ENGINE_PLUGIN)
+			# The plugin test has the stand-in game load the stand-in harness and load and unload a
+			# stand-in engine plugin, or another build of it: the harness built with tables for the
+			# plugin (its UUIDs and offsets come from the linked plugin), serving a test socket.
+			set(stand_in_plugin ${EDITION_LOWER}_stand_in_plugin)
+			set(stand_in_other_plugin ${EDITION_LOWER}_stand_in_other_plugin)
+			set(stand_in_harness ${EDITION_LOWER}_stand_in_harness)
+			foreach(plugin ${stand_in_plugin} ${stand_in_other_plugin})
+				add_library(${plugin} MODULE tests/macos_stand_in_plugin.c)
+				set_target_properties(${plugin} PROPERTIES PREFIX "" SUFFIX "")
+				target_include_directories(${plugin} PRIVATE src/common src/dll "${EDITION_INCLUDE_DIR}")
+				target_compile_options(${plugin} PRIVATE ${warnings})
+			endforeach()
+			target_compile_definitions(${stand_in_other_plugin} PRIVATE STAND_IN_OTHER_BUILD)
+			set(stand_in_offsets "${EDITION_INCLUDE_DIR}/macos_stand_in_offsets.h")
+			add_custom_command(
+				OUTPUT "${stand_in_offsets}"
+				COMMAND "${CMAKE_COMMAND}" "-DPLUGIN=$<TARGET_FILE:${stand_in_plugin}>"
+					"-DOUTPUT=${stand_in_offsets}" "-DARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}"
+					"-DOBJDUMP=${CMAKE_OBJDUMP}" "-DNM=${CMAKE_NM}"
+					-P "${CMAKE_CURRENT_SOURCE_DIR}/tests/macos_stand_in_offsets.cmake"
+				DEPENDS ${stand_in_plugin} tests/macos_stand_in_offsets.cmake
+				VERBATIM
+			)
+			add_library(${stand_in_harness} SHARED
+				${harness_sources}
+				src/common/buffer.c
+				src/common/channel.c
+				src/common/files.c
+				src/common/info_plist.c
+				src/common/platform_posix.c
+				src/common/tactic_names.c
+				src/dll/game_macos.c
+				src/dll/memory_macos.c
+				src/dll/profiler_macos.c
+				tests/macos_stand_in_harness.c
+				"${stand_in_offsets}"
+			)
+			target_include_directories(${stand_in_harness} PRIVATE
+				src/common src/dll tests "${EDITION_INCLUDE_DIR}"
+			)
+			target_compile_options(${stand_in_harness} PRIVATE ${warnings})
+			set_target_properties(${stand_in_harness} PROPERTIES
+				C_VISIBILITY_PRESET hidden INTERPROCEDURAL_OPTIMIZATION OFF
+			)
+			add_dependencies(${tests} ${stand_in_plugin} ${stand_in_other_plugin} ${stand_in_harness})
+			target_compile_definitions(${tests} PRIVATE
+				"STAND_IN_PLUGIN=\"$<TARGET_FILE_NAME:${stand_in_plugin}>\""
+				"STAND_IN_OTHER_PLUGIN=\"$<TARGET_FILE_NAME:${stand_in_other_plugin}>\""
+				"STAND_IN_HARNESS=\"$<TARGET_FILE_NAME:${stand_in_harness}>\""
+			)
+			install(TARGETS ${stand_in_plugin} ${stand_in_other_plugin} ${stand_in_harness}
+				LIBRARY DESTINATION . COMPONENT Tests
+			)
+		endif()
 	endif()
-	target_include_directories(fm24_tests PRIVATE src/runner src/ui)
-	target_compile_options(fm24_tests PRIVATE ${warnings})
-	install(TARGETS fm24_tests RUNTIME DESTINATION . COMPONENT Tests)
+	target_include_directories(${tests} PRIVATE src/runner src/ui)
+	target_compile_options(${tests} PRIVATE ${warnings})
+	install(TARGETS ${tests} RUNTIME DESTINATION . COMPONENT Tests)
 	foreach(test ${test_suites})
-		add_test(NAME ${test} COMMAND fm24_tests ${test})
+		add_test(NAME ${test} COMMAND ${tests} ${test})
 		set_tests_properties(${test} PROPERTIES TIMEOUT 300)
 	endforeach()
+	# The editions' names: distinct, all in edition.h, and in no other source that should not have them.
+	add_test(NAME edition
+		COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+			"-DEDITION_HEADER=${EDITION_INCLUDE_DIR}/edition.h" "-DFM_EDITION=${FM_EDITION}"
+			-P "${CMAKE_CURRENT_SOURCE_DIR}/tests/edition_test.cmake"
+	)
+	# The edition's build tables are what tools/macos/gen_tables.py makes of its mappings, which also
+	# checks the mappings' coverage and, for a plugin engine, that their layouts are the header's.
+	if(APPLE)
+		find_package(Python3 COMPONENTS Interpreter QUIET)
+		if(Python3_Interpreter_FOUND)
+			add_test(NAME tables
+				COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+					"-DPYTHON=${Python3_EXECUTABLE}" "-DFM_EDITION=${FM_EDITION}"
+					"-DTABLES=${CMAKE_CURRENT_SOURCE_DIR}/${edition_tables}"
+					"-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/tables_test.c"
+					-P "${CMAKE_CURRENT_SOURCE_DIR}/tests/tables_test.cmake"
+			)
+			# The mapping tools' own tests: the frame derivation and what the generator refuses.
+			add_test(NAME align
+				COMMAND "${Python3_EXECUTABLE}" -I -m unittest discover
+					-s "${CMAKE_CURRENT_SOURCE_DIR}/tools/macos/align" -p "test_*.py"
+			)
+		else()
+			message(STATUS "Python 3 not found: the tables and align tests are left out")
+		endif()
+	endif()
 	# On Apple silicon, also check the x86_64 slice (and its build tables, and the viewer's) under
 	# Rosetta, if it runs an x86_64 program within ten seconds. FM24_ROSETTA_TESTS=OFF skips the
 	# check, and the macos suite then runs nothing under Rosetta either.
@@ -321,10 +424,10 @@ if(FM24_BUILD_TESTS)
 			message(STATUS "Leaving out the x86_64 tests (FM24_ROSETTA_TESTS=OFF)")
 		endif()
 		if(rosetta_works)
-			add_test(NAME x86_64 COMMAND /usr/bin/arch -x86_64 $<TARGET_FILE:fm24_tests>)
+			add_test(NAME x86_64 COMMAND /usr/bin/arch -x86_64 $<TARGET_FILE:${tests}>)
 			set_tests_properties(x86_64 PROPERTIES TIMEOUT 600)
 		else()
-			set_tests_properties(macos PROPERTIES ENVIRONMENT "FM24_ROSETTA_TESTS=OFF")
+			set_tests_properties(macos PROPERTIES ENVIRONMENT "${EDITION_ENV_PREFIX}ROSETTA_TESTS=OFF")
 		endif()
 	endif()
 	if(CMAKE_BUILD_TYPE STREQUAL "Release" OR "Release" IN_LIST CMAKE_CONFIGURATION_TYPES)
@@ -342,7 +445,8 @@ if(FM24_BUILD_TESTS)
 				"-DBUILD_DIR=${CMAKE_BINARY_DIR}"
 				"-DCONFIG=$<CONFIG>"
 				"-DDLL=${embedded_dll}"
-				"-DRUNNER=$<TARGET_FILE:fm24ctl>"
+				"-DRUNNER=$<TARGET_FILE:${EDITION_CLI}>"
+				"-DSECTION=${EDITION_SECTION}"
 				"-DSTRIP=${CMAKE_STRIP}"
 				"-DOBJDUMP=${CMAKE_OBJDUMP}"
 				-P "${release_script}"
@@ -351,7 +455,7 @@ if(FM24_BUILD_TESTS)
 	endif()
 endif()
 
-# The native macOS fixture viewer, FM24Viewer.app (FM24_VIEWER: AUTO, ON or OFF).
+# The native macOS fixture viewer, EDITION_VIEWER_APP (FM24_VIEWER: AUTO, ON or OFF).
 if(APPLE)
 	include(cmake/macos_viewer.cmake)
 endif()

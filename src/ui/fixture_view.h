@@ -49,14 +49,15 @@ void fixtureView_close(FixtureView *view);
 size_t fixtureView_summaryLine(const FixtureView *view, unsigned line, char *out, size_t size);
 const char *fixtureView_note(unsigned index, size_t *labelLength);
 
-// "Save: <name>, <game_date>" for a fixture that names the save it was exported from, as fm24ctl
+// "Save: <name>, <game_date>" for a fixture that names the save it was exported from, as fmNNctl
 // reads its "save" and "game_date" before a job (just "Save: <name>" without a date), or "" for one
-// that names none, or none fm24ctl can use.
+// that names none, or none fmNNctl can use.
 size_t fixtureView_saveLine(const FixtureView *view, char *out, size_t size);
 // The view of a fixture saved as binary, which has no place for the save: it names none.
 void fixtureView_forgetSave(FixtureView *view);
 
-// "Home: <team> - <tactic> [<formation>]", or "Away: ..." for side 1.
+// "Home: <team> - <tactic> [<formation>]", or "Away: ..." for side 1; with two phases the formation
+// is "IP <formation>, OOP <formation>".
 size_t fixtureView_heading(const FixtureView *view, unsigned side, char *out, size_t size);
 size_t fixtureView_teamName(const FixtureView *view, unsigned side, char *out, size_t size);
 // The name of the side's player in `block` ("" if the side has no such block).
@@ -82,14 +83,29 @@ size_t fixtureView_cell(
 	char *out,
 	size_t size
 );
-// Where a slot's numbered circle goes on the pitch, in percent of its width and height from the
-// top left; false if the slot's position is not known.
+// The phases of the game's tactics, each a formation on a pitch: 1, or 2 where each slot has a
+// position and a role in possession (phase 0) and others out of possession (phase 1). A phase's
+// name is "" when there is one.
+unsigned fixtureView_phaseCount(void);
+const char *fixtureView_phaseName(unsigned phase);
+// Where a slot's numbered circle goes on the pitch in a phase, in percent of its width and height
+// from the top left; false if the slot's position in that phase is not known.
 bool fixtureView_slotSpot(
 	const FixtureView *view,
 	unsigned side,
+	unsigned phase,
 	unsigned slot,
 	unsigned *xPercent,
 	unsigned *yPercent
+);
+// A slot's position in a phase, as the squad list shows it ("-" if not stored).
+size_t fixtureView_slotPosition(
+	const FixtureView *view,
+	unsigned side,
+	unsigned phase,
+	unsigned slot,
+	char *out,
+	size_t size
 );
 
 // Why `edit` cannot change the side's selected players (FIXTURE_VIEW_BLOCKS flags), or NULL.

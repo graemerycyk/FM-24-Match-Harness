@@ -13,10 +13,12 @@ slice; the x86_64 slice has had only a few early checks under Rosetta, and
 Intel Macs and older macOS versions are untested (see
 [What has been checked](#what-has-been-checked)).
 
-This guide goes through the README's [quick start](../README.md#quick-start)
+This guide goes through the README's [quick start](../README-FM24.md#quick-start)
 in more detail, then covers the [fixture viewer](#the-fixture-viewer), the
 [files the harness adds](#files-and-removal) and how to remove them, and
 [how it works](#how-it-works). The [CLI reference](CLI.md) has the commands.
+For Football Manager 27, see the [FM27 guide](MACOS-FM27.md), which says
+what differs from this one.
 
 Some things to know first:
 
@@ -55,7 +57,7 @@ and this version has not been checked yet.
 
 1. Download the signed release, unzip it and move its folder outside
    Desktop, Documents and Downloads (see the README's
-   [quick start](../README.md#quick-start) and [Known limits](#known-limits)),
+   [quick start](../README-FM24.md#quick-start) and [Known limits](#known-limits)),
    then `cd` into that folder. Or build `fm24ctl` (see
    [Development](DEVELOPMENT.md#macos)) in a clone outside those folders,
    then run `cd bin` in it; use this `bin/fm24ctl`, not the copy in

@@ -7,6 +7,8 @@
 // build's objects have been located so far; on Windows gameState_read finds nothing.
 #pragma once
 
+#include "edition.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -32,21 +34,62 @@ typedef struct GameState {
 	int32_t processingKind; // what it processes, in the game's own numbering; -1 when it is not
 	size_t people;          // people in the game's database: 0 with no game loaded
 	bool humanTeam;         // the human manager's team was found (looked for only with `findTeam`)
-	bool startScreenSeen;   // the start screen's first entry, with any auto-play load, has ended
-	bool autoPlay;          // the game's auto-play flag, on until it finds no auto-play file
-	bool autoPlayRead;      // the game has read and parsed an auto-play file
+	// The start screen's first entry, with any auto-play load, has ended. Where the engine is a
+	// plugin, which has no start screen: the engine has made its GAME object, and a game in progress
+	// has settled (gameState_settled).
+	bool startScreenSeen;
+	bool autoPlay;     // the game's auto-play flag, on until it finds no auto-play file
+	bool autoPlayRead; // the game has read and parsed an auto-play file
 	char date[GAME_STATE_DATE_LENGTH]; // the in-game date while a game is in progress, else ""
 	char save[GAME_STATE_SAVE_LENGTH]; // the loaded save's name without ".fm", or "" if unknown
 } GameState;
 
 // Reads the game's state; false (and a cleared state) if it cannot be read, as on Windows. Looking
 // for the human manager's team is a pass over the game's people, so it is done only with `findTeam`
-// and only while a game is in progress and idle.
+// and only while a game is in progress and idle. Where the engine is a plugin, the state is a
+// cleared one, of a game starting, until the plugin is loaded and accepted (game_engineState),
+// which also forgets the samples taken before; each read while it is accepted is a sample for
+// gameState_settled. Only the job thread reads it.
 bool gameState_read(GameState *state, bool findTeam);
+
+#if EDITION_ENGINE_PLUGIN
+enum {
+	// A game in progress counts as loaded once its people count and in-progress flag have held this
+	// long: as long as fmNNctl's SESSION_STABLE_SAMPLES take.
+	GAME_STATE_SETTLE_MS = 3000,
+	// How often the harness's job thread samples the game while it waits for jobs (main_macos.c).
+	GAME_STATE_SAMPLE_MS = 1000,
+	// Samples further apart than this, as around a long job, the Mac's sleep or a time without the
+	// engine, may have missed a change: the later one counts as a change.
+	GAME_STATE_GAP_MS = 2 * GAME_STATE_SAMPLE_MS,
+};
+
+// What the samples of a game in progress have shown. The engine may set "in progress" while it is
+// still loading a game, as an engine in the executable does, and has no start screen to say when a
+// load has ended, so the harness takes a load to have ended once nothing it samples has changed for
+// a while.
+typedef struct GameSettle {
+	bool sampled;     // there has been a sample
+	bool inProgress;  // what the last sample showed
+	size_t people;    // ...
+	uint64_t sinceMs; // when a sample last showed a change, or the first sample was taken
+	uint64_t lastMs;  // when the last sample was taken
+} GameSettle;
+
+// Notes a sample of the game taken at `nowMs`: true if a game with people is in progress and
+// neither it nor the people count has changed for GAME_STATE_SETTLE_MS. The first sample counts as
+// a change, as does one taken more than GAME_STATE_GAP_MS after the last.
+bool gameState_settled(GameSettle *settle, bool inProgress, size_t people, uint64_t nowMs);
+
+// Samples the game, as gameState_read does, while the job thread has no job, so that a load is seen
+// to have settled before anyone asks. The engine must be held (game_hold).
+void gameState_sample(void);
+#endif
 
 // What the state means. Only a state read with `findTeam` can be GAME_PHASE_READY. A load is under
 // way while a database is loaded with no game in progress, and while a game in progress waits for
-// the start screen's first entry to end: an auto-play load sets "in progress" before it is done.
+// the start screen's first entry to end (or, where the engine is a plugin, to settle): an auto-play
+// load sets "in progress" before it is done.
 GamePhase gameState_phase(const GameState *state);
 
 // The phase as the status job names it: "starting", "menu", "loading", "busy", "ready", "no_team".

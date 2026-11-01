@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureSamples
 import Foundation
 
@@ -76,6 +77,23 @@ func waitUntil(seconds: TimeInterval = 10, _ condition: () -> Bool) -> Bool {
 	return true
 }
 
+/// Whether the game's tactics have two phases (EDITION_TACTIC_PHASES), which changes the squad lists'
+/// slot columns and familiarity, and the samples' tactics.
+let twoPhases = EDITION_TACTIC_PHASES == 2
+
+/// The squad lists' morale column, which condition, sharpness and fatigue follow, and their first
+/// familiarity column, found by their titles.
+let moraleColumn =
+	(0..<FixtureHandle.columnCount).first { FixtureHandle.columnTitle($0) == "Morale" } ?? -1
+let familiarityColumn = moraleColumn + 4
+
+/// The labelled sample's heading for a side.
+func sampleHeading(_ side: Int, team: String? = nil) -> String {
+	let name = team ?? (side == 0 ? "Aston Villa" : "Bristol City")
+	let formation = twoPhases ? "IP 4-2-2-2, OOP 4-4-2" : "4-2-2-2"
+	return "\(side == 0 ? "Home" : "Away"): \(name) - Custom 4-2-2-2 [\(formation)]"
+}
+
 /// A sample fixture's JSON (tests/fixture_samples.c).
 func sampleJSON(_ sample: FixtureSample) -> Data {
 	var length = 0
@@ -144,7 +162,7 @@ final class Scratch {
 
 	init() {
 		url = FileManager.default.temporaryDirectory
-			.appendingPathComponent("fm24-viewer-tests-\(getpid())-\(UUID().uuidString)")
+			.appendingPathComponent("\(EDITION_LOWER)-viewer-tests-\(getpid())-\(UUID().uuidString)")
 		try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 	}
 
@@ -185,12 +203,12 @@ final class MemorySettings: SettingsStore {
 	}
 }
 
-/// fm24ctl's stand-in (tests/viewer_stand_in_fm24ctl.c), which never contacts the game, from
+/// fm24ctl's stand-in (tests/viewer_stand_in_cli.c), which never contacts the game, from
 /// FM24CTL as ctest sets it, with a log of its runs. Nil, failing the test, if FM24CTL names
 /// anything else: the real fm24ctl must never run here.
 @MainActor
 final class StandIn {
-	static let name = "fm24_stand_in_fm24ctl"
+	static let name = "\(EDITION_LOWER)_stand_in_\(EDITION_CLI)"
 
 	let harness: Fm24ctl
 	/// The home folder the stand-in is given (HOME), whose paths install and launch print.
@@ -198,9 +216,12 @@ final class StandIn {
 	private let log: URL
 
 	init?(_ scratch: Scratch, serving: @escaping () -> Bool = { true }) {
-		let path = ProcessInfo.processInfo.environment["FM24CTL"] ?? ""
+		let path = ProcessInfo.processInfo.environment[EDITION_CLI_ENV] ?? ""
 		guard URL(fileURLWithPath: path).lastPathComponent == StandIn.name else {
-			check(false, "FM24CTL must name \(StandIn.name), not \(path.isEmpty ? "nothing" : path)")
+			check(
+				false,
+				"\(EDITION_CLI_ENV) must name \(StandIn.name), not \(path.isEmpty ? "nothing" : path)"
+			)
 			return nil
 		}
 		log = scratch.file("stand-in.log")
@@ -211,14 +232,14 @@ final class StandIn {
 	/// What the stand-in does next (FM24_STAND_IN_ without the prefix: STATUS, STDOUT and so on).
 	func set(_ settings: [String: String]) {
 		var environment = ProcessInfo.processInfo.environment.filter {
-			!$0.key.hasPrefix("FM24_STAND_IN_")
+			!$0.key.hasPrefix("\(EDITION_ENV_PREFIX)STAND_IN_")
 		}
-		environment["FM24_STAND_IN_LOG"] = log.path
+		environment["\(EDITION_ENV_PREFIX)STAND_IN_LOG"] = log.path
 		if let home {
 			environment["HOME"] = home
 		}
 		for (key, value) in settings {
-			environment["FM24_STAND_IN_\(key)"] = value
+			environment["\(EDITION_ENV_PREFIX)STAND_IN_\(key)"] = value
 		}
 		harness.environment = environment
 	}

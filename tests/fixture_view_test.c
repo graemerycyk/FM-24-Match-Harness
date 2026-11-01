@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../src/dll/job.h"
 #include "buffer.h"
+#include "edition.h"
 #include "fixture_data.h"
 #include "fixture_edit.h"
 #include "fixture_samples.h"
@@ -17,6 +18,23 @@
 
 #ifndef _WIN32
 #include <pthread.h>
+#endif
+
+// The squad lists' morale column, which condition, sharpness and fatigue follow, and their first
+// familiarity column.
+#if EDITION_TACTIC_PHASES == 2
+enum { MORALE = 6, FAMILIAR = 10 };
+#else
+enum { MORALE = 5, FAMILIAR = 9 };
+#endif
+
+// The labelled sample's headings.
+#if EDITION_TACTIC_PHASES == 2
+static const char homeHeading[] = "Home: Aston Villa - Custom 4-2-2-2 [IP 4-2-2-2, OOP 4-4-2]";
+static const char awayHeading[] = "Away: Bristol City - Custom 4-2-2-2 [IP 4-2-2-2, OOP 4-4-2]";
+#else
+static const char homeHeading[] = "Home: Aston Villa - Custom 4-2-2-2 [4-2-2-2]";
+static const char awayHeading[] = "Away: Bristol City - Custom 4-2-2-2 [4-2-2-2]";
 #endif
 
 
@@ -99,7 +117,7 @@ static void replaceText(ByteBuffer *json, const char *from, const char *to) {
 TEST(opens_and_summarises_fixtures) {
 	char error[256] = "";
 	static const char *const invalid[] = {
-		"", "{}", "{\"format\":\"fm24-match-config/1\",\"fields\":[]}"};
+		"", "{}", "{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[]}"};
 	for (size_t i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
 		error[0] = 0;
 		ASSERT_BOOL_EQ(
@@ -133,21 +151,13 @@ TEST(opens_and_summarises_fixtures) {
 	);
 	checkText(fixtureView_summaryLine(view, 2, text, sizeof text), text, "Referee: Aimee Keir");
 	checkText(fixtureView_summaryLine(view, 3, text, sizeof text), text, "");
-	checkText(
-		fixtureView_heading(view, 0, text, sizeof text),
-		text,
-		"Home: Aston Villa - Custom 4-2-2-2 [4-2-2-2]"
-	);
-	checkText(
-		fixtureView_heading(view, 1, text, sizeof text),
-		text,
-		"Away: Bristol City - Custom 4-2-2-2 [4-2-2-2]"
-	);
+	checkText(fixtureView_heading(view, 0, text, sizeof text), text, homeHeading);
+	checkText(fixtureView_heading(view, 1, text, sizeof text), text, awayHeading);
 	checkText(fixtureView_heading(view, 2, text, sizeof text), text, "");
 	checkText(fixtureView_teamName(view, 1, text, sizeof text), text, "Bristol City");
 	// Text that does not fit is cut short, and the full length is returned.
-	ASSERT_BOOL_EQ(fixtureView_heading(view, 0, NULL, 0) == 44, true);
-	ASSERT_BOOL_EQ(fixtureView_heading(view, 0, text, 5) == 44, true);
+	ASSERT_BOOL_EQ(fixtureView_heading(view, 0, NULL, 0) == sizeof homeHeading - 1, true);
+	ASSERT_BOOL_EQ(fixtureView_heading(view, 0, text, 5) == sizeof homeHeading - 1, true);
 	ASSERT_INT_EQ(strcmp(text, "Home"), 0);
 	size_t label = 0;
 	ASSERT_INT_EQ(
@@ -193,6 +203,142 @@ TEST(opens_and_summarises_fixtures) {
 }
 
 TEST(lists_squads_as_windows) {
+#if EDITION_TACTIC_PHASES == 2
+	static const char *const titles[FIXTURE_VIEW_COLUMNS] = {
+		"Slot",
+		"Player",
+		"IP Position",
+		"IP Role",
+		"OOP Position",
+		"OOP Role",
+		"Morale",
+		"Condition",
+		"Sharpness",
+		"Fatigue",
+		"Familiarity 0",
+		"Familiarity 1",
+		"Familiarity 2",
+		"Familiarity 3",
+		"Familiarity 4",
+		"Familiarity 5",
+	};
+	static const unsigned widths[FIXTURE_VIEW_COLUMNS] = {
+		38, 210, 80, 90, 95, 90, 65, 85, 90, 70, 95, 95, 95, 95, 95, 95};
+	// Each phase's position and role, then the wellbeing values.
+	static const char *const keeper[] = {"0",
+		"Emiliano Mart\xC3\xADnez",
+		"GK",
+		"Role 0",
+		"GK",
+		"Role 1",
+		"12",
+		"98.76%",
+		"81.25 / 56.50%",
+		"-1",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-"};
+	static const char *const forward[] = {"6",
+		"Injected player",
+		"STR",
+		"Role 22",
+		"STR",
+		"Role 25",
+		"12",
+		"98.76%",
+		"81.25 / 56.50%",
+		"-1",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-"};
+	static const char *const substitute[] = {"",
+		"Injected player",
+		"Sub",
+		"",
+		"",
+		"",
+		"12",
+		"98.76%",
+		"81.25 / 56.50%",
+		"-1",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-"};
+	static const char *const slot[] = {"4",
+		"<Unknown>",
+		"DR",
+		"Role 6",
+		"DR",
+		"Role 7",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-"};
+	static const char *const listed[] = {"",
+		"Emiliano Mart\xC3\xADnez",
+		"",
+		"",
+		"",
+		"",
+		"12",
+		"98.76%",
+		"81.25 / 56.50%",
+		"-1",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-"};
+	// Each category's best amount, as the tactic's settings are not known: none in category 2.
+	static const char *const familiar[] = {"2",
+		"Injected player",
+		"DMCL",
+		"Role 9",
+		"MCL",
+		"Role 11",
+		"15",
+		"100.00%",
+		"56.00 / 56.50%",
+		"-140",
+		"100.00%",
+		"99.00%",
+		"45.00%",
+		"100.00%",
+		"77.00%",
+		"70.00%"};
+	static const char *const known[] = {"1",
+		"Injected player",
+		"DCR",
+		"Role 3",
+		"DCR",
+		"Role 4",
+		"15",
+		"100.00%",
+		"56.00 / 56.50%",
+		"-140",
+		"82.00%",
+		"73.00%",
+		"None",
+		"91.00%",
+		"30.00%",
+		"85.00%"};
+#else
 	static const char *const titles[FIXTURE_VIEW_COLUMNS] = {
 		"Slot",
 		"Player",
@@ -213,18 +359,6 @@ TEST(lists_squads_as_windows) {
 	};
 	static const unsigned widths[FIXTURE_VIEW_COLUMNS] = {
 		38, 210, 65, 185, 75, 65, 85, 90, 70, 85, 100, 125, 105, 85, 85, 85};
-	for (unsigned column = 0; column < FIXTURE_VIEW_COLUMNS; ++column) {
-		ASSERT_INT_EQ(strcmp(fixtureView_columnTitle(column), titles[column]), 0);
-		ASSERT_BOOL_EQ(fixtureView_columnWidth(column) == widths[column], true);
-	}
-	ASSERT_BOOL_EQ(fixtureView_columnWidth(FIXTURE_VIEW_COLUMNS) == 0, true);
-
-	FixtureView *view = openSample(FIXTURE_SAMPLE_LABELLED);
-	if (!view) {
-		return;
-	}
-	// The human side's known line-up: its slots, then the substitutes.
-	ASSERT_BOOL_EQ(fixtureView_rowCount(view, 0) == 12, true);
 	static const char *const keeper[] = {"0",
 		"Emiliano Mart\xC3\xADnez",
 		"GK",
@@ -241,7 +375,6 @@ TEST(lists_squads_as_windows) {
 		"-",
 		"-",
 		"-"};
-	checkRow(view, 0, 0, 0, keeper);
 	static const char *const forward[] = {"6",
 		"Injected player",
 		"STR",
@@ -258,7 +391,6 @@ TEST(lists_squads_as_windows) {
 		"-",
 		"-",
 		"-"};
-	checkRow(view, 0, 6, 6, forward);
 	static const char *const substitute[] = {"",
 		"Injected player",
 		"Sub",
@@ -275,9 +407,6 @@ TEST(lists_squads_as_windows) {
 		"-",
 		"-",
 		"-"};
-	checkRow(view, 0, 11, 11, substitute);
-	// The AI side's unknown line-up: eleven unassigned slots, then every player.
-	ASSERT_BOOL_EQ(fixtureView_rowCount(view, 1) == 23, true);
 	static const char *const slot[] = {"4",
 		"<Unknown>",
 		"DR",
@@ -294,7 +423,6 @@ TEST(lists_squads_as_windows) {
 		"-",
 		"-",
 		"-"};
-	checkRow(view, 1, 4, -1, slot);
 	static const char *const listed[] = {"",
 		"Emiliano Mart\xC3\xADnez",
 		"",
@@ -311,6 +439,58 @@ TEST(lists_squads_as_windows) {
 		"-",
 		"-",
 		"-"};
+	// Familiarity against the tactic.
+	static const char *const familiar[] = {"2",
+		"Injected player",
+		"DMCL",
+		"Defensive Midfielder",
+		"Support",
+		"15",
+		"100.00%",
+		"56.00 / 56.50%",
+		"-140",
+		"90.00%",
+		"80.00%",
+		"80.00%",
+		"50.00%",
+		"15.00%",
+		"50.00%",
+		"80.00%"};
+	static const char *const known[] = {"1",
+		"Injected player",
+		"DCR",
+		"Ball Playing Defender",
+		"Defend",
+		"15",
+		"100.00%",
+		"56.00 / 56.50%",
+		"-140",
+		"42.00%",
+		"52.00%",
+		"72.00%",
+		"32.00%",
+		"15.00%",
+		"65.00%",
+		"35.00%"};
+#endif
+	for (unsigned column = 0; column < FIXTURE_VIEW_COLUMNS; ++column) {
+		ASSERT_INT_EQ(strcmp(fixtureView_columnTitle(column), titles[column]), 0);
+		ASSERT_BOOL_EQ(fixtureView_columnWidth(column) == widths[column], true);
+	}
+	ASSERT_BOOL_EQ(fixtureView_columnWidth(FIXTURE_VIEW_COLUMNS) == 0, true);
+
+	FixtureView *view = openSample(FIXTURE_SAMPLE_LABELLED);
+	if (!view) {
+		return;
+	}
+	// The human side's known line-up: its slots, then the substitutes.
+	ASSERT_BOOL_EQ(fixtureView_rowCount(view, 0) == 12, true);
+	checkRow(view, 0, 0, 0, keeper);
+	checkRow(view, 0, 6, 6, forward);
+	checkRow(view, 0, 11, 11, substitute);
+	// The AI side's unknown line-up: eleven unassigned slots, then every player.
+	ASSERT_BOOL_EQ(fixtureView_rowCount(view, 1) == 23, true);
+	checkRow(view, 1, 4, -1, slot);
 	checkRow(view, 1, 11, 0, listed);
 	ASSERT_INT_EQ(fixtureView_rowBlock(view, 1, 22), 11);
 	ASSERT_INT_EQ(fixtureView_rowBlock(view, 1, 23), -1);
@@ -320,26 +500,11 @@ TEST(lists_squads_as_windows) {
 	checkCell(view, 0, 0, FIXTURE_VIEW_COLUMNS, "");
 	fixtureView_close(view);
 
-	// Unlabelled wellbeing values, and familiarity against the tactic.
+	// Unlabelled wellbeing values, and familiarity.
 	view = openSample(FIXTURE_SAMPLE_FAMILIARITY);
 	if (view) {
-		static const char *const familiar[] = {"2",
-			"Injected player",
-			"DMCL",
-			"Defensive Midfielder",
-			"Support",
-			"15",
-			"100.00%",
-			"56.00 / 56.50%",
-			"-140",
-			"90.00%",
-			"80.00%",
-			"80.00%",
-			"50.00%",
-			"15.00%",
-			"50.00%",
-			"80.00%"};
 		checkRow(view, 0, 2, 2, familiar);
+		checkRow(view, 0, 1, 1, known);
 		fixtureView_close(view);
 	}
 	// Players without names (or wellbeing) are listed but cannot be selected.
@@ -349,7 +514,7 @@ TEST(lists_squads_as_windows) {
 		ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 11), -1);
 		checkCell(view, 0, 0, 2, "-");
 		checkCell(view, 0, 11, 1, "<Unknown>");
-		checkCell(view, 0, 11, 6, "-");
+		checkCell(view, 0, 11, MORALE + 1, "-");
 		fixtureView_close(view);
 	}
 }
@@ -363,29 +528,29 @@ TEST(shows_invalid_wellbeing_values) {
 	} cases[] = {
 		{"\"home.player[0].condition\",\"u16\":9876",
 			"\"home.player[0].condition\",\"u16\":10001",
-			6,
+			MORALE + 1,
 			"Invalid: 10001"},
 		{"\"home.player[0].condition\",\"u16\":9876",
 			"\"home.player[0].condition\",\"u16\":0",
-			6,
+			MORALE + 1,
 			"0.00%"},
 		{"\"home.player[0].sharpness[0]\",\"u16\":8125",
 			"\"home.player[0].sharpness[0]\",\"u16\":10002",
-			7,
+			MORALE + 2,
 			"Invalid sharpness"},
 		{"\"home.player[0].sharpness[0]\",\"u16\":8125",
 			"\"home.player[0].sharpness[0]\",\"u16\":5650",
-			7,
+			MORALE + 2,
 			"56.50%"},
 		{"\"home.player[0].fatigue\",\"u16\":65535",
 			"\"home.player[0].fatigue\",\"u16\":32767",
-			8,
+			MORALE + 3,
 			"32767"},
 		{"\"home.player[0].fatigue\",\"u16\":65535",
 			"\"home.player[0].fatigue\",\"u16\":32768",
-			8,
+			MORALE + 3,
 			"-32768"},
-		{"\"home.player[0].morale\",\"u8\":12", "\"home.player[0].morale\",\"u8\":0", 5, "0"},
+		{"\"home.player[0].morale\",\"u8\":12", "\"home.player[0].morale\",\"u8\":0", MORALE, "0"},
 	};
 	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
 		ByteBuffer json = {0};
@@ -407,36 +572,72 @@ TEST(places_slots_on_the_pitch) {
 	if (!view) {
 		return;
 	}
-	static const unsigned spots[FIXTURE_VIEW_SLOTS][2] = {
-		{50, 91},
-		{65, 75},
-		{35, 59},
-		{35, 75},
-		{85, 75},
-		{15, 30},
-		{65, 12},
-		{65, 59},
-		{15, 75},
-		{35, 12},
-		{85, 30},
+	// The 4-2-2-2 and, with two phases, the 4-4-2 out of possession.
+	static const unsigned spots[2][FIXTURE_VIEW_SLOTS][2] = {
+		{{50, 91},
+			{65, 75},
+			{35, 59},
+			{35, 75},
+			{85, 75},
+			{15, 30},
+			{65, 12},
+			{65, 59},
+			{15, 75},
+			{35, 12},
+			{85, 30}},
+		{{50, 91},
+			{65, 75},
+			{35, 45},
+			{35, 75},
+			{85, 75},
+			{15, 45},
+			{65, 12},
+			{65, 45},
+			{15, 75},
+			{35, 12},
+			{85, 45}},
 	};
+	static const char *const positions[2][FIXTURE_VIEW_SLOTS] = {
+		{"GK", "DCR", "DMCL", "DCL", "DR", "AML", "STR", "DMCR", "DL", "STL", "AMR"},
+		{"GK", "DCR", "MCL", "DCL", "DR", "ML", "STR", "MCR", "DL", "STL", "MR"},
+	};
+	unsigned phases = fixtureView_phaseCount();
+	ASSERT_BOOL_EQ(phases == (unsigned)EDITION_TACTIC_PHASES, true);
+	char text[FIXTURE_VIEW_TEXT];
 	for (unsigned side = 0; side < 2; ++side) {
-		for (unsigned slot = 0; slot < FIXTURE_VIEW_SLOTS; ++slot) {
-			unsigned x = 0;
-			unsigned y = 0;
-			ASSERT_BOOL_EQ(fixtureView_slotSpot(view, side, slot, &x, &y), true);
-			ASSERT_BOOL_EQ(x == spots[slot][0] && y == spots[slot][1], true);
+		for (unsigned phase = 0; phase < phases; ++phase) {
+			for (unsigned slot = 0; slot < FIXTURE_VIEW_SLOTS; ++slot) {
+				unsigned x = 0;
+				unsigned y = 0;
+				ASSERT_BOOL_EQ(fixtureView_slotSpot(view, side, phase, slot, &x, &y), true);
+				ASSERT_BOOL_EQ(x == spots[phase][slot][0] && y == spots[phase][slot][1], true);
+				checkText(
+					fixtureView_slotPosition(view, side, phase, slot, text, sizeof text),
+					text,
+					positions[phase][slot]
+				);
+			}
 		}
 	}
 	unsigned x = 0;
 	unsigned y = 0;
-	ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, FIXTURE_VIEW_SLOTS, &x, &y), false);
-	ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 2, 0, &x, &y), false);
+	ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, 0, FIXTURE_VIEW_SLOTS, &x, &y), false);
+	ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 2, 0, 0, &x, &y), false);
+	ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, phases, 0, &x, &y), false);
+	checkText(fixtureView_slotPosition(view, 0, phases, 0, text, sizeof text), text, "-");
+	checkText(fixtureView_slotPosition(view, 2, 0, 0, text, sizeof text), text, "-");
+	// Phase names, which only two phases have.
+	static const char *const names[] = {"In possession", "Out of possession"};
+	for (unsigned phase = 0; phase <= phases; ++phase) {
+		const char *name = fixtureView_phaseName(phase);
+		checkText(strlen(name), name, phases == 2 && phase < 2 ? names[phase] : "");
+	}
 	fixtureView_close(view);
 	// Unknown positions (none stored, or both sides of the pitch at once) are not drawn.
 	view = openSample(FIXTURE_SAMPLE_VENUE);
 	if (view) {
-		ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, 0, &x, &y), false);
+		ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, 0, 0, &x, &y), false);
+		checkText(fixtureView_slotPosition(view, 0, 0, 0, text, sizeof text), text, "-");
 		fixtureView_close(view);
 	}
 	ByteBuffer json = {0};
@@ -448,13 +649,64 @@ TEST(places_slots_on_the_pitch) {
 		);
 		view = openJson(&json);
 		if (view) {
-			ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, 1, &x, &y), false);
+			ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, 0, 1, &x, &y), false);
 			checkCell(view, 0, 1, 2, "Unknown");
 			fixtureView_close(view);
 		}
 	}
 	buffer_free(&json);
 }
+
+#if EDITION_TACTIC_PHASES == 2
+// A tactic with two phases: each has a formation, positions and roles of its own.
+TEST(shows_both_phases_of_a_tactic) {
+	ByteBuffer json = {0};
+	if (!sampleJson(FIXTURE_SAMPLE_LABELLED, &json)) {
+		return;
+	}
+	// No role, or a role of two bits, is unknown; a slot out of possession without a position
+	// leaves that formation unknown, and its spot off the pitch.
+	replaceText(&json, "slot[0].ip.role\",\"u64\":1}", "slot[0].ip.role\",\"u64\":0}");
+	replaceText(&json, "slot[0].oop.role\",\"u64\":2}", "slot[0].oop.role\",\"u64\":6}");
+	replaceText(&json, "slot[4].oop.position\",\"u32\":4}", "slot[4].oop.position\",\"u32\":0}");
+	FixtureView *view = openJson(&json);
+	if (view) {
+		char text[FIXTURE_VIEW_TEXT];
+		checkText(
+			fixtureView_heading(view, 0, text, sizeof text),
+			text,
+			"Home: Aston Villa - Custom 4-2-2-2 [IP 4-2-2-2, OOP unknown]"
+		);
+		checkText(fixtureView_heading(view, 1, text, sizeof text), text, awayHeading);
+		checkCell(view, 0, 0, 3, "Unknown");
+		checkCell(view, 0, 0, 5, "Unknown");
+		checkCell(view, 0, 4, 4, "Unknown");
+		checkCell(view, 0, 4, 2, "DR");
+		unsigned x = 0;
+		unsigned y = 0;
+		ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, 1, 4, &x, &y), false);
+		ASSERT_BOOL_EQ(fixtureView_slotSpot(view, 0, 0, 4, &x, &y), true);
+		fixtureView_close(view);
+	}
+	// Without the halves, a slot's position and role are not known.
+	replaceText(&json, ".ip.position", ".position");
+	replaceText(&json, "slot[1].oop.role", "slot[1].oops.role");
+	view = openJson(&json);
+	if (view) {
+		char text[FIXTURE_VIEW_TEXT];
+		checkText(
+			fixtureView_heading(view, 0, text, sizeof text),
+			text,
+			"Home: Aston Villa - Custom 4-2-2-2 [Formation unknown]"
+		);
+		checkCell(view, 0, 0, 2, "-");
+		checkCell(view, 0, 1, 5, "-");
+		checkCell(view, 0, 1, 3, "Role 3");
+		fixtureView_close(view);
+	}
+	buffer_free(&json);
+}
+#endif
 
 // The cells of every row after a save of the view's edits, read back, are those it shows.
 static void checkWrittenEdits(const FixtureView *view, const ByteBuffer *json) {
@@ -503,18 +755,18 @@ TEST(edits_players_as_saves_write_them) {
 	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 2, selected, FIXTURE_VIEW_MAX_HAPPINESS), false);
 	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), false);
 	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 0, selected, FIXTURE_VIEW_MAX_HAPPINESS), true);
-	checkCell(view, 0, 0, 5, "20");
-	checkCell(view, 0, 11, 5, "20");
-	checkCell(view, 0, 1, 5, "12");
+	checkCell(view, 0, 0, MORALE, "20");
+	checkCell(view, 0, 11, MORALE, "20");
+	checkCell(view, 0, 1, MORALE, "12");
 	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 0, selected, FIXTURE_VIEW_MAX_CONDITION), true);
-	checkCell(view, 0, 0, 6, "100.00%");
-	checkCell(view, 0, 0, 7, "100.00%");
-	checkCell(view, 0, 0, 8, "0");
+	checkCell(view, 0, 0, MORALE + 1, "100.00%");
+	checkCell(view, 0, 0, MORALE + 2, "100.00%");
+	checkCell(view, 0, 0, MORALE + 3, "0");
 	// The other side's list shows its own players: block 0 there is unchanged.
 	selected[11] = false;
 	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 1, selected, FIXTURE_VIEW_MAX_HAPPINESS), true);
-	checkCell(view, 1, 11, 5, "20");
-	checkCell(view, 1, 11, 6, "98.76%");
+	checkCell(view, 1, 11, MORALE, "20");
+	checkCell(view, 1, 11, MORALE + 1, "98.76%");
 	uint8_t flags[2 * FIXTURE_VIEW_BLOCKS];
 	fixtureView_playerEdits(view, flags);
 	ASSERT_INT_EQ(flags[0], FIXTURE_VIEW_MAX_HAPPINESS | FIXTURE_VIEW_MAX_CONDITION);
@@ -523,16 +775,18 @@ TEST(edits_players_as_saves_write_them) {
 	ASSERT_INT_EQ(flags[FIXTURE_VIEW_BLOCKS], FIXTURE_VIEW_MAX_HAPPINESS);
 	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), true);
 	checkWrittenEdits(view, &json);
-	// Without familiarity data nothing changes, and the reason is the Windows viewer's.
+	// Without familiarity data nothing changes, and the reason is the Windows viewer's (with two
+	// phases, there is no tactic to miss).
+#if EDITION_TACTIC_PHASES == 2
+	static const char missing[] = "The selected player is missing tactical familiarity data (export "
+																"the fixture again); no players were changed.";
+#else
+	static const char missing[] =
+		"The selected player or tactic is missing tactical familiarity data "
+		"(export the fixture again); no players were changed.";
+#endif
 	const char *problem = fixtureView_editProblem(view, 0, selected, FIXTURE_VIEW_MAX_FAMILIARITY);
-	ASSERT_INT_EQ(
-		strcmp(
-			problem ? problem : "",
-			"The selected player or tactic is missing tactical familiarity data (export the fixture "
-			"again); no players were changed."
-		),
-		0
-	);
+	ASSERT_INT_EQ(strcmp(problem ? problem : "", missing), 0);
 	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 0, selected, FIXTURE_VIEW_MAX_FAMILIARITY), false);
 	fixtureView_playerEdits(view, flags);
 	ASSERT_INT_EQ(flags[0], FIXTURE_VIEW_MAX_HAPPINESS | FIXTURE_VIEW_MAX_CONDITION);
@@ -541,16 +795,18 @@ TEST(edits_players_as_saves_write_them) {
 	fixtureView_close(view);
 	buffer_free(&json);
 
-	// Maximum familiarity: each category's first entry.
+	// Maximum familiarity: each category's first entry, or with two phases every entry, so a
+	// category without entries stays as it is.
 	view = sampleJson(FIXTURE_SAMPLE_FAMILIARITY, &json) ? openJson(&json) : NULL;
 	if (view) {
 		memset(selected, 0, sizeof selected);
 		selected[1] = true;
 		ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 0, selected, FIXTURE_VIEW_MAX_FAMILIARITY), true);
-		for (unsigned column = 9; column < FIXTURE_VIEW_COLUMNS; ++column) {
-			checkCell(view, 0, 1, column, "100.00%");
+		for (unsigned column = FAMILIAR; column < FIXTURE_VIEW_COLUMNS; ++column) {
+			bool none = EDITION_TACTIC_PHASES == 2 && column == FAMILIAR + 2;
+			checkCell(view, 0, 1, column, none ? "None" : "100.00%");
 		}
-		checkCell(view, 0, 2, 9, "90.00%");
+		checkCell(view, 0, 2, FAMILIAR + 1, EDITION_TACTIC_PHASES == 2 ? "99.00%" : "80.00%");
 		checkWrittenEdits(view, &json);
 		fixtureView_close(view);
 	}
@@ -991,8 +1247,8 @@ TEST(names_the_save_of_exports) {
 		ByteBuffer json = {0};
 		ASSERT_BOOL_EQ(sampleJson(FIXTURE_SAMPLE_LABELLED, &json), true);
 		char keys[256];
-		(void)snprintf(keys, sizeof keys, "{\"format\":\"fm24-match-config/1\",%s", cases[i].keys);
-		replaceText(&json, "{\"format\":\"fm24-match-config/1\",", keys);
+		(void)snprintf(keys, sizeof keys, "{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",%s", cases[i].keys);
+		replaceText(&json, "{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",", keys);
 		FixtureView *view = openJson(&json);
 		ASSERT_BOOL_EQ(view != NULL, true);
 		if (view) {
@@ -1370,7 +1626,7 @@ static void useView(void) {
 		return;
 	}
 	char text[FIXTURE_VIEW_TEXT];
-	checkCell(view, 0, 1, 9, "42.00%");
+	checkCell(view, 0, 1, FAMILIAR, EDITION_TACTIC_PHASES == 2 ? "82.00%" : "42.00%");
 	bool selected[FIXTURE_VIEW_BLOCKS] = {false};
 	selected[1] = true;
 	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 0, selected, FIXTURE_VIEW_MAX_FAMILIARITY), true);
@@ -1432,6 +1688,9 @@ void registerFixtureViewTests(void) {
 	test_run("fixture view lists squads as the Windows viewer", test_lists_squads_as_windows);
 	test_run("fixture view shows invalid wellbeing values", test_shows_invalid_wellbeing_values);
 	test_run("fixture view places slots on the pitch", test_places_slots_on_the_pitch);
+#if EDITION_TACTIC_PHASES == 2
+	test_run("fixture view shows both phases of a tactic", test_shows_both_phases_of_a_tactic);
+#endif
 	test_run(
 		"fixture view edits players as saves write them", test_edits_players_as_saves_write_them
 	);

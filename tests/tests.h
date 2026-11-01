@@ -18,5 +18,6 @@ void registerFixtureWindowTests(void);
 void registerFixtureLoadTests(void);
 void registerPlayerInjectTests(void);
 void registerMacosTests(void);
+void registerMatchTests(void);
 
 #endif

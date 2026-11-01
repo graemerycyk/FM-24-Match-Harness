@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureCore
 import FixtureSamples
 import Foundation
@@ -68,23 +69,23 @@ enum ViewerEditTests {
 		let revision = model.revision
 		model.maxPlayers(.happiness, side: 0)
 		check(model.revision > revision, "the lists were not told")
-		checkEqual(fixture.cell(side: 0, row: 0, column: 5), "20")
-		checkEqual(fixture.cell(side: 0, row: 11, column: 5), "20")
-		checkEqual(fixture.cell(side: 0, row: 1, column: 5), "12")
+		checkEqual(fixture.cell(side: 0, row: 0, column: moraleColumn), "20")
+		checkEqual(fixture.cell(side: 0, row: 11, column: moraleColumn), "20")
+		checkEqual(fixture.cell(side: 0, row: 1, column: moraleColumn), "12")
 		checkEqual(model.heading?.marker, " (unsaved player edits)")
 		check(model.hasUnsavedEdits)
 		checkEqual(model.selection, [[0, 11], []])
 
 		model.maxPlayers(.condition, side: 0)
 		checkEqual(
-			(6...8).map { fixture.cell(side: 0, row: 0, column: $0) },
+			(1...3).map { fixture.cell(side: 0, row: 0, column: moraleColumn + $0) },
 			["100.00%", "100.00%", "0"]
 		)
 		// The other side's lists show their own players.
 		model.select(side: 1, blocks: [0])
 		model.maxPlayers(.happiness, side: 1)
-		checkEqual(fixture.cell(side: 1, row: 11, column: 5), "20")
-		checkEqual(fixture.cell(side: 1, row: 11, column: 6), "98.76%")
+		checkEqual(fixture.cell(side: 1, row: 11, column: moraleColumn), "20")
+		checkEqual(fixture.cell(side: 1, row: 11, column: moraleColumn + 1), "98.76%")
 		let flags = fixture.playerEdits
 		checkEqual(
 			flags[0],
@@ -96,13 +97,14 @@ enum ViewerEditTests {
 		check(prompts.errors.isEmpty, "\(prompts.errors)")
 		check(model.log.lines.last?.hasSuffix("Max happiness: 1 away player") == true)
 
-		// Without familiarity data nothing changes, and the reason is the Windows viewer's.
+		// Without familiarity data nothing changes, and the reason is the Windows viewer's (with two
+		// phases, there is no tactic to miss).
 		model.maxPlayers(.familiarity, side: 0)
-		checkEqual(prompts.errors.last?.title, "FM24 Match Harness")
+		checkEqual(prompts.errors.last?.title, "\(EDITION_PRODUCT) Match Harness")
 		checkEqual(
 			prompts.lastError,
-			"The selected player or tactic is missing tactical familiarity data (export the fixture "
-				+ "again); no players were changed."
+			"The selected player \(twoPhases ? "is" : "or tactic is") missing tactical familiarity data "
+				+ "(export the fixture again); no players were changed."
 		)
 		checkEqual(fixture.playerEdits, flags)
 		checkEqual(
@@ -119,18 +121,26 @@ enum ViewerEditTests {
 			check(false, "no fixture")
 			return
 		}
-		let familiar = (9..<16).map { fixture.cell(side: 0, row: 1, column: $0) }
+		let columns = familiarityColumn..<FixtureHandle.columnCount
+		let familiar = columns.map { fixture.cell(side: 0, row: 1, column: $0) }
 		// Player 0 has no familiarity entries; player 1 has, but is not changed either.
 		model.select(side: 0, blocks: [0, 1])
 		model.maxPlayers(.familiarity, side: 0)
-		check(prompts.lastError?.hasPrefix("The selected player or tactic is missing") == true)
-		checkEqual((9..<16).map { fixture.cell(side: 0, row: 1, column: $0) }, familiar)
+		check(
+			prompts.lastError?.hasPrefix(
+				twoPhases ? "The selected player is missing" : "The selected player or tactic is missing"
+			) == true
+		)
+		checkEqual(columns.map { fixture.cell(side: 0, row: 1, column: $0) }, familiar)
 		check(!fixture.hasPlayerEdits && !model.hasUnsavedEdits)
 		model.select(side: 0, blocks: [1])
 		model.maxPlayers(.familiarity, side: 0)
+		// With two phases, every entry: the category without entries has none to raise.
 		checkEqual(
-			(9..<16).map { fixture.cell(side: 0, row: 1, column: $0) },
-			[String](repeating: "100.00%", count: 7)
+			columns.map { fixture.cell(side: 0, row: 1, column: $0) },
+			twoPhases
+				? ["100.00%", "100.00%", "None", "100.00%", "100.00%", "100.00%"]
+				: [String](repeating: "100.00%", count: 7)
 		)
 		checkEqual(prompts.errors.count, 1)
 
@@ -149,11 +159,11 @@ enum ViewerEditTests {
 			prompts.lastError,
 			"The selected player is missing wellbeing data; no players were changed."
 		)
-		checkEqual(partial.cell(side: 0, row: 1, column: 6), "98.76%")
+		checkEqual(partial.cell(side: 0, row: 1, column: moraleColumn + 1), "98.76%")
 		check(!partial.hasPlayerEdits)
 		// Their morale is labelled, so happiness can be maximised.
 		model.maxPlayers(.happiness, side: 0)
-		checkEqual(partial.cell(side: 0, row: 0, column: 5), "20")
+		checkEqual(partial.cell(side: 0, row: 0, column: moraleColumn), "20")
 		checkEqual(prompts.errors.count, 2)
 	}
 
@@ -202,7 +212,7 @@ enum ViewerEditTests {
 				)
 			}
 		}
-		checkEqual(reopened.cell(side: 0, row: 11, column: 5), "20")
+		checkEqual(reopened.cell(side: 0, row: 11, column: moraleColumn), "20")
 
 		// Edits saved as binary are encoded after they are written.
 		model.select(side: 0, blocks: [3])

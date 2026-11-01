@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import Foundation
 
 /// Where settings are kept: UserDefaults in the app, memory in the tests.
@@ -15,7 +16,7 @@ extension UserDefaults: SettingsStore {}
 
 /// The viewer's settings, kept in UserDefaults: the export folder (File > Export Folder…), where
 /// exports of fixtures not yet saved go, as the working directory takes them on Windows, and the
-/// Launch FM24 sheet's last choice.
+/// Launch FMNN sheet's last choice.
 final class ViewerSettings {
 	static let exportFolderKey = "ExportFolder"
 	static let launchSaveKey = "LaunchSave"
@@ -34,9 +35,9 @@ final class ViewerSettings {
 		self.documents = documents
 	}
 
-	/// ~/Documents/FM24 Match Harness.
+	/// ~/Documents/FMNN Match Harness.
 	var defaultExportFolder: URL {
-		documents.appendingPathComponent("FM24 Match Harness", isDirectory: true)
+		documents.appendingPathComponent("\(EDITION_PRODUCT) Match Harness", isDirectory: true)
 	}
 
 	var exportFolder: URL {
@@ -50,7 +51,7 @@ final class ViewerSettings {
 		}
 	}
 
-	/// What the Launch FM24 sheet last loaded: a save's .fm file, or "" for the start screen; nil
+	/// What the Launch FMNN sheet last loaded: a save's .fm file, or "" for the start screen; nil
 	/// before it has launched anything.
 	var launchSave: String? {
 		get {

@@ -5,7 +5,7 @@ import SwiftUI
 
 /// One side on the Squads tab: its heading (team, tactic and formation) with the pencil that
 /// replaces the team, the Max buttons and Swap player for the selected players, the stored
-/// formation on a pitch, and the squad list.
+/// formation on a pitch (with two phases, one each, named above it), and the squad list.
 struct TeamPanel: View {
 	@ObservedObject var model: ViewerModel
 	let fixture: FixtureHandle
@@ -39,8 +39,21 @@ struct TeamPanel: View {
 			}
 			.frame(minHeight: 27)
 			HStack(alignment: .top, spacing: 12) {
-				PitchView(fixture: fixture, side: side)
-					.frame(width: 220)
+				if FixtureHandle.phaseCount == 1 {
+					PitchView(fixture: fixture, side: side)
+						.frame(width: 220)
+				} else {
+					ForEach(0..<FixtureHandle.phaseCount, id: \.self) { phase in
+						VStack(alignment: .leading, spacing: 3) {
+							Text(FixtureHandle.phaseName(phase))
+								.font(.system(size: 11))
+								.foregroundColor(.secondary)
+								.lineLimit(1)
+							PitchView(fixture: fixture, side: side, phase: phase)
+						}
+						.frame(width: 180)
+					}
+				}
 				SquadTable(model: model, side: side)
 			}
 		}

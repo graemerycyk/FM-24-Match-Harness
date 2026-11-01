@@ -4,7 +4,7 @@
 import FixtureCore
 import Foundation
 
-/// What `fm24ctl run` is given for a simulation, read from the Simulation tab's entries.
+/// What `fmNNctl run` is given for a simulation, read from the Simulation tab's entries.
 struct SimulationOptions: Equatable {
 	var threads: Int
 	/// The seed pattern, "keep" (the fixture's own seed) for a blank one.

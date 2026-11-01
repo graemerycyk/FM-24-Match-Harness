@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Combine
+import Edition
 import Foundation
 
-/// Whether FM24 runs, and with this protocol's harness.
+/// Whether FMNN runs, and with this protocol's harness.
 enum GameState: Equatable {
 	/// Not checked yet.
 	case unknown
@@ -18,7 +19,7 @@ enum GameState: Equatable {
 	}
 
 	/// The start panel's line about the game; nil before it has been checked. While Steam's launch
-	/// option is not set (`optionSet`), it leads with setting it, as Launch FM24… would then start
+	/// option is not set (`optionSet`), it leads with setting it, as Launch FMNN… would then start
 	/// the game directly, which has not been verified.
 	func description(optionSet: Bool) -> String? {
 		let harness = "harness \(FixtureHandle.protocolVersion)"
@@ -26,35 +27,35 @@ enum GameState: Equatable {
 		case .unknown: return nil
 		case .notRunning:
 			return optionSet
-				? "FM24 is not running. Choose Launch FM24… to start it with the harness and a save, or "
+				? "\(EDITION_PRODUCT) is not running. Choose Launch \(EDITION_PRODUCT)… to start it with the harness and a save, or "
 					+ "start it from Steam with the harness and load a save, then choose Retry."
-				: "FM24 is not running. Set Steam's launch option for it once (File > Install Harness…), "
+				: "\(EDITION_PRODUCT) is not running. Set Steam's launch option for it once (File > Install Harness…), "
 					+ "then start it from Steam, load a save and choose Retry. \(GameState.directStart)"
 		case .runningWithoutHarness:
 			return optionSet
-				? "FM24 is running without \(harness): quit it, then choose Launch FM24… to start it "
+				? "\(EDITION_PRODUCT) is running without \(harness): quit it, then choose Launch \(EDITION_PRODUCT)… to start it "
 					+ "with the harness."
-				: "FM24 is running without \(harness): quit it, set Steam's launch option for it once "
+				: "\(EDITION_PRODUCT) is running without \(harness): quit it, set Steam's launch option for it once "
 					+ "(File > Install Harness…), then start it from Steam. \(GameState.directStart)"
-		case .ready: return "FM24 is running with \(harness)."
+		case .ready: return "\(EDITION_PRODUCT) is running with \(harness)."
 		}
 	}
 
-	/// What Launch FM24… does while Steam's launch option is not set.
+	/// What Launch FMNN… does while Steam's launch option is not set.
 	static let directStart =
-		"Launch FM24… would open it without the option, which has not been verified: the game "
+		"Launch \(EDITION_PRODUCT)… would open it without the option, which has not been verified: the game "
 		+ "crashed in its one attempt."
 }
 
-/// Follows the game: the app tells it when FM24 starts or quits (App/GameWatch.swift), and it
+/// Follows the game: the app tells it when FMNN starts or quits (App/GameWatch.swift), and it
 /// checks the job socket's lock (channel_served, which sends the game nothing) only then, when a
 /// harness job fails, and for a while after the game starts, until its harness serves.
 @MainActor
 final class GameMonitor: ObservableObject {
-	nonisolated static let bundleIdentifier = "com.sigames.eur.FootballManager2024"
+	nonisolated static let bundleIdentifier = EDITION_GAME_BUNDLE_ID
 
 	@Published private(set) var state = GameState.unknown
-	/// Steam's launch option for FM24 runs the harness's launcher, as Steam has saved it; read with
+	/// Steam's launch option for FMNN runs the harness's launcher, as Steam has saved it; read with
 	/// the game's state.
 	@Published private(set) var optionSet = true
 	/// Told when the game quits.
@@ -97,7 +98,7 @@ final class GameMonitor: ObservableObject {
 		optionSet = launchOptionSet()
 	}
 
-	/// FM24 has started: its harness, if it has one, serves once the game has loaded.
+	/// FMNN has started: its harness, if it has one, serves once the game has loaded.
 	func gameStarted() {
 		refresh()
 		watch?.cancel()

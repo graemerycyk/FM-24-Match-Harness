@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureSamples
 import Foundation
 
@@ -16,25 +17,44 @@ enum SaveCheckTests {
 		Tests.test("viewer keeps an export's save in what it writes and plays", keepsSave)
 		Tests.test("viewer shows the save a fixture names", showsSave)
 		Tests.test("viewer asks to run anyway while another save is loaded", stopsForOtherSave)
-		Tests.test("viewer shows FM24 starting with the fixture's save", startsGame)
+		Tests.test("viewer shows \(EDITION_PRODUCT) starting with the fixture's save", startsGame)
 		Tests.test("viewer shows the harness refusing jobs while the game is busy", showsBusy)
-		Tests.test("viewer shows fm24ctl waiting for FM24 to be idle with the save", waitsWhileBusy)
+		Tests.test(
+			"viewer shows \(EDITION_CLI) waiting for \(EDITION_PRODUCT) to be idle with the save",
+			waitsWhileBusy
+		)
 		Tests.test("a binary copy of an export names no save", dropsSaveFromBinary)
-		Tests.test("fm24ctl's notices before a job do not explain its failure", skipsNotices)
+		Tests.test("\(EDITION_CLI)'s notices before a job do not explain its failure", skipsNotices)
+		if unrecorded {
+			Tests.test(
+				"viewer shows \(EDITION_CLI) waiting for \(EDITION_PRODUCT) to be idle with an export",
+				waitsForExport
+			)
+		}
 	}
+
+	/// The edition's exports record no save (its harness cannot read the loaded save's name), so
+	/// fmNNctl checks before a job for a fixture without one that the running game has a save
+	/// loaded and idle, and never starts the game for one.
+	private static let unrecorded = EDITION_ENGINE_PLUGIN != 0
+	private static let notRunningForExport =
+		"\(EDITION_GAME) is not running: start it with the harness, load the fixture's save and leave the "
+		+ "game idle, then run this again. \(EDITION_PRODUCT) exports do not record their save, so "
+		+ "\(EDITION_CLI) cannot start the game with it."
 
 	private static let otherSave = "OTHER_FM24"
 	private static let otherSaveRefusal =
-		"FM24 has '\(otherSave)' loaded, not '\(FIXTURE_SAMPLE_SAVE)'; fm24ctl will not switch saves "
-		+ "in a running game (unsaved progress). Quit FM24 (saving first only if you loaded that save "
+		"\(EDITION_PRODUCT) has '\(otherSave)' loaded, not '\(FIXTURE_SAMPLE_SAVE)'; \(EDITION_CLI) will not switch saves "
+		+ "in a running game (unsaved progress). Quit \(EDITION_PRODUCT) (saving first only if you loaded that save "
 		+ "yourself and have done no harness work since), then run this again, or pass --any-save "
 		+ "to use the loaded save."
 	private static let otherSaveQuestion =
-		"FM24 has '\(otherSave)' loaded, not '\(FIXTURE_SAMPLE_SAVE)'; fm24ctl will not switch saves "
-		+ "in a running game (unsaved progress). Quit FM24 (saving first only if you loaded that save "
+		"\(EDITION_PRODUCT) has '\(otherSave)' loaded, not '\(FIXTURE_SAMPLE_SAVE)'; \(EDITION_CLI) will not switch saves "
+		+ "in a running game (unsaved progress). Quit \(EDITION_PRODUCT) (saving first only if you loaded that save "
 		+ "yourself and have done no harness work since), then run this again, or choose Run Anyway "
 		+ "to use the loaded save."
-	private static let busyRefusal = "error: FM24 is busy (loading); wait until it is idle"
+	private static let busyRefusal =
+		"error: \(EDITION_PRODUCT) is busy (loading); wait until it is idle"
 
 	private static func open(_ setup: HarnessSetup, _ url: URL) {
 		setup.model.open(url)
@@ -224,7 +244,7 @@ enum SaveCheckTests {
 			checkEqual(model.simulation.completed, 3)
 			check(
 				model.log.text.contains(
-					"fm24ctl: FM24 has '\(otherSave)' loaded, not '\(FIXTURE_SAMPLE_SAVE)'; using it, as "
+					"\(EDITION_CLI): \(EDITION_PRODUCT) has '\(otherSave)' loaded, not '\(FIXTURE_SAMPLE_SAVE)'; using it, as "
 						+ "--any-save asks"
 				),
 				model.log.text
@@ -279,8 +299,8 @@ enum SaveCheckTests {
 			setup.standIn.set([
 				"STATUS": "3", "STDOUT": "",
 				"STDERR":
-					"FM24 (pid 7) is at its start screen with no save loaded: load LIV_MAIN_FM24 in FM24, or "
-					+ "quit FM24 and run this again.\n",
+					"\(EDITION_PRODUCT) (pid 7) is at its start screen with no save loaded: load LIV_MAIN_FM24 in \(EDITION_PRODUCT), or "
+					+ "quit \(EDITION_PRODUCT) and run this again.\n",
 			])
 			simulate(setup, seeds: "1")
 			checkEqual(model.simulation.outcome, .failed)
@@ -303,12 +323,12 @@ enum SaveCheckTests {
 		model.simulate()
 		check(
 			waitUntil { model.activity == ViewerModel.startingGameActivity },
-			"the activity did not say FM24 was starting"
+			"the activity did not say \(EDITION_PRODUCT) was starting"
 		)
 		// fm24ctl's progress shows under it as it comes, for as long as the game takes.
 		check(
-			waitUntil { model.activityDetail == "FM24 state: loading" },
-			"the activity did not show fm24ctl's progress"
+			waitUntil { model.activityDetail == "\(EDITION_PRODUCT) state: loading" },
+			"the activity did not show \(EDITION_CLI)'s progress"
 		)
 		checkEqual(model.activity, ViewerModel.startingGameActivity)
 		check(!model.simulation.started)
@@ -320,12 +340,12 @@ enum SaveCheckTests {
 		checkEqual(model.simulation.completed, 3)
 		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
 		let starting =
-			"fm24ctl: \(HarnessResult.startingGamePrefix)\(FIXTURE_SAMPLE_SAVE) (--no-launch "
+			"\(EDITION_CLI): \(HarnessResult.startingGamePrefix)\(FIXTURE_SAMPLE_SAVE) (--no-launch "
 			+ "turns this off)"
 		for line in [
 			starting,
-			"fm24ctl: ready: \(FIXTURE_SAMPLE_SAVE) loaded (pid ",
-			"fm24ctl: warning: the save is at 2023 day 181 09:00, the fixture was exported at "
+			"\(EDITION_CLI): ready: \(FIXTURE_SAMPLE_SAVE) loaded (pid ",
+			"\(EDITION_CLI): warning: the save is at 2023 day 181 09:00, the fixture was exported at "
 				+ "\(FIXTURE_SAMPLE_GAME_DATE); the results reflect the save",
 		] {
 			check(model.log.text.contains(line), "the log lacks \(line)")
@@ -341,18 +361,20 @@ enum SaveCheckTests {
 		model.confirmTeam()
 		check(
 			waitUntil { model.activity == ViewerModel.startingGameActivity },
-			"the activity did not say FM24 was starting"
+			"the activity did not say \(EDITION_PRODUCT) was starting"
 		)
 		wait(model)
 		checkEqual(model.activity, nil)
 		check(model.isTemporary)
 		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
-		// A fixture without a save is played without starting anything.
+		// A fixture without a save is played without starting anything; where the edition's exports
+		// record no save, it needs the game running, and stops, saying so.
 		let started = model.log.text.components(separatedBy: starting).count
 		open(setup, setup.scratch.file("plain.json", plainSampleJSON()))
 		simulate(setup, seeds: "1")
-		checkEqual(model.simulation.outcome, .complete)
+		checkEqual(model.simulation.outcome, unrecorded ? .failed : .complete)
 		checkEqual(model.log.text.components(separatedBy: starting).count, started)
+		checkEqual(setup.prompts.lastError, unrecorded ? notRunningForExport : nil)
 	}
 
 	static func showsBusy() throws {
@@ -371,7 +393,8 @@ enum SaveCheckTests {
 		// Over a fixture: decoding a binary one, a swap in a fixture that names no save, and
 		// simulating a binary fixture, which has none: with no save to check, fm24ctl submits each
 		// job, which the harness refuses, in an error box. (For a fixture that names its save,
-		// fm24ctl waits instead: waitsWhileBusy.)
+		// fm24ctl waits instead: waitsWhileBusy; so it does for the swap where the edition's exports
+		// record no save, until its timeout, as the game stays loading.)
 		let json = plainSampleJSON(saved: true)
 		let fixture = setup.scratch.file("next.json", plainSampleJSON())
 		setup.standIn.set([:])
@@ -384,7 +407,12 @@ enum SaveCheckTests {
 		checkEqual(setup.prompts.lastError, busyRefusal)
 		checkEqual(model.source?.url, fixture)
 		swapAway(setup)
-		checkEqual(setup.prompts.lastError, busyRefusal)
+		checkEqual(
+			setup.prompts.lastError,
+			unrecorded
+				? "\(EDITION_PRODUCT) was still loading after 900 s, without the fixture's save ready. Check "
+					+ "the game window." : busyRefusal
+		)
 		check(waitUntil { model.players.state != .loading }, "the player list did not finish")
 		checkEqual(model.players.state, .unloaded)
 		setup.standIn.set(["FIXTURE": setup.scratch.file("decoded.json", plainSampleJSON()).path])
@@ -394,7 +422,7 @@ enum SaveCheckTests {
 		simulate(setup, seeds: "1-2")
 		checkEqual(
 			setup.prompts.lastError,
-			"error: FM24 is busy (processing kind 3); wait until it is idle"
+			"error: \(EDITION_PRODUCT) is busy (processing kind 3); wait until it is idle"
 		)
 		checkEqual(model.simulation.outcome, .failed)
 		checkEqual(setup.prompts.errors.count, 3)
@@ -412,12 +440,12 @@ enum SaveCheckTests {
 		model.simulate()
 		check(
 			waitUntil { model.activity == ViewerModel.idleWaitActivity },
-			"the activity did not say fm24ctl waits for FM24"
+			"the activity did not say \(EDITION_CLI) waits for \(EDITION_PRODUCT)"
 		)
-		checkEqual(model.activityDetail, "FM24 state: loading")
+		checkEqual(model.activityDetail, "\(EDITION_PRODUCT) state: loading")
 		check(
 			waitUntil { model.activityDetail == "still waiting (60 s)..." },
-			"the activity did not show fm24ctl's progress"
+			"the activity did not show \(EDITION_CLI)'s progress"
 		)
 		checkEqual(model.activity, ViewerModel.idleWaitActivity)
 		check(!model.simulation.started)
@@ -427,7 +455,9 @@ enum SaveCheckTests {
 		checkEqual(model.activity, nil)
 		checkEqual(model.activityDetail, nil)
 		check(
-			model.log.text.contains("fm24ctl: ready: \(FIXTURE_SAMPLE_SAVE) is already loaded (pid "),
+			model.log.text.contains(
+				"\(EDITION_CLI): ready: \(FIXTURE_SAMPLE_SAVE) is already loaded (pid "
+			),
 			model.log.text
 		)
 		// A swap shows it too, then goes on as a swap.
@@ -443,21 +473,22 @@ enum SaveCheckTests {
 		model.confirmSwap()
 		check(
 			waitUntil { model.activity == ViewerModel.idleWaitActivity },
-			"the activity did not say fm24ctl waits for FM24"
+			"the activity did not say \(EDITION_CLI) waits for \(EDITION_PRODUCT)"
 		)
-		checkEqual(model.activityDetail, "FM24 state: busy")
+		checkEqual(model.activityDetail, "\(EDITION_PRODUCT) state: busy")
 		wait(model)
 		check(model.source?.url != shown, "the swap's result is not on show")
 		checkEqual(model.activity, nil)
 		checkEqual(model.activityDetail, nil)
 		checkEqual(
-			model.log.text.components(separatedBy: "fm24ctl: FM24 state: ready").count - 1,
+			model.log.text.components(separatedBy: "\(EDITION_CLI): \(EDITION_PRODUCT) state: ready")
+				.count - 1,
 			2
 		)
 		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
 		// FM24 stays busy past fm24ctl's wait: its reason, in an error box.
 		let timedOut =
-			"FM24 was still busy after 900 s, without \(FIXTURE_SAMPLE_SAVE) ready. Check the game "
+			"\(EDITION_PRODUCT) was still busy after 900 s, without \(FIXTURE_SAMPLE_SAVE) ready. Check the game "
 			+ "window."
 		setup.standIn.set(["BUSY": "processing kind 3"])
 		simulate(setup, seeds: "1")
@@ -472,6 +503,55 @@ enum SaveCheckTests {
 		wait(model)
 		checkEqual(model.teamEditor?.error, timedOut.replacingOccurrences(of: "busy", with: "loading"))
 		checkEqual(setup.prompts.errors.count, 1)
+	}
+
+	/// Where the edition's exports record no save: fmNNctl waits for the game to be idle with a save
+	/// before a job for one, which the viewer shows as it does for a fixture's save, takes that save
+	/// to be the fixture's, and warns of another date.
+	static func waitsForExport() {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		// An export: the sample's in-game date, without a save.
+		let exported = replacing(
+			plainSampleJSON(saved: true),
+			"\"save\":\"\(FIXTURE_SAMPLE_SAVE)\",",
+			with: ""
+		)
+		check(SaveOrigin(exported) == SaveOrigin(save: nil, date: FIXTURE_SAMPLE_GAME_DATE))
+		open(setup, setup.scratch.file("next.json", exported))
+		setup.standIn.set([
+			"BUSY": "loading", "BUSY_MS": "800", "ROW_MS": "50", "DATE": "2023 day 181 09:00",
+		])
+		model.setSeeds("1-3")
+		model.simulate()
+		check(
+			waitUntil { model.activity == ViewerModel.idleWaitActivity },
+			"the activity did not say \(EDITION_CLI) waits for \(EDITION_PRODUCT)"
+		)
+		checkEqual(model.activityDetail, "\(EDITION_PRODUCT) state: loading")
+		check(waitUntil { !model.simulation.running }, "the simulation did not finish")
+		checkEqual(model.simulation.outcome, .complete)
+		checkEqual(model.simulation.completed, 3)
+		checkEqual(model.activity, nil)
+		checkEqual(model.activityDetail, nil)
+		for line in [
+			"\(EDITION_CLI): the harness cannot read which save \(EDITION_PRODUCT) has loaded; taking it to "
+				+ "be the fixture's save",
+			"\(EDITION_CLI): ready: the fixture's save is already loaded (pid ",
+			"\(EDITION_CLI): warning: the save is at 2023 day 181 09:00, the fixture was exported at "
+				+ "\(FIXTURE_SAMPLE_GAME_DATE); the results reflect the save",
+		] {
+			check(model.log.text.contains(line), "the log lacks \(line)")
+		}
+		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
+		// With the game not running, the simulation stops before its job, saying what to do.
+		setup.standIn.set(["CLOSED": "1"])
+		simulate(setup, seeds: "1")
+		checkEqual(model.simulation.outcome, .failed)
+		checkEqual(setup.prompts.lastError, notRunningForExport)
+		check(!model.log.text.contains(HarnessResult.startingGamePrefix), model.log.text)
 	}
 
 	static func dropsSaveFromBinary() throws {
@@ -536,9 +616,9 @@ enum SaveCheckTests {
 			simulate(setup, seeds: "1-3")
 			checkEqual(model.simulation.outcome, .failed)
 			for notice in [
-				"fm24ctl: the harness cannot read which save FM24 has loaded; taking it to be "
+				"\(EDITION_CLI): the harness cannot read which save \(EDITION_PRODUCT) has loaded; taking it to be "
 					+ FIXTURE_SAMPLE_SAVE,
-				"fm24ctl: warning: the save is at 2023 day 181 09:00",
+				"\(EDITION_CLI): warning: the save is at 2023 day 181 09:00",
 			] {
 				check(model.log.text.contains(notice), "the log lacks \(notice)")
 			}

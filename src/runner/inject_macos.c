@@ -6,6 +6,7 @@
 // Steam's launch option, which is the tested route.
 
 #include "channel.h"
+#include "edition.h"
 #include "inject.h"
 #include "macos_game.h"
 #include "protocol.h"
@@ -28,13 +29,13 @@ bool inject_harness(void) {
 	unsigned long pid = (unsigned long)macosGame_findRunning(executable, sizeof executable);
 	char other[256];
 	if (!pid) {
-		fprintf(stderr, "Football Manager 2024 is not running.\n");
+		fprintf(stderr, EDITION_GAME " is not running.\n");
 	} else if (otherVersion(other, sizeof other)) {
 		fprintf(
 			stderr,
-			"Football Manager 2024 (pid %lu) has another harness version loaded (%s); this fm24ctl uses "
-			"%s.\n"
-			"Quit the game and start it again to load this version.\n",
+			EDITION_GAME " (pid %lu) has another harness version loaded (%s); this " EDITION_CLI " uses "
+									 "%s.\n"
+									 "Quit the game and start it again to load this version.\n",
 			pid,
 			other,
 			HARNESS_PROTOCOL_TEXT
@@ -42,22 +43,24 @@ bool inject_harness(void) {
 	} else {
 		fprintf(
 			stderr,
-			"Football Manager 2024 (pid %lu) is running without the harness: on macOS it loads when the "
-			"game starts.\nQuit the game and start it again with the harness.\n",
+			EDITION_GAME " (pid %lu) is running without the harness: on macOS it loads when the "
+									 "game starts.\nQuit the game and start it again with the harness.\n",
 			pid
 		);
 	}
 	if (macosGame_launchOptionSet(launcher)) {
 		fprintf(
 			stderr,
-			"Start it from Steam, whose launch option loads the harness, or with `fm24ctl launch`; then "
+			"Start it from Steam, whose launch option loads the harness, or with `" EDITION_CLI
+			" launch`; then "
 			"load your save and leave the game idle.\n"
 		);
 	} else {
 		// Without the option, `launch` would open the game directly, which has not been verified.
 		fprintf(
 			stderr,
-			"Set Steam's launch option for it once, then start it from Steam (`fm24ctl install` says "
+			"Set Steam's launch option for it once, then start it from Steam (`" EDITION_CLI
+			" install` says "
 			"how, and when Steam has saved the option):\n  /bin/sh \"%s\" %%command%%\n",
 			launcher
 		);
@@ -87,7 +90,7 @@ static bool otherVersion(char *name, size_t size) {
 		return false;
 	}
 	bool found = false;
-	static const char prefix[] = "fm24-harness-";
+	static const char prefix[] = EDITION_HARNESS "-";
 	// NOLINTNEXTLINE(concurrency-mt-unsafe): the directory stream is this function's own.
 	for (struct dirent *entry = readdir(directory); entry && !found; entry = readdir(directory)) {
 		size_t length = strlen(entry->d_name);

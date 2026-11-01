@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import Edition
 
 /// The menu bar, built in code. Viewer commands go to the app delegate (`target` nil: the
 /// responder chain), and the standard ones (editing, windows) to the first responder.
@@ -22,7 +23,7 @@ enum MainMenu {
 	}
 
 	private static func application() -> NSMenu {
-		let name = "FM24 Viewer"
+		let name = EDITION_VIEWER_NAME
 		let menu = NSMenu(title: name)
 		menu.addItem(
 			item(
@@ -71,7 +72,7 @@ enum MainMenu {
 		menu.addItem(item("Export", #selector(AppDelegate.exportFixture(_:)), "e"))
 		menu.addItem(item("Export Folder…", #selector(AppDelegate.chooseExportFolder(_:))))
 		menu.addItem(.separator())
-		menu.addItem(item("Launch FM24…", #selector(AppDelegate.launchGame(_:))))
+		menu.addItem(item("Launch \(EDITION_PRODUCT)…", #selector(AppDelegate.launchGame(_:))))
 		menu.addItem(item("Install Harness…", #selector(AppDelegate.installHarness(_:))))
 		return menu
 	}

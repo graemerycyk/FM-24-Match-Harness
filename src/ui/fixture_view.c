@@ -18,8 +18,15 @@
 #include <string.h>
 
 
-// The squad lists' text columns: slot to fatigue, then each tactical familiarity category.
-enum { FAMILIARITY_COLUMN = 9 };
+#if EDITION_TACTIC_PHASES == 2
+// The squad lists' text columns: slot and player, each phase's position and role, the wellbeing
+// values from morale to fatigue, then each tactical familiarity category.
+enum { WELLBEING_COLUMN = 6, FAMILIARITY_COLUMN = 10 };
+#else
+// The squad lists' text columns: slot to duty, the wellbeing values from morale to fatigue, then
+// each tactical familiarity category.
+enum { WELLBEING_COLUMN = 5, FAMILIARITY_COLUMN = 9 };
+#endif
 
 // Seeds one range of a pattern may cover, and the longest list line read (as the harness and the
 // Windows viewer have them).
@@ -30,6 +37,7 @@ _Static_assert(
 	""
 );
 _Static_assert((int)FIXTURE_VIEW_SLOTS == (int)FIXTURE_SLOTS, "");
+_Static_assert((int)FAMILIARITY_COLUMN == (int)WELLBEING_COLUMN + 4, "");
 _Static_assert((int)FIXTURE_VIEW_BLOCKS == (int)FIXTURE_PLAYERS, "");
 _Static_assert((int)FIXTURE_VIEW_VENUE_FIELDS == (int)VENUE_FIELD_COUNT, "");
 _Static_assert((int)FIXTURE_VIEW_SURFACE == (int)VENUE_SURFACE, "");
@@ -41,10 +49,33 @@ _Static_assert(sizeof(FixturePlayerEdits) == (size_t)2 * FIXTURE_VIEW_BLOCKS, ""
 struct FixtureView {
 	FixtureData data;
 	FixturePlayerEdits edits;
-	char save[SAVES_NAME_LENGTH]; // the save fm24ctl checks before a job, "" for none
+	char save[SAVES_NAME_LENGTH]; // the save fmNNctl checks before a job, "" for none
 	char gameDate[CONFIG_DATE_LENGTH];
 };
 
+#if EDITION_TACTIC_PHASES == 2
+static const char *const columns[FIXTURE_VIEW_COLUMNS] = {
+	"Slot",
+	"Player",
+	"IP Position",
+	"IP Role",
+	"OOP Position",
+	"OOP Role",
+	"Morale",
+	"Condition",
+	"Sharpness",
+	"Fatigue",
+	"Familiarity 0",
+	"Familiarity 1",
+	"Familiarity 2",
+	"Familiarity 3",
+	"Familiarity 4",
+	"Familiarity 5",
+};
+static const unsigned columnWidths[FIXTURE_VIEW_COLUMNS] =
+	{38, 210, 80, 90, 95, 90, 65, 85, 90, 70, 95, 95, 95, 95, 95, 95};
+static const char *const phaseNames[FIXTURE_PHASES] = {"In possession", "Out of possession"};
+#else
 static const char *const columns[FIXTURE_VIEW_COLUMNS] = {
 	"Slot",
 	"Player",
@@ -65,6 +96,8 @@ static const char *const columns[FIXTURE_VIEW_COLUMNS] = {
 };
 static const unsigned columnWidths[FIXTURE_VIEW_COLUMNS] =
 	{38, 210, 65, 185, 75, 65, 85, 90, 70, 85, 100, 125, 105, 85, 85, 85};
+static const char *const phaseNames[FIXTURE_PHASES] = {""};
+#endif
 static const char *const venueLabels[VENUE_FIELD_COUNT] = {
 	"Pitch width (m):",
 	"Pitch length (m):",
@@ -105,6 +138,16 @@ static unsigned playerCount(const FixtureTeam *team) {
 	return count < FIXTURE_PLAYERS ? (unsigned)count : FIXTURE_PLAYERS;
 }
 
+// A phase's slots: with two phases, in possession (0) or out of possession.
+static const FixtureSlot *phaseSlots(const FixtureTeam *team, unsigned phase) {
+#if EDITION_TACTIC_PHASES == 2
+	return phase ? team->oopSlots : team->slots;
+#else
+	(void)phase;
+	return team->slots;
+#endif
+}
+
 // The player a row lists: with an unknown line-up, the tactic's slots come first, with no player.
 static const FixturePlayer *rowPlayer(const FixtureTeam *team, unsigned row) {
 	unsigned first = team->lineupKnown ? 0 : FIXTURE_SLOTS;
@@ -114,7 +157,7 @@ static const FixturePlayer *rowPlayer(const FixtureTeam *team, unsigned row) {
 	return &team->players[row - first];
 }
 
-// The fixture's save as fm24ctl's commands read it (commands.c's readFixtureSave): the name of a
+// The fixture's save as fmNNctl's commands read it (commands.c's readFixtureSave): the name of a
 // "save" that can be one, without control characters, and its "game_date".
 static void readSave(const char *json, size_t length, FixtureView *view) {
 	ConfigOrigin origin;
@@ -221,6 +264,20 @@ size_t fixtureView_heading(const FixtureView *view, unsigned side, char *out, si
 	if (!team) {
 		return written(-1, out, size);
 	}
+#if EDITION_TACTIC_PHASES == 2
+	char formation[160] = "Formation unknown";
+	if (team->formation[0] || team->oopFormation[0]) {
+		(void)snprintf(
+			formation,
+			sizeof formation,
+			"IP %s, OOP %s",
+			team->formation[0] ? team->formation : "unknown",
+			team->oopFormation[0] ? team->oopFormation : "unknown"
+		);
+	}
+#else
+	const char *formation = team->formation[0] ? team->formation : "Formation unknown";
+#endif
 	return written(
 		snprintf(
 			out,
@@ -229,7 +286,7 @@ size_t fixtureView_heading(const FixtureView *view, unsigned side, char *out, si
 			side ? "Away" : "Home",
 			team->name,
 			team->tactic[0] ? team->tactic : "Unnamed tactic",
-			team->formation[0] ? team->formation : "Formation unknown"
+			formation
 		),
 		out,
 		size
@@ -301,6 +358,7 @@ static size_t sharpness(const FixturePlayer *player, char *out, size_t size) {
 	);
 }
 
+#if EDITION_TACTIC_PHASES == 1
 // A role's name in title case, with spaces for underscores ("pressing_forward" ->
 // "Pressing Forward").
 static size_t roleTitle(const char *name, char *out, size_t size) {
@@ -316,22 +374,52 @@ static size_t roleTitle(const char *name, char *out, size_t size) {
 	}
 	return length;
 }
+#endif
 
-// The slot columns (slot, position, role and duty) of a row.
+// A slot's position, or "-" if it is not stored.
+static size_t positionText(const FixtureSlot *slot, char *out, size_t size) {
+	char position[32] = "-";
+	if (slot->position.known) {
+		fixtureData_position(slot->position.value, position, sizeof position);
+	}
+	return written(snprintf(out, size, "%s", position), out, size);
+}
+
+#if EDITION_TACTIC_PHASES == 2
+// A role without duty: "Role <bit>" for its one bit, as the game's role bits are not named yet.
+static size_t phaseRole(uint64_t mask, char *out, size_t size) {
+	for (unsigned bit = 0; bit < 64; ++bit) {
+		if (mask == UINT64_C(1) << bit) {
+			return written(snprintf(out, size, "Role %u", bit), out, size);
+		}
+	}
+	return written(snprintf(out, size, "Unknown"), out, size);
+}
+#endif
+
+// The slot columns of a row: slot, position, role and duty, or with two phases each phase's
+// position and role.
 static size_t
 slotCell(const FixtureTeam *team, unsigned row, unsigned column, char *out, size_t size) {
 	if (row >= FIXTURE_SLOTS) {
 		const char *text = column == 2 && team->lineupKnown ? "Sub" : "";
 		return written(snprintf(out, size, "%s", text), out, size);
 	}
-	const FixtureSlot *slot = &team->slots[row];
 	if (column == 0) {
 		return written(snprintf(out, size, "%u", row), out, size);
 	}
-	if (column == 2 && slot->position.known) {
-		char position[32];
-		fixtureData_position(slot->position.value, position, sizeof position);
-		return written(snprintf(out, size, "%s", position), out, size);
+#if EDITION_TACTIC_PHASES == 2
+	const FixtureSlot *slot = &phaseSlots(team, (column - 2) / 2)[row];
+	if (column % 2 == 0) {
+		return positionText(slot, out, size);
+	}
+	if (slot->role.known) {
+		return phaseRole(slot->role.value, out, size);
+	}
+#else
+	const FixtureSlot *slot = &team->slots[row];
+	if (column == 2) {
+		return positionText(slot, out, size);
 	}
 	if (column == 3 && slot->role.known) {
 		return roleTitle(fixtureData_role(slot->role.value), out, size);
@@ -339,8 +427,29 @@ slotCell(const FixtureTeam *team, unsigned row, unsigned column, char *out, size
 	if (column == 4 && slot->role.known) {
 		return written(snprintf(out, size, "%s", fixtureData_duty(slot->role.value)), out, size);
 	}
+#endif
 	return written(snprintf(out, size, "-"), out, size);
 }
+
+#if EDITION_TACTIC_PHASES == 2
+// A familiarity category's cell: the tactic's settings are not known, so it shows the player's best
+// entry, how well they know the setting they know best ("None" without entries, "-" if not stored).
+static size_t
+familiarityCell(const FixturePlayer *player, unsigned category, char *out, size_t size) {
+	const FixtureFamiliarity *familiarity = &player->familiarity[category];
+	if (!familiarity->known) {
+		return written(snprintf(out, size, "-"), out, size);
+	}
+	if (!familiarity->count) {
+		return written(snprintf(out, size, "None"), out, size);
+	}
+	unsigned best = 0;
+	for (unsigned i = 0; i < familiarity->count; ++i) {
+		best = familiarity->amount[i] > best ? familiarity->amount[i] : best;
+	}
+	return percentage((FixtureNumber){.value = best, .known = true}, out, size);
+}
+#endif
 
 // The player columns (morale to the familiarity categories) of a row's player.
 static size_t playerCell(
@@ -350,26 +459,33 @@ static size_t playerCell(
 	char *out,
 	size_t size
 ) {
-	if (column == 5 && player->morale.known) {
+	if (column == WELLBEING_COLUMN && player->morale.known) {
 		return written(
 			snprintf(out, size, "%llu", (unsigned long long)player->morale.value), out, size
 		);
 	}
-	if (column == 6) {
+	if (column == WELLBEING_COLUMN + 1) {
 		return percentage(player->condition, out, size);
 	}
-	if (column == 7) {
+	if (column == WELLBEING_COLUMN + 2) {
 		return sharpness(player, out, size);
 	}
-	if (column == 8 && player->fatigue.known) {
+	if (column == WELLBEING_COLUMN + 3 && player->fatigue.known) {
 		int value = (int)player->fatigue.value;
 		return written(snprintf(out, size, "%d", value >= 32768 ? value - 65536 : value), out, size);
 	}
+#if EDITION_TACTIC_PHASES == 2
+	(void)team;
+	if (column >= FAMILIARITY_COLUMN) {
+		return familiarityCell(player, column - FAMILIARITY_COLUMN, out, size);
+	}
+#else
 	unsigned familiarity = 0;
 	if (column >= FAMILIARITY_COLUMN &&
 			fixtureData_familiarity(team, player, column - FAMILIARITY_COLUMN, &familiarity)) {
 		return percentage((FixtureNumber){.value = familiarity, .known = true}, out, size);
 	}
+#endif
 	return written(snprintf(out, size, "-"), out, size);
 }
 
@@ -390,7 +506,7 @@ size_t fixtureView_cell(
 		const char *name = player && player->name[0] ? player->name : "<Unknown>";
 		return written(snprintf(out, size, "%s", name), out, size);
 	}
-	if (column < 5) {
+	if (column < WELLBEING_COLUMN) {
 		return slotCell(team, row, column, out, size);
 	}
 	return player ? playerCell(team, player, column, out, size)
@@ -418,26 +534,70 @@ static void pitchPoint(uint64_t mask, unsigned *x, unsigned *y) {
 	}
 }
 
+unsigned fixtureView_phaseCount(void) {
+	return FIXTURE_PHASES;
+}
+
+const char *fixtureView_phaseName(unsigned phase) {
+	return phase < FIXTURE_PHASES ? phaseNames[phase] : "";
+}
+
 bool fixtureView_slotSpot(
 	const FixtureView *view,
 	unsigned side,
+	unsigned phase,
 	unsigned slot,
 	unsigned *xPercent,
 	unsigned *yPercent
 ) {
 	const FixtureTeam *team = sideTeam(view, side);
-	if (!team || slot >= FIXTURE_SLOTS || !team->slots[slot].position.known) {
+	if (!team || phase >= FIXTURE_PHASES || slot >= FIXTURE_SLOTS) {
+		return false;
+	}
+	const FixtureSlot *spot = &phaseSlots(team, phase)[slot];
+	if (!spot->position.known) {
 		return false;
 	}
 	char position[32];
-	fixtureData_position(team->slots[slot].position.value, position, sizeof position);
+	fixtureData_position(spot->position.value, position, sizeof position);
 	if (strcmp(position, "Unknown") == 0) {
 		return false;
 	}
-	pitchPoint(team->slots[slot].position.value, xPercent, yPercent);
+	pitchPoint(spot->position.value, xPercent, yPercent);
 	return true;
 }
 
+size_t fixtureView_slotPosition(
+	const FixtureView *view,
+	unsigned side,
+	unsigned phase,
+	unsigned slot,
+	char *out,
+	size_t size
+) {
+	const FixtureTeam *team = sideTeam(view, side);
+	if (!team || phase >= FIXTURE_PHASES || slot >= FIXTURE_SLOTS) {
+		return written(snprintf(out, size, "-"), out, size);
+	}
+	return positionText(&phaseSlots(team, phase)[slot], out, size);
+}
+
+#if EDITION_TACTIC_PHASES == 2
+// Whether every familiarity category of the player was read (the tactic's settings are not known,
+// and maximum familiarity needs none).
+static bool familiarityKnown(const FixtureTeam *team, const FixturePlayer *player) {
+	(void)team;
+	bool known = true;
+	for (unsigned k = 0; known && k < FIXTURE_FAMILIARITY_CATEGORIES; ++k) {
+		known = player->familiarity[k].known;
+	}
+	return known;
+}
+
+static const char familiarityMissing[] =
+	"The selected player is missing tactical familiarity data (export the fixture again); no "
+	"players were changed.";
+#else
 // Whether every familiarity category of the player, and the tactic's settings, were read.
 static bool familiarityKnown(const FixtureTeam *team, const FixturePlayer *player) {
 	int settings[FIXTURE_FAMILIARITY_CATEGORIES];
@@ -447,6 +607,11 @@ static bool familiarityKnown(const FixtureTeam *team, const FixturePlayer *playe
 	}
 	return known;
 }
+
+static const char familiarityMissing[] =
+	"The selected player or tactic is missing tactical familiarity data (export the fixture again); "
+	"no players were changed.";
+#endif
 
 // Why an edit cannot change the player, or NULL if it can.
 static const char *
@@ -458,10 +623,7 @@ playerProblem(const FixtureTeam *team, const FixturePlayer *player, FixtureViewE
 	}
 	switch (edit) {
 		case FIXTURE_VIEW_MAX_FAMILIARITY:
-			return familiarityKnown(team, player)
-							 ? NULL
-							 : "The selected player or tactic is missing tactical familiarity data (export the "
-								 "fixture again); no players were changed.";
+			return familiarityKnown(team, player) ? NULL : familiarityMissing;
 		case FIXTURE_VIEW_MAX_HAPPINESS: return player->morale.known ? NULL : wellbeing;
 		case FIXTURE_VIEW_MAX_CONDITION:
 			return player->condition.known && player->sharpness[0].known && player->sharpness[1].known &&
@@ -488,6 +650,19 @@ const char *fixtureView_editProblem(
 	return NULL;
 }
 
+#if EDITION_TACTIC_PHASES == 2
+// What FIXTURE_MAX_FAMILIARITY writes: every entry's amount becomes 10000. A category with no
+// entries keeps none.
+static void maxFamiliarity(const FixtureTeam *team, FixturePlayer *player) {
+	(void)team;
+	for (unsigned k = 0; k < FIXTURE_FAMILIARITY_CATEGORIES; ++k) {
+		FixtureFamiliarity *familiarity = &player->familiarity[k];
+		for (unsigned i = 0; i < familiarity->count; ++i) {
+			familiarity->amount[i] = 10000;
+		}
+	}
+}
+#else
 // What FIXTURE_MAX_FAMILIARITY writes: each category's first entry becomes the tactic's setting at
 // 10000. A category with no entries keeps its floor.
 static void maxFamiliarity(const FixtureTeam *team, FixturePlayer *player) {
@@ -503,6 +678,7 @@ static void maxFamiliarity(const FixtureTeam *team, FixturePlayer *player) {
 		}
 	}
 }
+#endif
 
 bool fixtureView_applyEdit(
 	FixtureView *view,

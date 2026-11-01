@@ -1,19 +1,20 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureCore
 import Foundation
 
-/// HarnessService through fm24ctl, run as a subprocess: the copy inside the app bundle, which comes
-/// from the same build and so speaks the same harness protocol, or the one FM24CTL names. Its
+/// HarnessService through fmNNctl, run as a subprocess: the copy inside the app bundle, which comes
+/// from the same build and so speaks the same harness protocol, or the one FMNNCTL names. Its
 /// standard input is /dev/null. Its output, which it writes a line at a time, is read as it comes,
 /// so that a full pipe never holds it up, and again once it has exited, without waiting for the end of the pipes, which a child it
 /// started (the game, after launch) may keep open. Cancelling the task that awaits a job ends its
-/// fm24ctl (SIGTERM): a job still waiting for the harness never reaches the game.
+/// fmNNctl (SIGTERM): a job still waiting for the harness never reaches the game.
 @MainActor
 final class Fm24ctl: HarnessService {
 	let executable: URL
-	/// Replaces the viewer's own environment for fm24ctl, if set (tests use it).
+	/// Replaces the viewer's own environment for fmNNctl, if set (tests use it).
 	var environment: [String: String]?
 	/// Told of each run's arguments, for the log.
 	var onRun: ([String]) -> Void = { _ in }
@@ -30,19 +31,19 @@ final class Fm24ctl: HarnessService {
 		self.serving = serving
 	}
 
-	/// The viewer's fm24ctl: the one FM24CTL names, else Contents/MacOS/fm24ctl in the app bundle.
-	/// Nil outside an app bundle, so that a build folder's fm24ctl is never run by mistake.
+	/// The viewer's fmNNctl: the one FMNNCTL names, else Contents/MacOS/fmNNctl in the app bundle.
+	/// Nil outside an app bundle, so that a build folder's fmNNctl is never run by mistake.
 	nonisolated static func locate(
 		environment: [String: String] = ProcessInfo.processInfo.environment,
 		bundle: Bundle = .main
 	) -> URL? {
-		if let path = environment["FM24CTL"], !path.isEmpty {
+		if let path = environment[EDITION_CLI_ENV], !path.isEmpty {
 			return URL(fileURLWithPath: path)
 		}
 		guard bundle.bundleURL.pathExtension == "app" else {
 			return nil
 		}
-		return bundle.url(forAuxiliaryExecutable: "fm24ctl")
+		return bundle.url(forAuxiliaryExecutable: EDITION_CLI)
 	}
 
 	/// True if a harness of this protocol holds its job socket's lock (channel_served).
@@ -143,7 +144,7 @@ final class Fm24ctl: HarnessService {
 		serving()
 	}
 
-	/// Runs fm24ctl with `arguments` and returns how it ended.
+	/// Runs fmNNctl with `arguments` and returns how it ended.
 	func run(_ arguments: [String], onLine: @escaping (HarnessLine) -> Void) async -> HarnessResult {
 		onRun(arguments)
 		let process = Process()
@@ -166,14 +167,14 @@ final class Fm24ctl: HarnessService {
 	}
 }
 
-/// One fm24ctl run's standard output and error, read without blocking on a queue of their own,
+/// One fmNNctl run's standard output and error, read without blocking on a queue of their own,
 /// which also handles the exit, so that the last read comes after every earlier one.
 private final class ProcessOutput: @unchecked Sendable {
 	/// Each stream keeps its first line and up to this many of its last.
 	private static let lineLimit = 10_000
 
 	private let queue = DispatchQueue(
-		label: "io.github.graemerycyk.fm24-match-harness.viewer.fm24ctl"
+		label: "\(EDITION_VIEWER_ID).\(EDITION_CLI)"
 	)
 	private let onLine: (HarnessLine) -> Void
 	private let pipes = [Pipe(), Pipe()]
@@ -228,7 +229,7 @@ private final class ProcessOutput: @unchecked Sendable {
 				self.deliver(
 					HarnessResult(
 						status: -1,
-						errors: ["cannot run fm24ctl (\(error.localizedDescription))"],
+						errors: ["cannot run \(EDITION_CLI) (\(error.localizedDescription))"],
 						started: false
 					),
 					completion

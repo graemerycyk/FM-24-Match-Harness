@@ -50,6 +50,9 @@ final class FixtureHandle: @unchecked Sendable {
 	static let sideCount = 2
 	static let columnCount = Int(FIXTURE_VIEW_COLUMNS)
 	static let slotCount = Int(FIXTURE_VIEW_SLOTS)
+	/// The phases of the game's tactics, each a formation: 1, or 2 (in possession, then out of
+	/// possession).
+	static let phaseCount = Int(fixtureView_phaseCount())
 	static let blockCount = Int(FIXTURE_VIEW_BLOCKS)
 	static let venueFieldCount = Int(FIXTURE_VIEW_VENUE_FIELDS)
 	static let surfaceField = Int(FIXTURE_VIEW_SURFACE)
@@ -81,7 +84,7 @@ final class FixtureHandle: @unchecked Sendable {
 	}
 
 	/// "Save: <name>, <game_date>" for a fixture that names the save it was exported from, which
-	/// fm24ctl checks before a job; nil for one that names none it can use.
+	/// fmNNctl checks before a job; nil for one that names none it can use.
 	var saveLine: String? {
 		let line = FixtureHandle.text { fixtureView_saveLine(view, $0, $1) }
 		return line.isEmpty ? nil : line
@@ -139,14 +142,26 @@ final class FixtureHandle: @unchecked Sendable {
 		FixtureHandle.text { fixtureView_cell(view, UInt32(side), UInt32(row), UInt32(column), $0, $1) }
 	}
 
-	/// Where a slot's circle goes on the pitch, as fractions of its width and height.
-	func slotSpot(side: Int, slot: Int) -> (x: Double, y: Double)? {
+	/// A phase's name, "" when there is one phase.
+	static func phaseName(_ phase: Int) -> String {
+		String(cString: fixtureView_phaseName(UInt32(phase)))
+	}
+
+	/// Where a slot's circle goes on the pitch in a phase, as fractions of its width and height.
+	func slotSpot(side: Int, phase: Int, slot: Int) -> (x: Double, y: Double)? {
 		var x: UInt32 = 0
 		var y: UInt32 = 0
-		guard fixtureView_slotSpot(view, UInt32(side), UInt32(slot), &x, &y) else {
+		guard fixtureView_slotSpot(view, UInt32(side), UInt32(phase), UInt32(slot), &x, &y) else {
 			return nil
 		}
 		return (Double(x) / 100, Double(y) / 100)
+	}
+
+	/// A slot's position in a phase, as the squad list shows it ("-" if not stored).
+	func slotPosition(side: Int, phase: Int, slot: Int) -> String {
+		FixtureHandle.text {
+			fixtureView_slotPosition(view, UInt32(side), UInt32(phase), UInt32(slot), $0, $1)
+		}
 	}
 
 	// MARK: Player edits

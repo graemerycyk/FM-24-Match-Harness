@@ -11,6 +11,10 @@
 
 #include <string.h>
 
+#if EDITION_ENGINE_PLUGIN
+#include "log.h"
+#endif
+
 #ifdef _WIN32
 #include <xmmintrin.h>
 #else
@@ -18,9 +22,25 @@
 #endif
 
 
+#if EDITION_ENGINE_PLUGIN
+// The header of a serialised match: the game's version (4 bytes), the format version (u16), a zero,
+// a tag and a u32; then the label (a u32 length and its bytes), a u32, and the seed.
+enum {
+	SEED_HEADER_SIZE = 12,
+	HEADER_FORMAT_VERSION = 4,
+	HEADER_ZERO = 6,
+	HEADER_TAG = 7,
+	HEADER_TAG_VALUE = 0x02,
+	SEED_LABEL_GAP = 4,
+};
+#else
 enum {
 	SEED_HEADER_SIZE = 13,
 	SEED_LABEL_GAP = 8,
+};
+#endif
+
+enum {
 	MAX_LABEL_LENGTH = 256,
 	BUILD_MODE = 1, // MatchBuilder_Create's mode for the user's own match (build, serialise)
 	RUN_TO_END = 1,
@@ -29,6 +49,26 @@ enum {
 // Input streams by worker slot, created on first use and kept: the game owns their storage.
 static DataBuffer *inputStreams[HARNESS_MAX_THREADS];
 
+#if EDITION_ENGINE_PLUGIN
+static bool isGameMatch(const uint8_t *match, const char *made);
+
+// As the engine plugin's match builder does: it prepares the teams, makes the match with the
+// GAME_MATCH factory (which also sets the vtable and clears the build flag), then initialises it
+// from the fixture with the seed and mode in its InitArgs and a 16-byte flags block.
+uint8_t *match_build(uint8_t *fixture, uint32_t seed) {
+	rng_seedThread(seed);
+	_Alignas(16) uint8_t scratch[16] = {0};
+	((FixturePrepareFn)game_function(RVA_FIXTURE_PREPARE_TEAMS))(fixture, scratch);
+	uint8_t *match = ((MatchCreateFn)game_function(RVA_MACOS_MATCH_FACTORY))();
+	if (!match || !isGameMatch(match, "built")) {
+		return NULL; // what else the factory made is left alone
+	}
+	InitArgs args = {.fixture = fixture, .scratch = scratch, .seed = seed, .mode = BUILD_MODE};
+	uint8_t flags[MATCH_BUILD_FLAGS_SIZE] = {0, BUILD_MODE, 0xFF};
+	((MatchInitFn)game_function(RVA_INIT_FROM_FIXTURE))(match, &args, flags);
+	return match;
+}
+#else
 uint8_t *match_build(uint8_t *fixture, uint32_t seed) {
 	rng_seedThread(seed);
 	_Alignas(16) uint8_t scratch[16] = {0};
@@ -49,6 +89,7 @@ uint8_t *match_build(uint8_t *fixture, uint32_t seed) {
 	((MatchInitFn)game_function(RVA_INIT_FROM_FIXTURE))(match, &args, flags);
 	return match;
 }
+#endif
 
 void match_freeBuilt(uint8_t *match) {
 	((MatchFn)game_function(RVA_GAME_MATCH_DTOR))(match);
@@ -70,6 +111,20 @@ uint8_t *match_deserialize(ByteBuffer *bytes) {
 }
 
 uint8_t *match_deserializeOn(unsigned slot, ByteBuffer *bytes) {
+#if EDITION_ENGINE_PLUGIN
+	// The engine creates a GAME_MATCH through the factory it registers for the thread, or by default;
+	// without one it would make a plain match, which the harness does not load into.
+	DataBuffer *stream = match_inputStream(slot);
+	void *context = stream ? match_context() : NULL;
+	if (!context) {
+		return NULL;
+	}
+	stream_attachInput(stream, bytes->data, bytes->length);
+	uint8_t *match = ((MatchCreateFn)game_function(RVA_GAME_MATCH_CREATE))();
+	bool ok =
+		match && isGameMatch(match, "created") &&
+		((MatchStreamFn)game_function(RVA_GAME_MATCH_DESERIALIZE))(match, &stream->input, context, 0);
+#else
 	DataBuffer *stream = match_inputStream(slot);
 	if (!stream) {
 		return NULL;
@@ -78,6 +133,7 @@ uint8_t *match_deserializeOn(unsigned slot, ByteBuffer *bytes) {
 	uint8_t *match = ((MatchCreateFn)game_function(RVA_GAME_MATCH_CREATE))();
 	bool ok =
 		match && ((MatchStreamFn)game_function(RVA_GAME_MATCH_DESERIALIZE))(match, &stream->input, 0);
+#endif
 	stream_detachInput(stream);
 	if (!ok && match) {
 		match_delete(match);
@@ -139,10 +195,46 @@ MatchResult match_result(const uint8_t *match) {
 }
 
 bool match_seedOffset(const uint8_t *bytes, size_t size, size_t *offset) {
+#if EDITION_ENGINE_PLUGIN
+	uint16_t version = game_formatVersion();
+	if (size < SEED_HEADER_SIZE + sizeof(uint32_t) || version == 0 ||
+			memory_loadU16(bytes + HEADER_FORMAT_VERSION) != version || bytes[HEADER_ZERO] != 0 ||
+			bytes[HEADER_TAG] != HEADER_TAG_VALUE) {
+		return false;
+	}
+#else
 	if (size < 40 || bytes[0] != 0x09 || bytes[1] != 0x08 || bytes[6] != '!') {
 		return false;
 	}
+#endif
 	uint32_t labelLength = memory_loadU32(bytes + SEED_HEADER_SIZE);
 	*offset = SEED_HEADER_SIZE + sizeof(uint32_t) + (size_t)labelLength + SEED_LABEL_GAP;
 	return labelLength < MAX_LABEL_LENGTH && *offset + sizeof(uint32_t) <= size;
 }
+
+#if EDITION_ENGINE_PLUGIN
+void *match_context(void) {
+	void *const *global = game_address(RVA_MACOS_MATCH_CONTEXT);
+	void *context = global ? *global : NULL;
+	if (!context) {
+		log_message("refusing: the engine has not set up its match serialisation context");
+	}
+	return context;
+}
+
+// Whether the engine `made` a GAME_MATCH: a match that carries its vtable. Logs it if not.
+static bool isGameMatch(const uint8_t *match, const char *made) {
+	const void *vtable = *(const void *const *)match;
+	const void *expected = game_address(RVA_GAME_MATCH_VTABLE);
+	if (vtable == expected) {
+		return true;
+	}
+	log_message(
+		"refusing: the engine %s a match with the vtable %p, not GAME_MATCH's (%p)",
+		made,
+		vtable,
+		expected
+	);
+	return false;
+}
+#endif

@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Waiting for Football Manager 2024 to have a save loaded and idle, from the harness's status job
+// Waiting for the game to have a save loaded and idle, from the harness's status job
 // (see saves.h). The wait is a state machine over samples of the game, one a second, so it can be
 // checked with scripted samples; the caller says how to take one. A command whose job is for a
 // save waits the same way first, or has the game started with the save (session_plan).
 #pragma once
 
+#include "edition.h"
 #include "saves.h"
 
 #include <stdbool.h>
@@ -49,7 +50,7 @@ typedef struct SessionSample {
 
 typedef struct SessionWait {
 	const char *save; // the save wanted, as the harness names it
-	bool launched;    // fm24ctl started the game to load it
+	bool launched;    // fmNNctl started the game to load it
 	time_t started;
 	unsigned timeoutS;
 	time_t reported;       // the last "still waiting" line
@@ -59,6 +60,11 @@ typedef struct SessionWait {
 	bool waited;           // a sample was not ready, so readiness must last
 	bool answered;         // `last` holds an answer
 	GameStatus last;       // the harness's last answer
+#if EDITION_ENGINE_PLUGIN
+	// The save is being loaded by hand, after the started game's engine did not load it: the menu
+	// does not end the wait.
+	bool byHand;
+#endif
 } SessionWait;
 
 // Takes a sample of the game; the wait sets its time.
@@ -70,6 +76,12 @@ typedef struct SessionNeed {
 	bool launch;        // start the game with the save if it is not running (not --no-launch)
 	bool anySave;       // the job may use another save the game has loaded (--any-save)
 	unsigned timeoutMs; // how long the job may wait for another runner's job, and so may a check
+#if EDITION_ENGINE_PLUGIN
+	// The job is for a fixture that does not record its save, as the edition's exports do not (its
+	// harness cannot read the loaded save's name): the running game must have a save loaded and
+	// idle, whichever it is, and fmNNctl cannot start the game with it (macosGame_ensureSave).
+	bool unrecorded;
+#endif
 } SessionNeed;
 
 typedef enum SessionPlan {
@@ -99,7 +111,7 @@ void session_start(
 );
 
 // The wait's outcome after one more sample: SESSION_WAITING until it is decided. A game that was
-// already running is decided by its first sample unless that finds it busy; one fm24ctl started
+// already running is decided by its first sample unless that finds it busy; one fmNNctl started
 // must be ready for SESSION_STABLE_SAMPLES in a row.
 SessionOutcome session_step(SessionWait *wait, const SessionSample *sample);
 

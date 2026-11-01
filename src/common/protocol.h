@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// What the harness DLL (inside fm.exe) and the runner (fm24ctl) agree on.
+// What the harness DLL (inside fm.exe) and the runner (fmNNctl) agree on.
 //
 // The runner connects to the harness's job channel, writes a job of `key=value` lines and reads the
 // DLL's one-line outcome as the reply. The DLL serves one runner at a time and the others wait for
@@ -24,18 +24,25 @@
 // takes effect when the game is next started; runners of another version find no socket of theirs.
 #pragma once
 
+#include "edition.h"
+
 #define HARNESS_PROTOCOL_TEXT "1.3.0"
 #define HARNESS_WIDE_TEXT_(text) L##text
 #define HARNESS_WIDE_TEXT(text) HARNESS_WIDE_TEXT_(text)
 #define HARNESS_PROTOCOL HARNESS_WIDE_TEXT(HARNESS_PROTOCOL_TEXT)
 
 #ifdef _WIN32
-#define HARNESS_DLL_NAME (L"fm24-harness-" HARNESS_PROTOCOL L".dll")
-#define HARNESS_PIPE_NAME (L"\\\\.\\pipe\\FM24Harness_" HARNESS_PROTOCOL)
+#define HARNESS_DLL_NAME (HARNESS_WIDE_TEXT(EDITION_HARNESS) L"-" HARNESS_PROTOCOL L".dll")
+#define HARNESS_PIPE_NAME                                                                          \
+	(L"\\\\.\\pipe\\" HARNESS_WIDE_TEXT(EDITION_PRODUCT) L"Harness_" HARNESS_PROTOCOL)
 #else
-#define HARNESS_DLL_NAME (L"fm24-harness-" HARNESS_PROTOCOL L".dylib")
-#define HARNESS_SOCKET_NAME ("fm24-harness-" HARNESS_PROTOCOL_TEXT ".sock")
+#define HARNESS_DLL_NAME (HARNESS_WIDE_TEXT(EDITION_HARNESS) L"-" HARNESS_PROTOCOL L".dylib")
+#define HARNESS_SOCKET_NAME (EDITION_HARNESS "-" HARNESS_PROTOCOL_TEXT ".sock")
 #define HARNESS_SOCKET_ACCEPTED '+'
+// Next to the dylib, where the game loads its engine as a plugin (EDITION_ENGINE_PLUGIN): the
+// harness only logs how the game loads and unloads the engine, and serves no jobs. `fmNNctl
+// install --log-only` writes it, and every other install of the harness removes it.
+#define HARNESS_LOG_ONLY_FILE "log-only"
 #endif
 
 #define HARNESS_LOG_FILE L"harness.log"

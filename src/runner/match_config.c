@@ -3,6 +3,7 @@
 
 #include "match_config.h"
 
+#include "edition.h"
 #include "json_reader.h"
 
 #include <stdio.h>
@@ -49,7 +50,7 @@ static bool readTopLevel(Encoder *encoder, bool *formatOk, bool *haveFields);
 static bool isKey(const ByteBuffer *key, const char *name);
 static bool readOriginText(JsonReader *reader, ByteBuffer *text, char *out, size_t size);
 
-static const char configFormat[] = "fm24-match-config/1";
+static const char configFormat[] = EDITION_MATCH_CONFIG_FORMAT;
 
 bool matchConfig_encode(
 	const char *json,

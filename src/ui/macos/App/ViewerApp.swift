@@ -3,10 +3,10 @@
 
 import AppKit
 
-/// FM24 Viewer: the macOS fixture viewer (the Windows viewer is src/ui/fixture_window.c).
-///   fm24viewer [<fixture.json|.bin>]
-/// opens the fixture, or exports the next one from the game as `fm24ctl` with no arguments does on
-/// Windows. FM24CTL names an fm24ctl to run in place of the bundle's own. See Snapshot.swift for
+/// FMNN Viewer: the macOS fixture viewer (the Windows viewer is src/ui/fixture_window.c).
+///   fmNNviewer [<fixture.json|.bin>]
+/// opens the fixture, or exports the next one from the game as `fmNNctl` with no arguments does on
+/// Windows. FMNNCTL names an fmNNctl to run in place of the bundle's own. See Snapshot.swift for
 /// the developer snapshot argument.
 @main
 enum ViewerApp {

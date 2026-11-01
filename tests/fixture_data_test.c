@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "edition.h"
 #include "fixture_data.h"
 #include "fixture_samples.h"
 #include "json_reader.h"
@@ -46,6 +47,23 @@ static void checkConfig(bool labelled, bool swapControl) {
 	ASSERT_INT_EQ(strcmp(data->teams[1].name, "Bristol City"), 0);
 	ASSERT_INT_EQ(strcmp(data->teams[0].formation, "4-2-2-2"), 0);
 	ASSERT_INT_EQ(strcmp(data->teams[0].tactic, "Custom 4-2-2-2"), 0);
+#if EDITION_TACTIC_PHASES == 2
+	// Each slot's halves: in possession, then out of possession.
+	for (unsigned side = 0; side < 2; ++side) {
+		const FixtureTeam *team = &data->teams[side];
+		ASSERT_INT_EQ(strcmp(team->oopFormation, "4-4-2"), 0);
+		ASSERT_BOOL_EQ(team->slots[2].position.known && team->slots[2].position.value == 1048704, true);
+		ASSERT_BOOL_EQ(team->slots[2].role.known && team->slots[2].role.value == 1ULL << 9, true);
+		ASSERT_BOOL_EQ(
+			team->oopSlots[2].position.known && team->oopSlots[2].position.value == 1049600, true
+		);
+		ASSERT_BOOL_EQ(
+			team->oopSlots[2].role.known && team->oopSlots[2].role.value == 1ULL << 11, true
+		);
+	}
+#else
+	ASSERT_BOOL_EQ(data->teams[0].slots[2].role.value == 4194320, true);
+#endif
 	ASSERT_BOOL_EQ(data->teams[0].lineupKnown, !swapControl);
 	ASSERT_BOOL_EQ(data->teams[1].lineupKnown, swapControl);
 	ASSERT_INT_EQ(strcmp(data->competition, "Friendly"), 0);
@@ -146,38 +164,38 @@ TEST(rejects_invalid_configs) {
 	static const char *const invalid[] = {
 		"{}",
 		"{\"format\":\"other\",\"fields\":[]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u8\":256}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u64\":18446744073709551616}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u8\":1,\"u16\":1}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[]} trailing",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"str\":\"\\uD800\"}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"str\":\"\\uDC00\"}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"str\":\"raw\nnewline\"}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u8\":+1}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u8\":01}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"annotation\":1e}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"annotation\":1.}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"annotation\":1e+}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"annotation\":.5}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"annotation\":-}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"annotation\":00}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u8\":256}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u64\":18446744073709551616}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u8\":1,\"u16\":1}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[]} trailing",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"str\":\"\\uD800\"}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"str\":\"\\uDC00\"}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"str\":\"raw\nnewline\"}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u8\":+1}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u8\":01}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"annotation\":1e}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"annotation\":1.}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"annotation\":1e+}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"annotation\":.5}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"annotation\":-}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"annotation\":00}",
 		"{\"format\":0,\"fields\":[]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"source\":}",
-		"{\"format\":\"fm24-match-config/1\\u0000suffix\",\"fields\":[]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u8\\u0000junk\":1}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"hex\":\"+1\"}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"hex\":\"-0\"}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"hex\":\" f\"}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"hex\":\"\\u0000f\"}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"hex\":\"abc\"}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"fields\":[]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"away_team\":4294967296}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"away_team\":-1}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"away_team\":1.0}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"away_team\":1",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"home_team\":4294967296}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"home_team\":-1}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[],\"home_team\":1.0}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"source\":}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\\u0000suffix\",\"fields\":[]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u8\\u0000junk\":1}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"hex\":\"+1\"}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"hex\":\"-0\"}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"hex\":\" f\"}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"hex\":\"\\u0000f\"}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"hex\":\"abc\"}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"fields\":[]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"away_team\":4294967296}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"away_team\":-1}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"away_team\":1.0}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"away_team\":1",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"home_team\":4294967296}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"home_team\":-1}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[],\"home_team\":1.0}",
 	};
 	FixtureData *data = malloc(sizeof *data);
 	ASSERT_BOOL_EQ(data != NULL, true);
@@ -213,7 +231,7 @@ static void collect(void *context, const ConfigField *field) {
 
 TEST(encodes_and_visits_config_fields) {
 	static const char json[] =
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"hex\":\"\"},"
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"hex\":\"\"},"
 		"{\"u8\":255},{\"u16\":4660},{\"u32\":2309737967},{\"u64\":18446744073709551615},"
 		"{\"hex\":\"00ff\"},{\"u8map\":{\"a\":1,\"b\":2}},{\"str\":\"Z\\u00e9\"}],"
 		"\"annotation\":[-1,1.25,1e+3,0.5,-0,0e0,-2.5E-3,null,true,false]}";
@@ -341,11 +359,11 @@ TEST(validates_json_strings_and_skipped_values) {
 
 TEST(reads_replacement_metadata_during_encoding) {
 	static const char *const configs[] = {
-		"{\"format\":\"fm24-match-config/1\",\"away_team\":677,\"fields\":[{\"u8\":42}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u8\":42}],\"away_team\":4294967295}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u8\":42}]}",
-		"{\"format\":\"fm24-match-config/1\",\"home_team\":678,\"fields\":[{\"u8\":42}]}",
-		("{\"format\":\"fm24-match-config/"
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"away_team\":677,\"fields\":[{\"u8\":42}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u8\":42}],\"away_team\":4294967295}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u8\":42}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"home_team\":678,\"fields\":[{\"u8\":42}]}",
+		("{\"format\":\"" EDITION_LOWER "-match-config/"
 		 "1\",\"home_team\":678,\"fields\":[{\"u8\":42}],\"away_team\":677}"),
 	};
 	static const uint32_t expected[][2] = {{0, 677}, {0, UINT32_MAX}, {0, 0}, {678, 0}, {678, 677}};
@@ -363,7 +381,7 @@ TEST(reads_replacement_metadata_during_encoding) {
 	ByteBuffer bytes = {0};
 	char error[256] = "";
 	uint32_t teams[2] = {123, 456};
-	const char invalid[] = "{\"format\":\"fm24-match-config/1\",\"home_team\":678,\"away_team\":-1}";
+	const char invalid[] = "{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"home_team\":678,\"away_team\":-1}";
 	ASSERT_BOOL_EQ(
 		matchConfig_encode(invalid, sizeof invalid - 1, &bytes, teams, error, sizeof error), false
 	);
@@ -651,9 +669,9 @@ TEST(validates_venue_constraints_and_patch_failures) {
 	memset(values, 0, sizeof values);
 	values[VENUE_WIDTH] = (FixtureNumber){.value = fixtureData_fromFloat(68), .known = true};
 	static const char *const bad[] = {
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"name\":\"venue.pitch.width\",\"u16\":1}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"u32\":1}]}",
-		"{\"format\":\"fm24-match-config/1\",\"fields\":[{\"name\":\"venue.pitch.width\",\"u32\":1}],",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"name\":\"venue.pitch.width\",\"u16\":1}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"u32\":1}]}",
+		"{\"format\":\"" EDITION_MATCH_CONFIG_FORMAT "\",\"fields\":[{\"name\":\"venue.pitch.width\",\"u32\":1}],",
 	};
 	ByteBuffer out = {0};
 	for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; ++i) {
@@ -752,6 +770,7 @@ TEST(edits_only_selected_players_losslessly) {
 	}
 }
 
+#if EDITION_TACTIC_PHASES == 1
 // Settings the game's own sub_141BF1030 built for variations of a real plan: team instruction words,
 // plan byte +0x18, mentality, then the seven settings.
 static const struct {
@@ -921,6 +940,77 @@ TEST(reads_and_maximises_tactical_familiarity) {
 	buffer_free(&edited);
 	buffer_free(&json);
 }
+#else
+// Checks home players 1 and 2's entries: their counts and best amounts or, for player 1 if
+// `maximised`, every amount at 10000 with the settings unchanged.
+static void checkFamiliarity(const FixtureData *data, bool maximised) {
+	static const unsigned counts[2][FIXTURE_FAMILIARITY_CATEGORIES] = {
+		{2, 1, 0, 2, 1, 2}, {3, 3, 3, 3, 2, 3}};
+	for (unsigned p = 0; p < 2; ++p) {
+		for (unsigned k = 0; k < FIXTURE_FAMILIARITY_CATEGORIES; ++k) {
+			const FixtureFamiliarity *familiarity = &data->teams[0].players[p + 1].familiarity[k];
+			ASSERT_BOOL_EQ(familiarity->known, true);
+			ASSERT_BOOL_EQ(familiarity->count == counts[p][k], true);
+			unsigned best = 0;
+			for (unsigned i = 0; i < familiarity->count; ++i) {
+				ASSERT_BOOL_EQ(!(maximised && p == 0) || familiarity->amount[i] == 10000, true);
+				best = familiarity->amount[i] > best ? familiarity->amount[i] : best;
+			}
+			unsigned expected = fixtureSamples_familiarityShown(p, k);
+			ASSERT_INT_EQ((int)best, maximised && p == 0 && expected ? 10000 : (int)expected);
+		}
+	}
+	const FixtureFamiliarity *first = &data->teams[0].players[1].familiarity[0];
+	ASSERT_BOOL_EQ(first->setting[0] == 10 && first->setting[1] == 12, true);
+}
+
+TEST(reads_and_maximises_tactical_familiarity) {
+	ByteBuffer json = {0};
+	ByteBuffer edited = {0};
+	FixtureData *data = malloc(sizeof *data);
+	char error[256] = "";
+	bool ok = data && fixtureSamples_familiarity(&json) &&
+						fixtureData_read(buffer_string(&json), json.length, data, error, sizeof error);
+	ASSERT_BOOL_EQ(ok, true);
+	if (!ok) {
+		free(data);
+		buffer_free(&json);
+		return;
+	}
+	checkFamiliarity(data, false);
+	ASSERT_BOOL_EQ(data->teams[0].players[3].familiarity[0].known, false);
+	// The tactic's settings are not known: every entry's amount becomes 10000, and nothing else
+	// changes, the position and role entry included.
+	FixturePlayerEdits edits = {0};
+	edits.players[0][1] = FIXTURE_MAX_FAMILIARITY;
+	ok = fixtureData_writePlayers(
+				 buffer_string(&json), json.length, &edits, &edited, error, sizeof error
+			 ) &&
+			 fixtureData_read(buffer_string(&edited), edited.length, data, error, sizeof error);
+	ASSERT_BOOL_EQ(ok, true);
+	if (ok) {
+		checkFamiliarity(data, true);
+		static const char roleAmount[] =
+			"\"home.player[1].tactical_familiarity.position_role[0].amount\",\"u32\":7000}";
+		ASSERT_BOOL_EQ(strstr(buffer_string(&edited), roleAmount) != NULL, true);
+		// Player 1's eight amounts each gain a digit.
+		ASSERT_BOOL_EQ(edited.length == json.length + 8, true);
+	}
+	// A player without familiarity fields (an older export) can't be maximised.
+	edits.players[0][1] = 0;
+	edits.players[0][3] = FIXTURE_MAX_FAMILIARITY;
+	ASSERT_BOOL_EQ(
+		fixtureData_writePlayers(
+			buffer_string(&json), json.length, &edits, &edited, error, sizeof error
+		),
+		false
+	);
+	ASSERT_BOOL_EQ(strstr(error, "Missing familiarity") != NULL, true);
+	free(data);
+	buffer_free(&edited);
+	buffer_free(&json);
+}
+#endif
 
 void registerFixtureDataTests(void) {
 	test_run("fixture data reads unlabelled configs", test_reads_unlabelled_config);
@@ -928,10 +1018,12 @@ void registerFixtureDataTests(void) {
 	test_run("fixture data identifies the controlled side", test_reads_swapped_control);
 	test_run("fixture data reads export dates", test_reads_export_dates);
 	test_run("fixture data decodes tactic masks", test_decodes_tactic_masks);
+#if EDITION_TACTIC_PHASES == 1
 	test_run(
 		"fixture data works out familiarity settings as the game does",
 		test_works_out_familiarity_settings_as_the_game
 	);
+#endif
 	test_run(
 		"fixture data reads and maximises tactical familiarity",
 		test_reads_and_maximises_tactical_familiarity

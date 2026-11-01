@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureCore
 import Foundation
 
@@ -10,12 +11,12 @@ import Foundation
 enum HarnessTests {
 	static func register() {
 		Tests.test("harness failures read in the viewer's order of preference", explainsFailures)
-		Tests.test("fm24ctl is the bundle's or FM24CTL's", locates)
-		Tests.test("fm24ctl runs with exact arguments and no input", runsExactly)
-		Tests.test("fm24ctl's output is read in full however much there is", drainsPipes)
-		Tests.test("fm24ctl's result comes back while a child holds its pipes", ignoresChildren)
-		Tests.test("fm24ctl that cannot start says why", reportsStartFailure)
-		Tests.test("cancelling a job ends its fm24ctl", endsCancelledJobs)
+		Tests.test("\(EDITION_CLI) is the bundle's or \(EDITION_CLI_ENV)'s", locates)
+		Tests.test("\(EDITION_CLI) runs with exact arguments and no input", runsExactly)
+		Tests.test("\(EDITION_CLI)'s output is read in full however much there is", drainsPipes)
+		Tests.test("\(EDITION_CLI)'s result comes back while a child holds its pipes", ignoresChildren)
+		Tests.test("\(EDITION_CLI) that cannot start says why", reportsStartFailure)
+		Tests.test("cancelling a job ends its \(EDITION_CLI)", endsCancelledJobs)
 		Tests.test("work files stay in the user's temporary directory", keepsWorkFiles)
 		Tests.test("old work folders of viewers that have gone are removed", sweepsWorkFolders)
 		Tests.test("the export folder is a setting", keepsExportFolder)
@@ -27,7 +28,7 @@ enum HarnessTests {
 		var result: HarnessResult?
 		Task { result = await job() }
 		guard waitUntil({ result != nil }) else {
-			check(false, "fm24ctl did not finish")
+			check(false, "\(EDITION_CLI) did not finish")
 			return nil
 		}
 		return result
@@ -63,14 +64,14 @@ enum HarnessTests {
 		failed.errors = [
 			HarnessResult.waitingNotice,
 			"",
-			"Football Manager 2024 (pid 42) is running without the harness: on macOS it loads when the "
+			"\(EDITION_GAME) (pid 42) is running without the harness: on macOS it loads when the "
 				+ "game starts.",
 			"Quit the game and start it again with the harness.",
 			"  /bin/sh \"launcher\" %command%",
 		]
 		checkEqual(
 			failed.problem(fallback: fallback, serving: notServing),
-			"FM24 isn't running with harness \(version).\nFootball Manager 2024 (pid 42) is running "
+			"\(EDITION_PRODUCT) isn't running with harness \(version).\n\(EDITION_GAME) (pid 42) is running "
 				+ "without the harness: on macOS it loads when the game starts."
 		)
 		checkEqual(asked, 1)
@@ -88,21 +89,21 @@ enum HarnessTests {
 		checkEqual(failed.problem(fallback: fallback, serving: serving), fallback)
 		checkEqual(
 			HarnessResult(status: 2).problem(fallback: fallback, serving: notServing),
-			"FM24 isn't running with harness \(version)."
+			"\(EDITION_PRODUCT) isn't running with harness \(version)."
 		)
 		// fm24ctl did not start: why, whatever the socket.
 		let unstarted = HarnessResult(
 			status: -1,
-			errors: ["cannot run fm24ctl (missing)"],
+			errors: ["cannot run \(EDITION_CLI) (missing)"],
 			started: false
 		)
 		checkEqual(
 			unstarted.problem(fallback: fallback, serving: notServing),
-			"cannot run fm24ctl (missing)"
+			"cannot run \(EDITION_CLI) (missing)"
 		)
 		checkEqual(asked, 4)
 		// The harness refusing a job while the game loads or processes: its error line.
-		let busy = "error: FM24 is busy (processing kind 2); wait until it is idle"
+		let busy = "error: \(EDITION_PRODUCT) is busy (processing kind 2); wait until it is idle"
 		let refused = HarnessResult(status: 1, output: ["job submitted; waiting...", busy])
 		checkEqual(refused.problem(fallback: fallback, serving: notServing), busy)
 		// Exit status 2, arguments fm24ctl refuses (such as a seed range that runs backwards): its
@@ -110,7 +111,7 @@ enum HarnessTests {
 		let reason = "the seed range 10-1 runs backwards: write 1-10"
 		let usage = HarnessResult(
 			status: HarnessResult.usage,
-			errors: [reason, "usage: fm24ctl run <input.bin|.json> [seeds] [output.csv]"]
+			errors: [reason, "usage: \(EDITION_CLI) run <input.bin|.json> [seeds] [output.csv]"]
 		)
 		checkEqual(
 			usage.diagnosis(fallback: fallback, serving: notServing),
@@ -119,13 +120,13 @@ enum HarnessTests {
 		// Exit status 3, the game not in the state the job needs: fm24ctl's last line of errors,
 		// which says why, without asking about the socket; then as other failures.
 		let otherSave =
-			"FM24 has 'A' loaded, not 'B'; fm24ctl will not switch saves in a running game (unsaved "
-			+ "progress). Quit FM24 (saving first only if you loaded that save yourself and have done "
+			"\(EDITION_PRODUCT) has 'A' loaded, not 'B'; \(EDITION_CLI) will not switch saves in a running game (unsaved "
+			+ "progress). Quit \(EDITION_PRODUCT) (saving first only if you loaded that save yourself and have done "
 			+ "no harness work since), then run this again, or pass --any-save to use the loaded save."
 		var wrongState = HarnessResult(
 			status: HarnessResult.wrongState,
-			output: ["FM24 state: busy"],
-			errors: ["the harness cannot read which save FM24 has loaded", otherSave]
+			output: ["\(EDITION_PRODUCT) state: busy"],
+			errors: ["the harness cannot read which save \(EDITION_PRODUCT) has loaded", otherSave]
 		)
 		checkEqual(wrongState.problem(fallback: fallback, serving: notServing), otherSave)
 		checkEqual(asked, 4)
@@ -134,14 +135,14 @@ enum HarnessTests {
 		check(wrongState.refusedOtherSave)
 		checkEqual(
 			ViewerModel.otherSaveQuestion(otherSave),
-			"FM24 has 'A' loaded, not 'B'; fm24ctl will not switch saves in a running game (unsaved "
-				+ "progress). Quit FM24 (saving first only if you loaded that save yourself and have "
+			"\(EDITION_PRODUCT) has 'A' loaded, not 'B'; \(EDITION_CLI) will not switch saves in a running game (unsaved "
+				+ "progress). Quit \(EDITION_PRODUCT) (saving first only if you loaded that save yourself and have "
 				+ "done no harness work since), then run this again, or choose Run Anyway to use the "
 				+ "loaded save."
 		)
 		for errors in [
 			[
-				"FM24 (pid 7) is at its start screen with no save loaded: load B in FM24, or quit FM24 and "
+				"\(EDITION_PRODUCT) (pid 7) is at its start screen with no save loaded: load B in \(EDITION_PRODUCT), or quit \(EDITION_PRODUCT) and "
 					+ "run this again."
 			],
 			[String(otherSave.dropLast(HarnessResult.anySaveHint.count + 1)) + "."],
@@ -176,8 +177,8 @@ enum HarnessTests {
 		let notices = [
 			"warning: the save is at 2024 day 130 09:00, the fixture was exported at 2024 day 123 "
 				+ "15:00; the results reflect the save",
-			"the harness cannot read which save FM24 has loaded; taking it to be LIV_MAIN_FM24",
-			"cannot check which save FM24 has loaded; going ahead",
+			"the harness cannot read which save \(EDITION_PRODUCT) has loaded; taking it to be LIV_MAIN_FM24",
+			"cannot check which save \(EDITION_PRODUCT) has loaded; going ahead",
 		]
 		let lost = HarnessResult(
 			status: 1,
@@ -218,7 +219,7 @@ enum HarnessTests {
 			"error: busy"
 		)
 		checkEqual(HarnessResult(status: 2).explanation(fallback: fallback), fallback)
-		checkEqual(unstarted.explanation(fallback: fallback), "cannot run fm24ctl (missing)")
+		checkEqual(unstarted.explanation(fallback: fallback), "cannot run \(EDITION_CLI) (missing)")
 	}
 
 	static func locates() {
@@ -226,16 +227,16 @@ enum HarnessTests {
 		let plain = Bundle(path: scratch.url.path)!
 		checkEqual(Fm24ctl.locate(environment: [:], bundle: plain), nil)
 		checkEqual(
-			Fm24ctl.locate(environment: ["FM24CTL": "/opt/stand-in"], bundle: plain)?.path,
+			Fm24ctl.locate(environment: [EDITION_CLI_ENV: "/opt/stand-in"], bundle: plain)?.path,
 			"/opt/stand-in"
 		)
 		// Inside an app bundle: its own copy, never a build folder's.
-		let app = scratch.url.appendingPathComponent("FM24 Viewer.app")
+		let app = scratch.url.appendingPathComponent("\(EDITION_VIEWER_NAME).app")
 		let executables = app.appendingPathComponent("Contents/MacOS")
 		try? FileManager.default.createDirectory(at: executables, withIntermediateDirectories: true)
 		let info: [String: Any] = [
-			"CFBundleIdentifier": "io.github.graemerycyk.fm24-match-harness.viewer-tests",
-			"CFBundleExecutable": "fm24viewer",
+			"CFBundleIdentifier": "\(EDITION_VIEWER_ID)-tests",
+			"CFBundleExecutable": EDITION_VIEWER_EXECUTABLE,
 			"CFBundlePackageType": "APPL",
 		]
 		let plist = try? PropertyListSerialization.data(
@@ -244,7 +245,7 @@ enum HarnessTests {
 			options: 0
 		)
 		try? plist?.write(to: app.appendingPathComponent("Contents/Info.plist"))
-		for name in ["fm24viewer", "fm24ctl"] {
+		for name in [EDITION_VIEWER_EXECUTABLE, EDITION_CLI] {
 			let file = executables.appendingPathComponent(name)
 			FileManager.default.createFile(atPath: file.path, contents: Data("#!/bin/sh\n".utf8))
 			try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
@@ -255,9 +256,9 @@ enum HarnessTests {
 		}
 		checkEqual(
 			Fm24ctl.locate(environment: [:], bundle: bundle)?.resolvingSymlinksInPath().path,
-			executables.appendingPathComponent("fm24ctl").resolvingSymlinksInPath().path
+			executables.appendingPathComponent(EDITION_CLI).resolvingSymlinksInPath().path
 		)
-		checkEqual(Fm24ctl.locate(environment: ["FM24CTL": ""], bundle: plain), nil)
+		checkEqual(Fm24ctl.locate(environment: [EDITION_CLI_ENV: ""], bundle: plain), nil)
 	}
 
 	static func runsExactly() {
@@ -269,7 +270,7 @@ enum HarnessTests {
 		var lines: [HarnessLine] = []
 		var ran: [[String]] = []
 		harness.onRun = { ran.append($0) }
-		let output = scratch.url.appendingPathComponent("T/temp-fixture.json")
+		let output = scratch.url.appendingPathComponent("T/\(EDITION_TEMPORARY_FIXTURE)")
 		try? FileManager.default.createDirectory(
 			at: output.deletingLastPathComponent(),
 			withIntermediateDirectories: true
@@ -420,7 +421,7 @@ enum HarnessTests {
 		checkEqual(failed?.started, false)
 		check(failed?.succeeded == false)
 		let problem = failed?.problem(fallback: "fallback") { false } ?? ""
-		check(problem.hasPrefix("cannot run fm24ctl ("), problem)
+		check(problem.hasPrefix("cannot run \(EDITION_CLI) ("), problem)
 	}
 
 	static func endsCancelledJobs() {
@@ -436,11 +437,11 @@ enum HarnessTests {
 		let job = Task {
 			result = await standIn.harness.exportNextFixture(to: output) { lines.append($0) }
 		}
-		check(waitUntil { !lines.isEmpty }, "fm24ctl did not start")
+		check(waitUntil { !lines.isEmpty }, "\(EDITION_CLI) did not start")
 		let cancelled = Date()
 		job.cancel()
-		check(waitUntil(seconds: 4) { result != nil }, "fm24ctl did not end")
-		check(Date().timeIntervalSince(cancelled) < 2, "fm24ctl ran on")
+		check(waitUntil(seconds: 4) { result != nil }, "\(EDITION_CLI) did not end")
+		check(Date().timeIntervalSince(cancelled) < 2, "\(EDITION_CLI) ran on")
 		checkEqual(result?.status, 128 + SIGTERM)
 		checkEqual(lines, [.error(HarnessResult.waitingNotice)])
 		check(!FileManager.default.fileExists(atPath: output.path), "the export was written")
@@ -451,8 +452,8 @@ enum HarnessTests {
 		}
 		before.cancel()
 		let started = Date()
-		check(waitUntil(seconds: 4) { early != nil }, "fm24ctl did not end")
-		check(Date().timeIntervalSince(started) < 2, "fm24ctl ran on")
+		check(waitUntil(seconds: 4) { early != nil }, "\(EDITION_CLI) did not end")
+		check(Date().timeIntervalSince(started) < 2, "\(EDITION_CLI) ran on")
 		checkEqual(early?.status, 128 + SIGTERM)
 		check(!FileManager.default.fileExists(atPath: output.path), "the export was written")
 	}
@@ -460,10 +461,13 @@ enum HarnessTests {
 	static func keepsWorkFiles() {
 		let scratch = Scratch()
 		let work = WorkFiles(directory: scratch.url, processID: 4242)
-		checkEqual(work.folder.path, scratch.url.appendingPathComponent("fm24-viewer-4242").path)
+		checkEqual(
+			work.folder.path,
+			scratch.url.appendingPathComponent("\(EDITION_LOWER)-viewer-4242").path
+		)
 		checkEqual(
 			work.temporaryFixture.path,
-			scratch.url.appendingPathComponent("temp-fixture.json").path
+			scratch.url.appendingPathComponent(EDITION_TEMPORARY_FIXTURE).path
 		)
 		let first = try? work.file("in", extension: "bin")
 		let second = try? work.file("decoded", extension: "json")
@@ -478,14 +482,19 @@ enum HarnessTests {
 		if let first, let second {
 			try? Data([1]).write(to: first)
 			work.remove(first, second)
-			checkEqual(scratch.names("fm24-viewer-4242"), [])
+			checkEqual(scratch.names("\(EDITION_LOWER)-viewer-4242"), [])
 		}
 		work.removeFolder()
 		checkEqual(scratch.names(), [])
 
-		// The export that fm24ctl with no arguments writes, however its folder is spelt.
-		check(work.isTemporaryFixture(scratch.url.appendingPathComponent("temp-fixture.json")))
+		// The export that fmNNctl with no arguments writes, however its folder is spelt. Each edition
+		// has its own: the other edition's export is a fixture like any other.
+		check(work.isTemporaryFixture(scratch.url.appendingPathComponent(EDITION_TEMPORARY_FIXTURE)))
 		check(!work.isTemporaryFixture(scratch.url.appendingPathComponent("next.json")))
+		let otherEdition =
+			EDITION_TEMPORARY_FIXTURE == "temp-fixture.json"
+			? "fm27-temp-fixture.json" : "temp-fixture.json"
+		check(!work.isTemporaryFixture(scratch.url.appendingPathComponent(otherEdition)))
 		let real = WorkFiles()
 		let temporary = real.temporaryFixture.path
 		let other =
@@ -506,19 +515,23 @@ enum HarnessTests {
 		let scratch = Scratch()
 		let old = Date(timeIntervalSinceNow: -2 * WorkFiles.staleAge)
 		for name in [
-			"fm24-viewer-101", "fm24-viewer-102", "fm24-viewer-103", "fm24-viewer-x", "other-104",
+			"\(EDITION_LOWER)-viewer-101", "\(EDITION_LOWER)-viewer-102", "\(EDITION_LOWER)-viewer-103",
+			"\(EDITION_LOWER)-viewer-x", "other-104",
 		] {
 			let folder = scratch.url.appendingPathComponent(name)
 			try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 			try? Data([1]).write(to: folder.appendingPathComponent("in-1.bin"))
-			let date = name == "fm24-viewer-103" ? Date() : old
+			let date = name == "\(EDITION_LOWER)-viewer-103" ? Date() : old
 			try? FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: folder.path)
 		}
 		// 101 has gone and is old; 102 still runs; 103 has gone but is recent.
 		WorkFiles.sweep(scratch.url) { $0 == 102 }
 		checkEqual(
 			scratch.names(),
-			["fm24-viewer-102", "fm24-viewer-103", "fm24-viewer-x", "other-104"]
+			[
+				"\(EDITION_LOWER)-viewer-102", "\(EDITION_LOWER)-viewer-103", "\(EDITION_LOWER)-viewer-x",
+				"other-104",
+			]
 		)
 		check(WorkFiles.processAlive(getpid()))
 		check(!WorkFiles.processAlive(999_999))
@@ -528,13 +541,20 @@ enum HarnessTests {
 		let store = MemorySettings()
 		let documents = URL(fileURLWithPath: "/Users/example/Documents")
 		let settings = ViewerSettings(defaults: store, documents: documents)
-		checkEqual(settings.exportFolder.path, "/Users/example/Documents/FM24 Match Harness")
+		checkEqual(
+			settings.exportFolder.path,
+			"/Users/example/Documents/\(EDITION_PRODUCT) Match Harness"
+		)
 		settings.exportFolder = URL(fileURLWithPath: "/Volumes/Data/Fixtures")
 		checkEqual(store.values[ViewerSettings.exportFolderKey] as? String, "/Volumes/Data/Fixtures")
 		checkEqual(ViewerSettings(defaults: store).exportFolder.path, "/Volumes/Data/Fixtures")
 		store.set("relative", forKey: ViewerSettings.exportFolderKey)
 		checkEqual(settings.exportFolder, settings.defaultExportFolder)
-		check(ViewerSettings().defaultExportFolder.path.hasSuffix("/Documents/FM24 Match Harness"))
+		check(
+			ViewerSettings().defaultExportFolder.path.hasSuffix(
+				"/Documents/\(EDITION_PRODUCT) Match Harness"
+			)
+		)
 	}
 
 	static func followsGame() {
@@ -561,25 +581,25 @@ enum HarnessTests {
 		checkEqual(monitor.state, .notRunning)
 		checkEqual(
 			monitor.description,
-			"FM24 is not running. Choose Launch FM24… to start it with the harness and a save, or start "
+			"\(EDITION_PRODUCT) is not running. Choose Launch \(EDITION_PRODUCT)… to start it with the harness and a save, or start "
 				+ "it from Steam with the harness and load a save, then choose Retry."
 		)
 		// Without Steam's launch option, which is read with the game's state, setting it comes
 		// first: Launch FM24… would start the game directly.
 		let directStart =
-			"Launch FM24… would open it without the option, which has not been verified: the game "
+			"Launch \(EDITION_PRODUCT)… would open it without the option, which has not been verified: the game "
 			+ "crashed in its one attempt."
 		optionSet = false
 		monitor.refresh()
 		check(!monitor.optionSet)
 		checkEqual(
 			monitor.description,
-			"FM24 is not running. Set Steam's launch option for it once (File > Install Harness…), then "
+			"\(EDITION_PRODUCT) is not running. Set Steam's launch option for it once (File > Install Harness…), then "
 				+ "start it from Steam, load a save and choose Retry. \(directStart)"
 		)
 		checkEqual(
 			GameState.runningWithoutHarness.description(optionSet: false),
-			"FM24 is running without harness \(FixtureHandle.protocolVersion): quit it, set Steam's "
+			"\(EDITION_PRODUCT) is running without harness \(FixtureHandle.protocolVersion): quit it, set Steam's "
 				+ "launch option for it once (File > Install Harness…), then start it from Steam. "
 				+ directStart
 		)
@@ -591,19 +611,19 @@ enum HarnessTests {
 		check(monitor.optionSet)
 		checkEqual(
 			monitor.description,
-			"FM24 is running without harness \(FixtureHandle.protocolVersion): quit it, then choose "
-				+ "Launch FM24… to start it with the harness."
+			"\(EDITION_PRODUCT) is running without harness \(FixtureHandle.protocolVersion): quit it, then choose "
+				+ "Launch \(EDITION_PRODUCT)… to start it with the harness."
 		)
 		check(waitUntil { checks >= 4 }, "the harness was not looked for")
 		serving = true
 		check(waitUntil { monitor.state == .ready })
 		checkEqual(
 			monitor.description,
-			"FM24 is running with harness \(FixtureHandle.protocolVersion)."
+			"\(EDITION_PRODUCT) is running with harness \(FixtureHandle.protocolVersion)."
 		)
 		checkEqual(
 			GameState.ready.description(optionSet: false),
-			"FM24 is running with harness \(FixtureHandle.protocolVersion)."
+			"\(EDITION_PRODUCT) is running with harness \(FixtureHandle.protocolVersion)."
 		)
 		let settled = checks
 		RunLoop.main.run(until: Date().addingTimeInterval(0.2))

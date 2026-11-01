@@ -3,6 +3,7 @@
 
 #include "macos_viewer.h"
 
+#include "edition.h"
 #include "paths.h"
 #include "platform.h"
 #include "protocol.h"
@@ -54,9 +55,10 @@ int macosViewer_open(const wchar_t *fixture) {
 		return 0;
 	}
 	fputs(
-		"fm24ctl opens fixtures in " MACOS_VIEWER_APP ", which is neither beside it nor known to "
-		"macOS: build it with scripts/build.sh, which puts it beside fm24ctl, or open the fixture "
-		"with open -a <path to " MACOS_VIEWER_APP "> <fixture>\n",
+		EDITION_CLI " opens fixtures in " MACOS_VIEWER_APP ", which is neither beside it nor known to "
+								"macOS: build it with scripts/build.sh, which puts it beside " EDITION_CLI
+								", or open the fixture "
+								"with open -a <path to " MACOS_VIEWER_APP "> <fixture>\n",
 		stderr
 	);
 	return 2;
@@ -79,7 +81,7 @@ bool macosViewer_find(const char *directory, char *app, size_t size) {
 	char executable[PATH_LENGTH];
 	int written = snprintf(app, size, "%s/" MACOS_VIEWER_APP, directory);
 	int executableWritten =
-		snprintf(executable, sizeof executable, "%s/Contents/MacOS/fm24viewer", app);
+		snprintf(executable, sizeof executable, "%s/Contents/MacOS/" EDITION_VIEWER_EXECUTABLE, app);
 	return written > 0 && (size_t)written < size && executableWritten > 0 &&
 				 (size_t)executableWritten < sizeof executable && access(executable, X_OK) == 0;
 }

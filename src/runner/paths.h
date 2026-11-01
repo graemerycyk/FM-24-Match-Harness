@@ -9,11 +9,11 @@
 #include <wchar.h>
 
 
-// The directory fm24ctl.exe lives in (also where the DLL, job and result files are).
+// The directory fmNNctl.exe lives in (also where the DLL, job and result files are).
 bool paths_executableDirectory(wchar_t *out, size_t size);
 
-// Where job input files go: the game reads them. fm24ctl.exe's directory on Windows; on macOS the
-// user's temporary directory, which the game can always read, wherever fm24ctl is installed.
+// Where job input files go: the game reads them. fmNNctl.exe's directory on Windows; on macOS the
+// user's temporary directory, which the game can always read, wherever fmNNctl is installed.
 bool paths_jobDirectory(wchar_t *out, size_t size);
 
 // `directory` + the platform's separator + `name`.

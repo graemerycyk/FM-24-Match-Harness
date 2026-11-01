@@ -3,6 +3,7 @@
 
 // Job "build_next": serialise the human manager's next fixture.
 
+#include "edition.h"
 #include "fixture.h"
 #include "game_state.h"
 #include "job.h"
@@ -13,12 +14,19 @@
 #include "trace.h"
 
 #include <stdio.h>
-#ifdef __APPLE__
+#if defined(__APPLE__) && EDITION_ENGINE_PLUGIN
+#include <mach/mach_time.h>
+#include <math.h>
+#elif defined(__APPLE__)
 #include <time.h>
 #endif
 
 
 static uint32_t clockSeed(void);
+#if defined(__APPLE__) && EDITION_ENGINE_PLUGIN
+static double ticksPerMillisecond(void);
+static uint32_t clockSeedAt(uint64_t ticks, double ticksPerMs);
+#endif
 
 void jobs_buildNext(const Job *job) {
 	NextFixture next;
@@ -78,8 +86,31 @@ static uint32_t clockSeed(void) {
 	uint32_t counter = (uint32_t)platform_ticks();
 	int32_t frequency = (int32_t)(uint32_t)platform_tickFrequency();
 	return (uint32_t)((double)counter / ((double)frequency / 1000.0) + 0.5);
+#elif EDITION_ENGINE_PLUGIN
+	return clockSeedAt(mach_absolute_time(), ticksPerMillisecond());
 #else
 	int64_t milliseconds = (int64_t)((clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + 500000) / 1000000);
 	return (uint32_t)(milliseconds % 0xFFFFFFFF);
 #endif
 }
+
+#if defined(__APPLE__) && EDITION_ENGINE_PLUGIN
+// The engine plugin's builder reads mach_absolute_time as it starts, and converts it with a
+// timebase it works out once: whole ticks per second, over 1000.
+static double ticksPerMillisecond(void) {
+	mach_timebase_info_data_t timebase;
+	double ticksPerSecond = 1.0;
+	if (mach_timebase_info(&timebase) == 0) {
+		double seconds = (double)timebase.numer / (double)timebase.denom * 1e-9; // per tick
+		ticksPerSecond = (double)(int64_t)(1.0 / seconds);
+	}
+	return ticksPerSecond / 1000.0;
+}
+
+// The builder's seed for that clock: milliseconds rounded half away from zero, folded as
+// ms + ms / (2^32 - 1) in 32 bits.
+static uint32_t clockSeedAt(uint64_t ticks, double ticksPerMs) {
+	int64_t milliseconds = llround((double)(int64_t)ticks / ticksPerMs);
+	return (uint32_t)(milliseconds + milliseconds / INT64_C(0xFFFFFFFF));
+}
+#endif

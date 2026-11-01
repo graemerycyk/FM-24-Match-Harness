@@ -3,6 +3,7 @@
 #include "save_list.h"
 
 #include "buffer.h"
+#include "edition.h"
 #include "macos_game.h"
 #include "saves.h"
 
@@ -18,11 +19,11 @@
 // As in macos_game.c.
 enum { PATH_LENGTH = 4096, VDF_DEPTH = 8, VDF_KEY = 64 };
 
-static const char steamAppId[] = "2252570";
+static const char steamAppId[] = EDITION_STEAM_APP_ID;
 static const unsigned long long steamIdBase = 76561197960265728ULL; // SteamID64 of account ID 0
 static const char dataFolderPath[] =
-	"Library/Application Support/Sports Interactive/Football Manager 2024"; // under the home folder
-static const char harnessFolderPath[] = "Library/Application Support/fm24-harness";
+	"Library/Application Support/" EDITION_DATA_FOLDER; // under the home folder
+static const char harnessFolderPath[] = "Library/Application Support/" EDITION_HARNESS;
 static const char extension[] = ".fm";
 
 typedef struct SaveEntry {
@@ -177,9 +178,9 @@ static size_t copyOut(const char *text, char *out, size_t size) {
 	return (size_t)written;
 }
 
-// FM24's data folder, as fm24ctl's dataFolder finds it without --user-data: the one Steam's launch
-// option gives the game if that option runs the harness's launcher, so that `launch` starts the
-// game through Steam (launchOptionSet), else the usual one in the home folder.
+// The game's data folder, as fmNNctl's dataFolder finds it without --user-data: the one Steam's
+// launch option gives the game if that option runs the harness's launcher, so that `launch` starts
+// the game through Steam (launchOptionSet), else the usual one in the home folder.
 static SaveListData dataFolder(const char *home, char *out, size_t size) {
 	out[0] = 0;
 	if (!home || home[0] != '/') {
@@ -201,7 +202,7 @@ static SaveListData dataFolder(const char *home, char *out, size_t size) {
 }
 
 // True if the launch option, read into `option`, runs the harness's launcher in absolute `home`
-// with the game's command (fm24ctl's launchOptionSet).
+// with the game's command (fmNNctl's launchOptionSet).
 static bool throughSteam(const char *home, char *option, size_t size) {
 	char launcher[PATH_LENGTH];
 	int written =
@@ -386,7 +387,7 @@ static bool currentAccount(const char *root, char *out, size_t size) {
 	return written > 0 && (size_t)written < size;
 }
 
-// The launch option of app 2252570 ("apps" > "2252570" > "LaunchOptions").
+// The launch option of the game's Steam app ("apps" > its app ID > "LaunchOptions").
 static bool visitLaunchOption(void *context, const VdfPair *pair) {
 	VdfLookup *lookup = context;
 	if (pair->depth >= 2 && strcasecmp(pair->key, "LaunchOptions") == 0 &&
@@ -399,7 +400,7 @@ static bool visitLaunchOption(void *context, const VdfPair *pair) {
 	return true;
 }
 
-// The current Steam account's launch option for Football Manager 2024, if it has one.
+// The current Steam account's launch option for the game, if it has one.
 static bool readLaunchOption(const char *home, char *option, size_t size) {
 	char root[PATH_LENGTH];
 	char account[64];
@@ -473,7 +474,7 @@ static SaveListData optionDataFolder(const char *option, char *out, size_t size)
 
 // Adds the saves in one of the data folder's save folders: the regular files, or links to them,
 // whose names end in ".fm" after at least one character (as saves.c's search takes them) and fit
-// fm24ctl's names and paths. False only if memory runs out.
+// fmNNctl's names and paths. False only if memory runs out.
 static bool listFolder(SaveList *list, unsigned folder) {
 	char path[PATH_LENGTH];
 	int written = snprintf(path, sizeof path, "%s/%s", list->folder, saves_folderName(folder));

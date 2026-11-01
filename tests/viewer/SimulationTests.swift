@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureCore
 import FixtureSamples
 import Foundation
@@ -21,7 +22,7 @@ enum SimulationTests {
 		Tests.test("a fixture not yet saved has its results in the export folder", exportsResults)
 		Tests.test("a failed simulation says why and keeps earlier results", reportsFailures)
 		Tests.test("viewer refuses to simulate invalid entries", refusesEntries)
-		Tests.test("a seed pattern fm24ctl refuses shows its reason", refusesSeeds)
+		Tests.test("a seed pattern \(EDITION_CLI) refuses shows its reason", refusesSeeds)
 		Tests.test("nothing but an export runs during a simulation", locksDuringSimulation)
 		Tests.test("results that cannot be saved stay in the temporary folder", keepsUnsavedResults)
 		Tests.test("viewer shows the results in Finder", revealsResults)
@@ -246,7 +247,7 @@ enum SimulationTests {
 			model.simulationStatus,
 			"Simulating fixture... Please wait before closing the window."
 		)
-		checkEqual(setup.activities.begun, ["Simulating a fixture with FM24"])
+		checkEqual(setup.activities.begun, ["Simulating a fixture with \(EDITION_PRODUCT)"])
 		checkEqual(setup.activities.ended, 0)
 		checkEqual(
 			model.closeCheck(),
@@ -304,7 +305,7 @@ enum SimulationTests {
 		checkEqual(try? Data(contentsOf: copy), plainSampleJSON())
 		checkEqual(try? Data(contentsOf: fixture), plainSampleJSON())
 		check(model.log.text.contains("Results: \(saved.path)"), model.log.text)
-		check(model.log.text.contains("fm24ctl: results: \(folder)/run-2.csv"), model.log.text)
+		check(model.log.text.contains("\(EDITION_CLI): results: \(folder)/run-2.csv"), model.log.text)
 		// Opening another fixture starts the tab afresh; its entries stay.
 		open(setup, setup.scratch.file("other.json", plainSampleJSON()))
 		checkEqual(model.simulation, SimulationState())
@@ -493,7 +494,7 @@ enum SimulationTests {
 		setup.standIn.set(["STATUS": "1", "STDOUT": refusal + "\n"])
 		simulate(setup, seeds: "1-3")
 		checkEqual(setup.prompts.lastError, refusal)
-		checkEqual(setup.prompts.errors.last?.title, "FM24 Match Harness")
+		checkEqual(setup.prompts.errors.last?.title, "\(EDITION_PRODUCT) Match Harness")
 		checkEqual(model.simulation.outcome, .failed)
 		checkEqual(
 			model.simulationStatus,
@@ -688,7 +689,7 @@ enum SimulationTests {
 		checkEqual(
 			setup.prompts.lastError,
 			"Cannot save the results as \(locked.path)/next.csv (Permission denied). It is in "
-				+ "\(kept.path) until FM24 Viewer quits."
+				+ "\(kept.path) until \(EDITION_VIEWER_NAME) quits."
 		)
 		checkEqual(model.simulation.outcome, .failed)
 		checkEqual(model.simulation.results, [kept])

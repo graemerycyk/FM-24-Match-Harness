@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureCore
 import FixtureSamples
 import Foundation
@@ -83,7 +84,8 @@ enum ReplacementTests {
 		model.tab = .venue
 		check(model.canEditTeam(side: 1))
 		model.editTeam(side: 1)
-		// The editor starts with the team's name, listed by it, on the Squads tab.
+		// The editor starts with the team's name, listed by it, on the Squads tab; where it takes
+		// team IDs only, it starts empty, listing every team.
 		checkEqual(model.tab, .squads)
 		guard let editor = model.teamEditor else {
 			check(false, "no team editor")
@@ -91,20 +93,21 @@ enum ReplacementTests {
 		}
 		checkEqual(editor.side, 1)
 		checkEqual(editor.title, "Replace away team")
-		checkEqual(editor.text, "Bristol City")
+		checkEqual(editor.text, TeamEditor.idOnly ? "" : "Bristol City")
 		checkEqual(editor.matches, [])
 		checkEqual(model.teams.state, .loading)
 		loadTeams(model)
 		checkEqual(model.teams.state, .loaded)
-		checkEqual(editor.matches, [])
+		let everyTeam = model.teams.choices.map(\.label)
+		checkEqual(editor.matches, TeamEditor.idOnly ? everyTeam : [])
 		checkEqual(setup.standIn.runs, [["list-teams", folder + "/list-1.txt"]])
 		editor.type("U")
 		checkEqual(editor.matches, ["United (98)", "United (99)", "Luton Town (677)"])
 		// Opening the other side's editor closes this one; the list is not fetched again.
 		model.editTeam(side: 0)
 		checkEqual(model.teamEditor?.side, 0)
-		checkEqual(model.teamEditor?.text, "Aston Villa")
-		checkEqual(model.teamEditor?.matches, ["Aston Villa (12)"])
+		checkEqual(model.teamEditor?.text, TeamEditor.idOnly ? "" : "Aston Villa")
+		checkEqual(model.teamEditor?.matches, TeamEditor.idOnly ? everyTeam : ["Aston Villa (12)"])
 		model.editTeam(side: 1)
 		checkEqual(setup.standIn.runs.count, 1)
 		guard let editor = model.teamEditor else {
@@ -116,7 +119,7 @@ enum ReplacementTests {
 		setup.standIn.set([
 			"STATUS": "1", "STDOUT": "error: that is the home team\n", "INPUT": input.path,
 		])
-		editor.type("Aston Villa")
+		editor.type(TeamEditor.idOnly ? "12" : "Aston Villa")
 		model.confirmTeam()
 		wait(model)
 		checkEqual(editor.error, "error: that is the home team")
@@ -136,7 +139,7 @@ enum ReplacementTests {
 		checkEqual(editor.matches, ["Aston Villa (12)"])
 		model.confirmTeam()
 		checkEqual(model.busy, .replacement)
-		checkEqual(model.activity, "Replacing the away team with FM24…")
+		checkEqual(model.activity, "Replacing the away team with \(EDITION_PRODUCT)…")
 		checkEqual(editor.error, nil)
 		wait(model)
 		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
@@ -172,14 +175,23 @@ enum ReplacementTests {
 		checkEqual(model.closeCheck(), .close)
 		model.requestOpen(url)
 		checkEqual(setup.prompts.questions.last?.message, ViewerModel.openDiscardMessage)
-		// Typed text goes as it is.
+		// Typed text goes as it is; where the editor takes team IDs only, a name is refused first.
 		model.editTeam(side: 0)
-		model.teamEditor?.type("Norwich City")
+		if TeamEditor.idOnly {
+			let runs = setup.standIn.runs.count
+			model.teamEditor?.type("Norwich City")
+			model.confirmTeam()
+			checkEqual(model.teamEditor?.error, TeamEditor.problem)
+			check(!model.isBusy)
+			checkEqual(setup.standIn.runs.count, runs)
+		}
+		let typed = TeamEditor.idOnly ? "691" : "Norwich City"
+		model.teamEditor?.type(typed)
 		model.confirmTeam()
 		wait(model)
 		checkEqual(
 			setup.standIn.runs.last,
-			["replace-home", folder + "/in-6.json", "Norwich City", folder + "/out-7.json"]
+			["replace-home", folder + "/in-6.json", typed, folder + "/out-7.json"]
 		)
 		checkEqual(setup.standIn.runs.filter { $0.first == "list-teams" }.count, 1)
 	}
@@ -193,13 +205,16 @@ enum ReplacementTests {
 		model.editTeam(side: 0)
 		check(model.teamEditor == nil)
 		// A team list that fails to load is fetched again by the next edit; free text still works.
-		setup.standIn.set(["STATUS": "1", "STDOUT": "error: FM24 is not running\n"])
+		setup.standIn.set(["STATUS": "1", "STDOUT": "error: \(EDITION_PRODUCT) is not running\n"])
 		open(setup, setup.scratch.file("next.json", plainSampleJSON()))
 		model.editTeam(side: 0)
 		loadTeams(model)
 		checkEqual(model.teams.state, .unloaded)
 		checkEqual(model.teamEditor?.matches, [])
-		check(model.log.text.contains("cannot list teams: error: FM24 is not running"), model.log.text)
+		check(
+			model.log.text.contains("cannot list teams: error: \(EDITION_PRODUCT) is not running"),
+			model.log.text
+		)
 		setup.standIn.set([:])
 		model.editTeam(side: 0)
 		loadTeams(model)
@@ -219,15 +234,33 @@ enum ReplacementTests {
 			check(!model.isBusy)
 		}
 		checkEqual(setup.standIn.runs.count, 2)
-		// The field holds 255 characters, as the Windows one.
+		// The field holds 255 characters, as the Windows one; where it takes team IDs only, they are
+		// digits.
 		editor.type(String(repeating: "x", count: 300))
 		checkEqual(editor.text.count, 255)
-		check(editor.team != nil)
+		checkEqual(editor.team == nil, TeamEditor.idOnly)
+		editor.type(String(repeating: "7", count: 300))
+		checkEqual(editor.team, String(repeating: "7", count: 255))
+		if TeamEditor.idOnly {
+			for text in ["Luton Town", "+677", "677 ", "６７７"] {
+				editor.type(text)
+				editor.error = nil
+				model.confirmTeam()
+				checkEqual(editor.error, TeamEditor.problem)
+				check(!model.isBusy)
+			}
+			editor.type("Luton Town (677)")
+			checkEqual(editor.team, "677")
+			checkEqual(TeamEditor.placeholder, "Team unique ID")
+		}
 		// An invalid venue entry is refused first, on the Venue tab.
 		let venue = setup.scratch.file("venue.json", sampleJSON(FIXTURE_SAMPLE_VENUE))
 		open(setup, venue)
 		check(model.teamEditor == nil, "a new fixture closes the editor")
 		model.editTeam(side: 0)
+		if TeamEditor.idOnly {
+			model.teamEditor?.type("12")
+		}
 		model.setVenueText("x", field: 4)
 		model.confirmTeam()
 		checkEqual(model.tab, .venue)
@@ -305,7 +338,7 @@ enum ReplacementTests {
 		let output = setup.scratch.file("replaced.json", json)
 		setup.standIn.set(["FIXTURE": output.path, "INPUT": input.path])
 		model.editTeam(side: 0)
-		model.teamEditor?.type("Norwich City")
+		model.teamEditor?.type(TeamEditor.idOnly ? "691" : "Norwich City")
 		model.confirmTeam()
 		wait(model)
 		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")

@@ -5,6 +5,10 @@
 
 #include "game.h"
 #include "log.h"
+#include "match.h"
+#if EDITION_ENGINE_PLUGIN
+#include "sites_fm27.h"
+#endif
 #include "stream.h"
 
 #include <stdio.h>
@@ -78,6 +82,12 @@ bool trace_serialize(uint8_t *match, Serialised *out, bool traced) {
 	if (!outputBuffer && !(outputBuffer = stream_create())) {
 		return false;
 	}
+#if EDITION_ENGINE_PLUGIN
+	void *context = match_context();
+	if (!context) {
+		return false;
+	}
+#endif
 	stream_resetOutput(outputBuffer);
 	void ***vtableSlot = (void ***)outputBuffer->output;
 	void **vtable = *vtableSlot;
@@ -96,8 +106,14 @@ bool trace_serialize(uint8_t *match, Serialised *out, bool traced) {
 		active = out;
 		*vtableSlot = &tracingVtable[STREAM_VTABLE_PREFIX];
 	}
+#if EDITION_ENGINE_PLUGIN
+	bool ok = ((MatchStreamFn)game_function(RVA_GAME_MATCH_SERIALIZE))(
+		match, &outputBuffer->output, context, 0
+	);
+#else
 	bool ok =
 		((MatchStreamFn)game_function(RVA_GAME_MATCH_SERIALIZE))(match, &outputBuffer->output, 0);
+#endif
 	if (traced) {
 		*vtableSlot = vtable;
 		active = NULL;
@@ -198,13 +214,17 @@ static uint32_t internPath(const uint32_t *rvas, size_t count) {
 }
 
 // frames[0] is the write's call site; the chain is frames[1..k] from the outside in, where frame k
-// is the return address inside GAME_MATCH__serialize.
+// is the return address inside GAME_MATCH__serialize (or, where the engine is a plugin, a part's
+// synthetic ID).
 static uint32_t pathOf(const uint32_t *frames, size_t count) {
 	uint32_t rvas[TRACE_DEPTH - 1];
 	size_t length = 0;
 	for (size_t k = count; k-- > 1;) {
 		uint32_t rva = frames[k];
 		bool top = rva >= RVA_GAME_MATCH_SERIALIZE && rva < RVA_GAME_MATCH_SERIALIZE_END;
+#if EDITION_ENGINE_PLUGIN
+		top = top || rva == SITE27_PART_EXTRA_1776; // a part the Windows build has not
+#endif
 		if (length == 0 && !top) {
 			continue;
 		}

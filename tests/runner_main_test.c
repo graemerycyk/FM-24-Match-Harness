@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "edition.h"
 #include "test.h"
 #include "tests.h"
 
@@ -81,7 +82,7 @@ static DWORD tempPath(DWORD size, wchar_t *out) {
 int commands_getNextFixture(int argc, wchar_t **argv) {
 	++exports;
 	ASSERT_INT_EQ(argc, 3);
-	ASSERT_INT_EQ(wcscmp(argv[0], L"fm24ctl.exe"), 0);
+	ASSERT_INT_EQ(wcscmp(argv[0], L"" EDITION_CLI ".exe"), 0);
 	ASSERT_INT_EQ(wcscmp(argv[1], L"get-next-fixture"), 0);
 	ASSERT_BOOL_EQ(argv[3] == NULL, true);
 	ASSERT_BOOL_EQ(wcslen(argv[2]) == directoryLength + wcslen(L"temp-fixture.json"), true);
@@ -256,7 +257,7 @@ int commands_status(int argc, wchar_t **argv) {
 
 #ifdef _WIN32
 TEST(exports_next_fixture_and_dispatches_commands) {
-	wchar_t *arguments[] = {L"fm24ctl.exe", NULL, NULL};
+	wchar_t *arguments[] = {L"" EDITION_CLI ".exe", NULL, NULL};
 	ASSERT_INT_EQ(runnerMain(1, arguments), 9);
 	ASSERT_BOOL_EQ(exports == 1 && opens == 1, true);
 	ASSERT_INT_EQ(wcscmp(exportedPath, L"C:\\Temp\\temp-fixture.json"), 0);
@@ -313,7 +314,7 @@ TEST(exports_next_fixture_and_dispatches_commands) {
 #else
 // runnerMain's exit code, with what it wrote to stderr in `out`.
 static int runCapturingErrors(int argc, char **argv, char *out, size_t size) {
-	char printed[] = "/tmp/fm24-main-out-XXXXXX";
+	char printed[] = "/tmp/" EDITION_LOWER "-main-out-XXXXXX";
 	int file = mkstemp(printed);
 	int saved = dup(STDERR_FILENO);
 	int status = -1;
@@ -335,7 +336,7 @@ static int runCapturingErrors(int argc, char **argv, char *out, size_t size) {
 }
 
 TEST(converts_arguments_and_dispatches_commands) {
-	char program[] = "fm24ctl";
+	char program[] = EDITION_CLI;
 	char launch[] = "launch";
 	char app[] = "/Applications/\xC3\x98"
 							 "degaard \xE2\x82\xAC/fm.app";
@@ -350,7 +351,7 @@ TEST(converts_arguments_and_dispatches_commands) {
 	ASSERT_INT_EQ(runnerMain(3, arguments), 19);
 	ASSERT_BOOL_EQ(MB_CUR_MAX > 1, true);
 	ASSERT_INT_EQ(launchedCount, 3);
-	ASSERT_INT_EQ(wcscmp(launched[0], L"fm24ctl"), 0);
+	ASSERT_INT_EQ(wcscmp(launched[0], L"" EDITION_CLI), 0);
 	ASSERT_INT_EQ(wcscmp(launched[2], L"/Applications/\u00D8degaard \u20AC/fm.app"), 0);
 	if (language) {
 		setenv("LC_ALL", language, 1);
@@ -392,20 +393,48 @@ TEST(converts_arguments_and_dispatches_commands) {
 		ASSERT_INT_EQ(runCapturingErrors(2, arguments, errors, sizeof errors), commands[i].status);
 	}
 	ASSERT_BOOL_EQ(strstr(errors, "usage:\n") == errors, true);
-	ASSERT_BOOL_EQ(strstr(errors, "fm24ctl launch [--save <name|path.fm>]") != NULL, true);
-	ASSERT_BOOL_EQ(strstr(errors, "fm24ctl status") != NULL, true);
-	ASSERT_BOOL_EQ(strstr(errors, "  fm24ctl  (export and view the next fixture)\n") != NULL, true);
+	ASSERT_BOOL_EQ(strstr(errors, EDITION_CLI " launch [--save <name|path.fm>]") != NULL, true);
+	ASSERT_BOOL_EQ(strstr(errors, EDITION_CLI " status") != NULL, true);
+	ASSERT_BOOL_EQ(strstr(errors, "  " EDITION_CLI "  (export and view the next fixture)\n") != NULL, true);
 	// The save options under the commands that take them.
 	ASSERT_BOOL_EQ(
-		strstr(errors, "  fm24ctl list-teams <output.txt>\n      [--save <name>] [--no-launch] [--any-save]\n") !=
+		strstr(errors, "  " EDITION_CLI " list-teams <output.txt>\n      [--save <name>] [--no-launch] [--any-save]\n") !=
 			NULL,
 		true
 	);
 	ASSERT_BOOL_EQ(
-		strstr(errors, "[--keep-build]\n      [--no-launch] [--any-save]\n  fm24ctl get-next-fixture") !=
+		strstr(errors, "[--keep-build]\n      [--no-launch] [--any-save]\n  " EDITION_CLI " get-next-fixture") !=
 			NULL,
 		true
 	);
+	// The team replace-home and replace-away take: by unique ID only where the clubs' names have
+	// not been located (the engine plugin's builds); and for the edition whose exports record no
+	// save, what a command for one needs.
+#if EDITION_ENGINE_PLUGIN
+	static const char team[] = "<team unique ID>";
+	ASSERT_BOOL_EQ(
+		strstr(
+			errors,
+			"An input without a save, as " EDITION_PRODUCT "'s exports are, is for the save " EDITION_PRODUCT
+			" has loaded:\nthey wait until it is idle, and never start the game.\n"
+		) != NULL,
+		true
+	);
+#else
+	static const char team[] = "<team ID or club name>";
+	ASSERT_BOOL_EQ(strstr(errors, "An input without a save") == NULL, true);
+#endif
+	char replace[128];
+	for (int home = 0; home < 2; ++home) {
+		(void)snprintf(
+			replace,
+			sizeof replace,
+			"  " EDITION_CLI " replace-%s <input.json> %s <output.json> [--full]\n",
+			home ? "home" : "away",
+			team
+		);
+		ASSERT_BOOL_EQ(strstr(errors, replace) != NULL, true);
+	}
 	if (locale) {
 		(void)setlocale(LC_CTYPE, locale);
 		free(locale);
@@ -415,7 +444,7 @@ TEST(converts_arguments_and_dispatches_commands) {
 // The viewer reads fm24ctl's standard output through a pipe, as it is printed: each line must
 // reach the pipe as fm24ctl prints it, not when it exits.
 TEST(prints_each_line_as_it_comes) {
-	char program[] = "fm24ctl";
+	char program[] = EDITION_CLI;
 	char launch[] = "launch";
 	char *arguments[] = {program, launch, NULL};
 	int ends[2];
@@ -459,7 +488,7 @@ static bool makeFile(const char *path, bool executable) {
 
 // runnerMain with one argument (or none), as fm24ctl in `directory`.
 static int runViewer(const char *directory, const char *argument, char *errors, size_t size) {
-	char program[] = "fm24ctl";
+	char program[] = EDITION_CLI;
 	char given[PATH_MAX];
 	(void)snprintf(given, sizeof given, "%s", argument ? argument : "");
 	char *arguments[] = {program, argument ? given : NULL, NULL};
@@ -477,7 +506,7 @@ static bool openedWith(const char *app, const char *fixture) {
 }
 
 TEST(opens_fixtures_in_the_viewer) {
-	char made[] = "/tmp/fm24-main-viewer-XXXXXX";
+	char made[] = "/tmp/" EDITION_LOWER "-main-viewer-XXXXXX";
 	char root[PATH_MAX];
 	char errors[4096];
 	char path[PATH_MAX * 2];
@@ -489,10 +518,10 @@ TEST(opens_fixtures_in_the_viewer) {
 	char app[PATH_MAX];
 	char fixture[PATH_MAX];
 	(void)snprintf(bin, sizeof bin, "%s/bin", root);
-	(void)snprintf(app, sizeof app, "%s/FM24Viewer.app", bin);
+	(void)snprintf(app, sizeof app, "%s/" EDITION_VIEWER_APP, bin);
 	(void)snprintf(fixture, sizeof fixture, "%s/next.json", root);
 	(void)snprintf(temporaryDirectory, sizeof temporaryDirectory, "%s/T", root);
-	(void)snprintf(path, sizeof path, "%s/Contents/MacOS/fm24viewer", app);
+	(void)snprintf(path, sizeof path, "%s/Contents/MacOS/" EDITION_VIEWER_EXECUTABLE, app);
 	bool ready = makeFile(path, true) && makeFile(fixture, false);
 	(void)snprintf(path, sizeof path, "%s/Next.BIN", root);
 	ready = ready && makeFile(path, false) && mkdir(temporaryDirectory, 0700) == 0;
@@ -503,7 +532,7 @@ TEST(opens_fixtures_in_the_viewer) {
 	opens = 0;
 	exportStatus = 0;
 	ASSERT_INT_EQ(runViewer(bin, NULL, errors, sizeof errors), 0);
-	(void)snprintf(path, sizeof path, "%s/temp-fixture.json", temporaryDirectory);
+	(void)snprintf(path, sizeof path, "%s/" EDITION_TEMPORARY_FIXTURE, temporaryDirectory);
 	ASSERT_BOOL_EQ(exports == 1 && strcmp(exported, path) == 0 && opens == 1, true);
 	ASSERT_BOOL_EQ(openedWith(app, path), true);
 	// A failed export opens nothing and keeps its exit status.
@@ -538,11 +567,11 @@ TEST(opens_fixtures_in_the_viewer) {
 	ASSERT_BOOL_EQ(opens == 4 && openedWith(app, fixture), true);
 	char renamed[PATH_MAX];
 	ASSERT_BOOL_EQ(
-		macosViewer_find("/Applications/FM24 Viewer.app/Contents/MacOS", renamed, sizeof renamed), true
+		macosViewer_find("/Applications/" EDITION_VIEWER_NAME ".app/Contents/MacOS", renamed, sizeof renamed), true
 	);
-	ASSERT_INT_EQ(strcmp(renamed, "/Applications/FM24 Viewer.app"), 0);
+	ASSERT_INT_EQ(strcmp(renamed, "/Applications/" EDITION_VIEWER_NAME ".app"), 0);
 	ASSERT_BOOL_EQ(
-		macosViewer_find("/Applications/FM24 Viewer.app/Contents/MacOS", renamed, 8), false
+		macosViewer_find("/Applications/" EDITION_VIEWER_NAME ".app/Contents/MacOS", renamed, 8), false
 	);
 	ASSERT_BOOL_EQ(macosViewer_find(root, renamed, sizeof renamed), false);
 

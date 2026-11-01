@@ -2,28 +2,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import Edition
 import SwiftUI
 
 /// A developer check of the layout without showing a window:
-///   fm24viewer --render-snapshot <fixture.json|-> <squads|venue|simulation|team|swap|start|log|
+///   fmNNviewer --render-snapshot <fixture.json|-> <squads|venue|simulation|team|swap|start|log|
 ///       launch|install> <out.png> [light|dark] [<width>x<height>] [edited] [temporary] [busy]
 ///       [failed] [simulating] [simulated] [replacing] [filtered] [unclear]
 /// lays the window's content out offscreen, renders it to a PNG and exits ("-": no fixture).
 /// `team` is the home team's editor, as its popover shows it, and `swap` the swap prompt for the
-/// first away player, as its sheet shows it, `launch` the Launch FM24 sheet over a few made-up
+/// first away player, as its sheet shows it, `launch` the Launch FMNN sheet over a few made-up
 /// saves and `install` the Install Harness sheet after a made-up install, each at its own size
-/// unless one is given. On `launch`, `busy` shows a launch in progress, `failed` one that FM24's
-/// other save stopped and `unclear` the sheet when Steam's launch option sets FM24's data folder in
-/// a way fm24ctl does not follow; on `install`, `failed` shows a failed install.
+/// unless one is given. On `launch`, `busy` shows a launch in progress, `failed` one that FMNN's
+/// other save stopped and `unclear` the sheet when Steam's launch option sets FMNN's data folder in
+/// a way fmNNctl does not follow; on `install`, `failed` shows a failed install.
 /// `edited` first selects the first three players of each side that can be selected, maximises
 /// their happiness and condition where they can be, and changes the capacity if it is stored.
 /// `temporary` shows the fixture as an export not yet saved. `busy` shows a harness job running
 /// (the startup export, or over a fixture a decode), and `failed` the start panel after the
-/// startup export failed with FM24 not running. `simulating` shows a simulation of seeds 1-100
+/// startup export failed with FMNN not running. `simulating` shows a simulation of seeds 1-100
 /// with 37 results in, and `simulated` one that has finished, with its results in a folder of the
 /// snapshot's own. `replacing` shows the away team being replaced. On `team`, `filtered` types "u"
 /// and `failed` shows the game's refusal; on `swap`, `filtered` types "ode". The team and player
-/// lists are a few made-up names. None runs fm24ctl or looks at the game, and none writes beside
+/// lists are a few made-up names. None runs fmNNctl or looks at the game, and none writes beside
 /// the fixture or into the viewer's settings.
 @MainActor
 enum Snapshot {
@@ -33,7 +34,7 @@ enum Snapshot {
 		"unclear",
 	]
 	private static let usage =
-		"usage: fm24viewer \(argument) <fixture.json|-> <squads|venue|simulation|team|swap|start|log|"
+		"usage: \(EDITION_VIEWER_EXECUTABLE) \(argument) <fixture.json|-> <squads|venue|simulation|team|swap|start|log|"
 		+ "launch|install> <out.png> [light|dark] [<width>x<height>] [edited] [temporary] [busy]"
 		+ " [failed] [simulating] [simulated] [replacing] [filtered] [unclear]"
 
@@ -63,7 +64,10 @@ enum Snapshot {
 		app.setActivationPolicy(.prohibited)
 		app.appearance = appearance
 		let scratch = FileManager.default.temporaryDirectory
-			.appendingPathComponent("fm24viewer-snapshot-\(getpid())", isDirectory: true)
+			.appendingPathComponent(
+				"\(EDITION_VIEWER_EXECUTABLE)-snapshot-\(getpid())",
+				isDirectory: true
+			)
 		defer {
 			try? FileManager.default.removeItem(at: scratch)
 		}
@@ -163,7 +167,7 @@ enum Snapshot {
 			view = NSHostingView(rootView: LogView(log: log))
 		case "launch":
 			guard let prompt = launch(model, chosen, scratch: scratch) else {
-				return fail("the Launch FM24 sheet cannot open")
+				return fail("the Launch \(EDITION_PRODUCT) sheet cannot open")
 			}
 			view = NSHostingView(
 				rootView: LaunchSheet(model: model, prompt: prompt)
@@ -272,9 +276,9 @@ enum Snapshot {
 		return prompt
 	}
 
-	/// Opens the Launch FM24 sheet over a few made-up saves in a home folder of the snapshot's own,
+	/// Opens the Launch FMNN sheet over a few made-up saves in a home folder of the snapshot's own,
 	/// with a launch running if `busy`, or one that failed if `failed`; or, if `unclear`, as it is
-	/// when Steam's launch option sets the data folder in a way fm24ctl does not follow.
+	/// when Steam's launch option sets the data folder in a way fmNNctl does not follow.
 	private static func launch(
 		_ model: ViewerModel,
 		_ chosen: Set<String>,
@@ -297,11 +301,11 @@ enum Snapshot {
 			)
 		}
 		let data = home.appendingPathComponent(
-			"Library/Application Support/Sports Interactive/Football Manager 2024",
+			"Library/Application Support/\(EDITION_DATA_FOLDER)",
 			isDirectory: true
 		)
 		let saves: [(String, TimeInterval)] = [
-			("cloud/games/LIV_MAIN_FM24.fm", 0), ("games/Sandbox Copy.fm", 3 * 86_400),
+			("cloud/games/LIV_MAIN_\(EDITION_PRODUCT).fm", 0), ("games/Sandbox Copy.fm", 3 * 86_400),
 			("cloud/games/Luton Rebuild.fm", 9 * 86_400),
 		]
 		for (file, age) in saves {
@@ -352,13 +356,13 @@ enum Snapshot {
 	}
 
 	private static func fail(_ message: String) -> Int32 {
-		FileHandle.standardError.write(Data("fm24viewer: \(message)\n".utf8))
+		FileHandle.standardError.write(Data("\(EDITION_VIEWER_EXECUTABLE): \(message)\n".utf8))
 		return 2
 	}
 }
 
-/// A harness for snapshots, which never runs fm24ctl: its jobs never finish, or fail at once as
-/// fm24ctl does when FM24 is not running.
+/// A harness for snapshots, which never runs fmNNctl: its jobs never finish, or fail at once as
+/// fmNNctl does when FMNN is not running.
 @MainActor
 private final class SnapshotHarness: HarnessService {
 	private let finishes: Bool
@@ -450,7 +454,7 @@ private final class SnapshotHarness: HarnessService {
 		return HarnessResult(status: written ? 0 : 1)
 	}
 
-	/// fm24ctl's first lines as it starts FM24 through Steam, then a wait that never ends; or, if
+	/// fmNNctl's first lines as it starts FMNN through Steam, then a wait that never ends; or, if
 	/// it finishes, its refusal with another save loaded.
 	func launch(
 		save: String?,
@@ -462,14 +466,14 @@ private final class SnapshotHarness: HarnessService {
 		}
 		guard !finishes else {
 			let refusal =
-				"FM24 has 'Other Career' loaded, not '\(name ?? "")'; fm24ctl will not switch saves in a "
-				+ "running game (unsaved progress). Quit FM24 (saving first only if you loaded that "
+				"\(EDITION_PRODUCT) has 'Other Career' loaded, not '\(name ?? "")'; \(EDITION_CLI) will not switch saves in a "
+				+ "running game (unsaved progress). Quit \(EDITION_PRODUCT) (saving first only if you loaded that "
 				+ "save yourself and have done no harness work since), then run this again."
 			return HarnessResult(status: HarnessResult.wrongState, errors: [refusal])
 		}
 		let lines = [
 			"loading \(name ?? ""): \(save ?? "")",
-			"starting Football Manager 2024 through Steam (its launch option loads the harness)",
+			"starting \(EDITION_GAME) through Steam (its launch option loads the harness)",
 			"waiting for the game to start the harness...",
 			"still waiting (60 s)...",
 		]
@@ -479,27 +483,27 @@ private final class SnapshotHarness: HarnessService {
 		return await job()
 	}
 
-	/// A made-up install, as fm24ctl reports it.
+	/// A made-up install, as fmNNctl reports it.
 	func install(onLine: @escaping (HarnessLine) -> Void) async -> HarnessResult {
-		let folder = "/Users/you/Library/Application Support/fm24-harness"
+		let folder = "/Users/you/Library/Application Support/\(EDITION_HARNESS)"
 		guard !finishes else {
-			return HarnessResult(status: 1, errors: ["cannot write \(folder)/launch-fm24.sh"])
+			return HarnessResult(status: 1, errors: ["cannot write \(folder)/\(EDITION_LAUNCHER)"])
 		}
 		let version = FixtureHandle.protocolVersion
 		let output = [
-			"installed harness \(version): \(folder)/fm24-harness-\(version).dylib",
-			"launcher: \(folder)/launch-fm24.sh", "log: \(folder)/harness.log",
-			"Football Manager 2024: /Users/you/Library/Application Support/Steam/steamapps/common/"
-				+ "Football Manager 2024/fm.app",
-			"", "To start Football Manager 2024 from Steam with the harness, set its launch option once:",
-			"  Steam > Library > Football Manager 2024 > Properties > General > Launch Options:",
-			"  /bin/sh \"\(folder)/launch-fm24.sh\" %command%",
+			"installed harness \(version): \(folder)/\(EDITION_HARNESS)-\(version).dylib",
+			"launcher: \(folder)/\(EDITION_LAUNCHER)", "log: \(folder)/harness.log",
+			"\(EDITION_GAME): /Users/you/Library/Application Support/Steam/steamapps/common/"
+				+ "\(EDITION_GAME)/fm.app",
+			"", "To start \(EDITION_GAME) from Steam with the harness, set its launch option once:",
+			"  Steam > Library > \(EDITION_GAME) > Properties > General > Launch Options:",
+			"  /bin/sh \"\(folder)/\(EDITION_LAUNCHER)\" %command%",
 			"Keep any arguments of your own after %command%. Steam may save the option only when it "
-				+ "quits: run `fm24ctl install` again until it says that Steam's launch option uses "
-				+ "this launcher, quitting Steam if it does not. Until then, `fm24ctl launch` starts "
+				+ "quits: run `\(EDITION_CLI) install` again until it says that Steam's launch option uses "
+				+ "this launcher, quitting Steam if it does not. Until then, `\(EDITION_CLI) launch` starts "
 				+ "the game without the launch option, which has not been verified: the game crashed "
 				+ "in its one attempt.", "",
-			"Run `fm24ctl install` again after updating fm24ctl: it updates the harness and the "
+			"Run `\(EDITION_CLI) install` again after updating \(EDITION_CLI): it updates the harness and the "
 				+ "launcher.",
 		]
 		return HarnessResult(status: 0, output: output)
@@ -516,8 +520,8 @@ private final class SnapshotHarness: HarnessService {
 			return HarnessResult(status: 1)
 		}
 		let explanation = [
-			"Football Manager 2024 is not running.",
-			"Set Steam's launch option for it once, then start it from Steam (`fm24ctl install` says "
+			"\(EDITION_GAME) is not running.",
+			"Set Steam's launch option for it once, then start it from Steam (`\(EDITION_CLI) install` says "
 				+ "how, and when Steam has saved the option):",
 		]
 		return HarnessResult(status: 1, errors: explanation)

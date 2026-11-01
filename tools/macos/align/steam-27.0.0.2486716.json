@@ -1,0 +1,538 @@
+{
+ "mapping": "tools/macos/steam-27.0.0.2486716.json",
+ "source": "tools/macos/steam-24.4.2.json",
+ "roots": [
+  {
+   "name": "GAME_MATCH::serialize",
+   "fm24": "0x1044c3374",
+   "arm64": "0x4a59458",
+   "x86_64": "0x5044440"
+  },
+  {
+   "name": "MATCH_REFEREE::serialize",
+   "fm24": "0x10455c4c4",
+   "arm64": "0x4a662c0",
+   "x86_64": "0x5052b20"
+  },
+  {
+   "name": "MATCH_PLAYER::serialize",
+   "fm24": "0x104576a88",
+   "arm64": "0x4a66dd4",
+   "x86_64": "0x50536f0"
+  },
+  {
+   "name": "GAME_MATCH_MANAGER::serialize",
+   "fm24": "0x104517fc8",
+   "arm64": "0x4a5d8f4",
+   "x86_64": "0x5049680"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[23]",
+   "fm24": "0x10480f618",
+   "arm64": "0x4ac4ce8",
+   "x86_64": "0x50b1160"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[24]",
+   "fm24": "0x10480f848",
+   "arm64": "0x4ac4f48",
+   "x86_64": "0x50b1340"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[25]",
+   "fm24": "0x10480f97c",
+   "arm64": "0x4ac50a8",
+   "x86_64": "0x50b1450"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[26]",
+   "fm24": "0x10480fa80",
+   "arm64": "0x4ac51d8",
+   "x86_64": "0x50b1540"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[27]",
+   "fm24": "0x10480fcb0",
+   "arm64": "0x4ac53d0",
+   "x86_64": "0x50b16c0"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[28]",
+   "fm24": "0x10480fdb4",
+   "arm64": "0x4ac5500",
+   "x86_64": "0x50b17b0"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[29]",
+   "fm24": "0x10480ffb4",
+   "arm64": "0x4ac56a0",
+   "x86_64": "0x50b1900"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[30]",
+   "fm24": "0x10481036c",
+   "arm64": "0x4ac5954",
+   "x86_64": "0x50b1b80"
+  },
+  {
+   "name": "GAME_MATCH_DATABASE_HELPER[31]",
+   "fm24": "0x104810074",
+   "arm64": "0x4ac5760",
+   "x86_64": "0x50b1990"
+  },
+  {
+   "name": "DEFEND_CORNER_ROUTINE (slot 5)",
+   "fm24": "0x104407a34",
+   "arm64": "0x4a81118",
+   "x86_64": "0x506f850"
+  },
+  {
+   "name": "DEFEND_FREE_KICK_EDGE_OF_AREA_ROUTINE (slot 5)",
+   "fm24": "0x10440ad30",
+   "arm64": "0x4a81e5c",
+   "x86_64": "0x5070600"
+  },
+  {
+   "name": "SET_PIECE_ROUTINE_TEMPLATEIN13simatchshared35PLAYER_DEFEND_SET_PIECE_INSTRUCTIONELNS1_23SET_PIECE_TACTICAL_TYPEE2EE (slot 5)",
+   "fm24": "0x10440dc6c",
+   "arm64": "0x4a82c18",
+   "x86_64": "0x50714d0"
+  },
+  {
+   "name": "SET_PIECE_ROUTINE_TEMPLATEIN13simatchshared35PLAYER_DEFEND_SET_PIECE_INSTRUCTIONELNS1_23SET_PIECE_TACTICAL_TYPEE3EE (slot 5)",
+   "fm24": "0x104410e14",
+   "arm64": "0x4a839ec",
+   "x86_64": "0x5072310"
+  },
+  {
+   "name": "DEFEND_LONG_THROW_IN_ROUTINE (slot 5)",
+   "fm24": "0x104413fbc",
+   "arm64": "0x4a847c0",
+   "x86_64": "0x5073140"
+  },
+  {
+   "name": "ATTACK_THROW_IN_ROUTINE (slot 5)",
+   "fm24": "0x10441718c",
+   "arm64": "0x4a8557c",
+   "x86_64": "0x5074000"
+  },
+  {
+   "name": "SET_PIECE_ROUTINE_TEMPLATEIN13simatchshared35PLAYER_ATTACK_SET_PIECE_INSTRUCTIONELNS1_23SET_PIECE_TACTICAL_TYPEE6EE (slot 5)",
+   "fm24": "0x10441a0c8",
+   "arm64": "0x4a860c0",
+   "x86_64": "0x5074bf0"
+  },
+  {
+   "name": "SET_PIECE_ROUTINE_TEMPLATEIN13simatchshared35PLAYER_ATTACK_SET_PIECE_INSTRUCTIONELNS1_23SET_PIECE_TACTICAL_TYPEE7EE (slot 5)",
+   "fm24": "0x10441d270",
+   "arm64": "0x4a86d44",
+   "x86_64": "0x50758f0"
+  },
+  {
+   "name": "ATTACK_FREE_KICK_WIDE_ROUTINE (slot 5)",
+   "fm24": "0x10441eba4",
+   "arm64": "0x4a8775c",
+   "x86_64": "0x50763b0"
+  },
+  {
+   "name": "SET_PIECE_ROUTINE_TEMPLATEIN13simatchshared35PLAYER_ATTACK_SET_PIECE_INSTRUCTIONELNS1_23SET_PIECE_TACTICAL_TYPEE8EE (slot 5)",
+   "fm24": "0x104420704",
+   "arm64": "0x4a87a28",
+   "x86_64": "0x5076630"
+  },
+  {
+   "name": "SET_PIECE_ROUTINE_TEMPLATEIN13simatchshared35PLAYER_ATTACK_SET_PIECE_INSTRUCTIONELNS1_23SET_PIECE_TACTICAL_TYPEE5EE (slot 5)",
+   "fm24": "0x1044238ac",
+   "arm64": "0x4a886ac",
+   "x86_64": "0x5077330"
+  },
+  {
+   "name": "ATTACK_CORNER_ROUTINE (slot 5)",
+   "fm24": "0x1044251e0",
+   "arm64": "0x4a890c4",
+   "x86_64": "0x5077df0"
+  }
+ ],
+ "pairs": {
+  "arm64": [
+   {
+    "from": "0x10471e6f0",
+    "to": "0x4a707c0",
+    "note": "the venue's wrapper"
+   },
+   {
+    "from": "0x104491890",
+    "to": "0x4a550e0",
+    "note": "the pitch"
+   },
+   {
+    "from": "0x10455c4c4",
+    "to": "0x4a662c0",
+    "note": "an official's ratings (MATCH_REFEREE::serialize)"
+   },
+   {
+    "from": "0x104565ba8",
+    "to": "0x4a6640c",
+    "note": "a person's match part, after the ratings"
+   },
+   {
+    "from": "0x10443d6c0",
+    "to": "0x4a7c96c",
+    "note": "tactical familiarity"
+   }
+  ],
+  "x86_64": []
+ },
+ "fixes": {
+  "arm64": [
+   {
+    "mac": "0x4a595b8",
+    "win": [
+     "SITE27_PART_EXTRA_1776"
+    ],
+    "note": "GAME_MATCH::serialize: a part FM24 has not, at match+0x6f0"
+   },
+   {
+    "mac": "0x4a726d4",
+    "win": [
+     "0x1B6F333"
+    ],
+    "note": "team: the team info, written on the other branch"
+   },
+   {
+    "mac": "0x4a7280c",
+    "win": [
+     "0x1B6F3CA"
+    ],
+    "note": "team: has the analyst (MATCH_TEAM+0x630), FM24's staff[2]; FM27 has no doctor (FM24's staff[1])"
+   },
+   {
+    "mac": "0x4a4d084",
+    "parent": "0x443d438",
+    "win": [],
+    "note": "team base: the person part's last write; FM24 wrote it through a second call (0x1A7DF03), which FM27 has not"
+   },
+   {
+    "mac": "0x4a837ac",
+    "parent": "0x4a809b0",
+    "win": [],
+    "note": "set pieces: the routine's first write; FM24 wrote a byte of it in the set-piece serialiser itself"
+   },
+   {
+    "mac": "0x4a84580",
+    "parent": "0x4a809c0",
+    "win": [],
+    "note": "set pieces: the routine's first write; FM24 wrote a byte of it in the set-piece serialiser itself"
+   },
+   {
+    "mac": "0x4a86b04",
+    "parent": "0x4a809f0",
+    "win": [],
+    "note": "set pieces: the routine's first write; FM24 wrote a byte of it in the set-piece serialiser itself"
+   },
+   {
+    "mac": "0x4a8846c",
+    "parent": "0x4a80a10",
+    "win": [],
+    "note": "set pieces: the routine's first write; FM24 wrote a byte of it in the set-piece serialiser itself"
+   },
+   {
+    "mac": "0x4a72828",
+    "win": [
+     "0x1B6F3E0"
+    ],
+    "note": "team: the analyst, FM24's staff[2]"
+   },
+   {
+    "mac": "0x4a52b30",
+    "win": [],
+    "note": "tactic: the call writing its last part (sub_151A7CFA0's counterpart), which FM24 made as a tail jump, so its writes have no frame of the tactic as in FM24"
+   },
+   {
+    "mac": "0x4a7c81c",
+    "win": [
+     "0x1BF1829"
+    ],
+    "note": "tactical familiarity: the count of position and role entries, written in their list's own serialiser"
+   },
+   {
+    "mac": "0x4a7ca04",
+    "win": [],
+    "note": "tactical familiarity: a call writing a setting category, which FM24 made in a loop the frames of which carry nothing (as for the first category)"
+   },
+   {
+    "mac": "0x4a7ca18",
+    "win": [],
+    "note": "tactical familiarity: a call writing a setting category, which FM24 made in a loop the frames of which carry nothing (as for the first category)"
+   },
+   {
+    "mac": "0x4a7ca2c",
+    "win": [],
+    "note": "tactical familiarity: a call writing a setting category, which FM24 made in a loop the frames of which carry nothing (as for the first category)"
+   },
+   {
+    "mac": "0x4a7ca40",
+    "win": [],
+    "note": "tactical familiarity: a call writing a setting category, which FM24 made in a loop the frames of which carry nothing (as for the first category)"
+   },
+   {
+    "mac": "0x4a7ca54",
+    "win": [],
+    "note": "tactical familiarity: a call writing a setting category, which FM24 made in a loop the frames of which carry nothing (as for the first category)"
+   },
+   {
+    "mac": "0x4a526d4",
+    "win": [
+     "SITE27_TACTIC_PLAN_2"
+    ],
+    "note": "tactic: a third plan"
+   },
+   {
+    "mac": "0x4a52784",
+    "win": [
+     "SITE27_TACTIC_EXTRA"
+    ],
+    "note": "tactic: a part FM24 has not"
+   },
+   {
+    "mac": "0x4ade324",
+    "win": [
+     "0x1191B4FC"
+    ],
+    "note": "tactic slot: its role (u64 at +0x40), written after its player instructions"
+   },
+   {
+    "mac": "0x4a8d5ac",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+0"
+    ],
+    "note": "tactic plan: slot 0, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d5bc",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+0"
+    ],
+    "note": "tactic plan: slot 0, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d5dc",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+0"
+    ],
+    "note": "tactic plan: slot 0's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d5f0",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+1"
+    ],
+    "note": "tactic plan: slot 1, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d600",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+1"
+    ],
+    "note": "tactic plan: slot 1, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d620",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+1"
+    ],
+    "note": "tactic plan: slot 1's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d634",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+2"
+    ],
+    "note": "tactic plan: slot 2, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d644",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+2"
+    ],
+    "note": "tactic plan: slot 2, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d664",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+2"
+    ],
+    "note": "tactic plan: slot 2's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d678",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+3"
+    ],
+    "note": "tactic plan: slot 3, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d688",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+3"
+    ],
+    "note": "tactic plan: slot 3, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d6a8",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+3"
+    ],
+    "note": "tactic plan: slot 3's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d6bc",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+4"
+    ],
+    "note": "tactic plan: slot 4, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d6cc",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+4"
+    ],
+    "note": "tactic plan: slot 4, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d6ec",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+4"
+    ],
+    "note": "tactic plan: slot 4's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d700",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+5"
+    ],
+    "note": "tactic plan: slot 5, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d710",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+5"
+    ],
+    "note": "tactic plan: slot 5, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d730",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+5"
+    ],
+    "note": "tactic plan: slot 5's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d744",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+6"
+    ],
+    "note": "tactic plan: slot 6, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d754",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+6"
+    ],
+    "note": "tactic plan: slot 6, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d774",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+6"
+    ],
+    "note": "tactic plan: slot 6's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d788",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+7"
+    ],
+    "note": "tactic plan: slot 7, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d798",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+7"
+    ],
+    "note": "tactic plan: slot 7, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d7b8",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+7"
+    ],
+    "note": "tactic plan: slot 7's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d7cc",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+8"
+    ],
+    "note": "tactic plan: slot 8, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d7dc",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+8"
+    ],
+    "note": "tactic plan: slot 8, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d7fc",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+8"
+    ],
+    "note": "tactic plan: slot 8's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d810",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+9"
+    ],
+    "note": "tactic plan: slot 9, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d820",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+9"
+    ],
+    "note": "tactic plan: slot 9, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d840",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+9"
+    ],
+    "note": "tactic plan: slot 9's byte (+0x7b4 + slot)"
+   },
+   {
+    "mac": "0x4a8d854",
+    "win": [
+     "SITE27_TACTIC_SLOT_IP+10"
+    ],
+    "note": "tactic plan: slot 10, the first of its two halves (+0x120 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d864",
+    "win": [
+     "SITE27_TACTIC_SLOT_OOP+10"
+    ],
+    "note": "tactic plan: slot 10, the second half (+0x440 + 0x48 * slot)"
+   },
+   {
+    "mac": "0x4a8d884",
+    "win": [
+     "SITE27_TACTIC_SLOT_BYTE+10"
+    ],
+    "note": "tactic plan: slot 10's byte (+0x7b4 + slot)"
+   }
+  ],
+  "x86_64": []
+ }
+}

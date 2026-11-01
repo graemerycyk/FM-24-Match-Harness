@@ -1,5 +1,6 @@
 # Builds and tests the harness on Windows (MSYS2 MinGW-w64) and macOS, with the macOS fixture
-# viewer, on every push and pull request. Neither job needs the game. Actions are pinned to full
+# viewer, on every push and pull request: both game editions on macOS (FM_EDITION), the 2024 one on
+# Windows, whose build is the original project's. No job needs the game. Actions are pinned to full
 # commit SHAs.
 name: CI
 
@@ -14,6 +15,8 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      FM_EDITION: "24"
     defaults:
       run:
         shell: msys2 {0}
@@ -42,11 +45,16 @@ jobs:
         run: scripts/build.sh
       - name: Test
         run: |
-          bin/fm24_tests.exe
+          bin/fm${FM_EDITION}_tests.exe
           /mingw64/bin/ctest.exe --test-dir build --output-on-failure
 
   macos:
     runs-on: macos-15
+    strategy:
+      matrix:
+        edition: ["24", "27"]
+    env:
+      FM_EDITION: ${{ matrix.edition }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
@@ -54,7 +62,7 @@ jobs:
       # ctest checks the x86_64 slice too when Rosetta is installed.
       - name: Install Rosetta
         run: sudo softwareupdate --install-rosetta --agree-to-license || true
-      # The runner's Xcode builds every slice of FM24Viewer.app, so a missing one fails the build.
+      # The runner's Xcode builds every slice of the viewer, so a missing one fails the build.
       - name: Build
         env:
           FM24_VIEWER: "ON"
@@ -62,7 +70,7 @@ jobs:
       # ctest also runs the viewer's Swift tests on both slices and checks the bundle.
       - name: Test
         run: |
-          bin/fm24_tests
+          bin/fm${FM_EDITION}_tests
           ctest --test-dir build --output-on-failure
       - name: Format and lint
         run: |
@@ -80,7 +88,7 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build-windows -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw64-cross.cmake \
-            -DCMAKE_BUILD_TYPE=Release -DFM24_BUILD_TESTS=ON
+            -DCMAKE_BUILD_TYPE=Release -DFM24_BUILD_TESTS=ON -DFM_EDITION=24
           cmake --build build-windows
       - name: Release check
         run: ctest --test-dir build-windows -R '^release$' --output-on-failure

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import FixtureCore
 import FixtureSamples
 import Foundation
@@ -27,8 +28,8 @@ enum FixtureHandleTests {
 				"Referee: Aimee Keir",
 			]
 		)
-		checkEqual(fixture.heading(side: 0), "Home: Aston Villa - Custom 4-2-2-2 [4-2-2-2]")
-		checkEqual(fixture.heading(side: 1), "Away: Bristol City - Custom 4-2-2-2 [4-2-2-2]")
+		checkEqual(fixture.heading(side: 0), sampleHeading(0))
+		checkEqual(fixture.heading(side: 1), sampleHeading(1))
 		checkEqual(fixture.teamName(side: 1), "Bristol City")
 		// HARNESS_PROTOCOL_TEXT, which fixture_view_test.c checks: a dotted version.
 		let parts = FixtureHandle.protocolVersion.split(
@@ -43,7 +44,8 @@ enum FixtureHandleTests {
 
 	static func refuses() {
 		for json in [
-			Data(), Data("{}".utf8), Data("{\"format\":\"fm24-match-config/1\",\"fields\":[]}".utf8),
+			Data(), Data("{}".utf8),
+			Data("{\"format\":\"\(EDITION_MATCH_CONFIG_FORMAT)\",\"fields\":[]}".utf8),
 		] {
 			do {
 				_ = try FixtureHandle(json: json)
@@ -59,29 +61,70 @@ enum FixtureHandleTests {
 	static func listsSquads() throws {
 		let fixture = try FixtureHandle(json: sampleJSON(FIXTURE_SAMPLE_LABELLED))
 		checkEqual(FixtureHandle.columnCount, 16)
-		checkEqual(
-			(0..<16).map(FixtureHandle.columnWidth),
-			[38, 210, 65, 185, 75, 65, 85, 90, 70, 85, 100, 125, 105, 85, 85, 85]
-		)
-		checkEqual(FixtureHandle.columnTitle(11), "Creative Freedom")
 		checkEqual(fixture.rowCount(side: 0), 12)
 		checkEqual(fixture.rowCount(side: 1), 23)
-		checkEqual(
-			(0..<16).map { fixture.cell(side: 0, row: 0, column: $0) },
-			[
-				"0", "Emiliano Martínez", "GK", "Sweeper Keeper", "Defend", "12", "98.76%",
-				"81.25 / 56.50%", "-1",
-				"-", "-", "-", "-", "-", "-", "-",
-			]
-		)
+		if twoPhases {
+			// Each phase's position and role, and familiarity in six numbered categories.
+			checkEqual(
+				(0..<16).map(FixtureHandle.columnWidth),
+				[38, 210, 80, 90, 95, 90, 65, 85, 90, 70, 95, 95, 95, 95, 95, 95]
+			)
+			checkEqual(
+				(2..<6).map(FixtureHandle.columnTitle),
+				["IP Position", "IP Role", "OOP Position", "OOP Role"]
+			)
+			checkEqual(FixtureHandle.columnTitle(11), "Familiarity 1")
+			checkEqual(
+				(0..<16).map { fixture.cell(side: 0, row: 0, column: $0) },
+				[
+					"0", "Emiliano Martínez", "GK", "Role 0", "GK", "Role 1", "12", "98.76%",
+					"81.25 / 56.50%", "-1",
+					"-", "-", "-", "-", "-", "-",
+				]
+			)
+		} else {
+			checkEqual(
+				(0..<16).map(FixtureHandle.columnWidth),
+				[38, 210, 65, 185, 75, 65, 85, 90, 70, 85, 100, 125, 105, 85, 85, 85]
+			)
+			checkEqual(FixtureHandle.columnTitle(11), "Creative Freedom")
+			checkEqual(
+				(0..<16).map { fixture.cell(side: 0, row: 0, column: $0) },
+				[
+					"0", "Emiliano Martínez", "GK", "Sweeper Keeper", "Defend", "12", "98.76%",
+					"81.25 / 56.50%", "-1",
+					"-", "-", "-", "-", "-", "-", "-",
+				]
+			)
+		}
+		checkEqual(moraleColumn, twoPhases ? 6 : 5)
 		checkEqual(fixture.cell(side: 0, row: 11, column: 2), "Sub")
 		checkEqual(fixture.cell(side: 1, row: 4, column: 1), "<Unknown>")
 		checkEqual(fixture.rowBlock(side: 0, row: 11), 11)
 		checkEqual(fixture.rowBlock(side: 1, row: 4), nil)
 		checkEqual(fixture.rowBlock(side: 1, row: 11), 0)
 		checkEqual(fixture.cell(side: 1, row: 23, column: 1), "")
-		check(fixture.slotSpot(side: 0, slot: 0).map { $0.x == 0.5 && $0.y == 0.91 } == true)
-		check(fixture.slotSpot(side: 0, slot: 11) == nil)
+		// The pitches: one, or with two phases the 4-4-2 out of possession beside the 4-2-2-2.
+		checkEqual(FixtureHandle.phaseCount, twoPhases ? 2 : 1)
+		checkEqual(
+			(0..<FixtureHandle.phaseCount).map(FixtureHandle.phaseName),
+			twoPhases ? ["In possession", "Out of possession"] : [""]
+		)
+		check(
+			fixture.slotSpot(side: 0, phase: 0, slot: 0).map { $0.x == 0.5 && $0.y == 0.91 } == true
+		)
+		check(
+			fixture.slotSpot(side: 0, phase: 0, slot: 5).map { $0.x == 0.15 && $0.y == 0.3 } == true
+		)
+		check(fixture.slotSpot(side: 0, phase: 0, slot: 11) == nil)
+		check(fixture.slotSpot(side: 0, phase: FixtureHandle.phaseCount, slot: 0) == nil)
+		checkEqual(fixture.slotPosition(side: 1, phase: 0, slot: 5), "AML")
+		if twoPhases {
+			check(
+				fixture.slotSpot(side: 0, phase: 1, slot: 5).map { $0.x == 0.15 && $0.y == 0.45 } == true
+			)
+			checkEqual(fixture.slotPosition(side: 1, phase: 1, slot: 5), "ML")
+		}
 		check(!fixture.hasPlayerEdits)
 		checkEqual(fixture.playerEdits, [UInt8](repeating: 0, count: 512))
 	}
@@ -95,7 +138,7 @@ enum FixtureHandleTests {
 		)
 		let fixture = try FixtureHandle(json: json)
 		checkEqual(fixture.teamName(side: 0), name)
-		checkEqual(fixture.heading(side: 0), "Home: \(name) - Custom 4-2-2-2 [4-2-2-2]")
+		checkEqual(fixture.heading(side: 0), sampleHeading(0, team: name))
 	}
 
 	static func showsVenue() throws {

@@ -3,11 +3,12 @@
 
 // Job "get_player": a player's database values, as the fields a match config's player block copies
 // from the database (docs/FIXTURE.md, "Values copied from the game's database"). The output is an
-// "fm24-player/1" JSON file whose fields are named by their suffix in a player block
-// ("ratings", "condition", ...), for `fm24ctl inject-player`. Nothing in the game is changed.
+// "fmNN-player/1" JSON file whose fields are named by their suffix in a player block
+// ("ratings", "condition", ...), for `fmNNctl inject-player`. Nothing in the game is changed.
 
 #include "config_writer.h"
 #include "database.h"
+#include "edition.h"
 #include "fixture.h"
 #include "game.h"
 #include "job.h"
@@ -42,6 +43,9 @@ typedef struct PlayerValues {
 } PlayerValues;
 
 static bool readValues(const uint8_t *person, const uint8_t *player, PlayerValues *out);
+#ifdef GAME_WEIGHT_FROM_BODY_TYPE
+static bool readWeight(const uint8_t *player, uint16_t height, uint8_t *out);
+#endif
 static uint8_t ageOn(const uint8_t *person);
 static void writeField(FILE *file, const char *name, const char *key, uint64_t value);
 static bool writePlayer(const wchar_t *path, const PlayerValues *values, const char *name);
@@ -95,13 +99,30 @@ static bool readValues(const uint8_t *person, const uint8_t *player, PlayerValue
 		memory_readPointer(fields, PERSON_NATION, &nation) &&
 		memory_read(fields + PERSON_PERSONALITY, out->personality, PERSONALITY_COUNT) &&
 		memory_readU16(player, PLAYER_HEIGHT, &out->height) &&
+#ifdef GAME_WEIGHT_FROM_BODY_TYPE
+		readWeight(player, out->height, &out->weight);
+#else
 		memory_read(player + PLAYER_WEIGHT, &out->weight, 1);
+#endif
 	if (ok && nation) {
 		ok = memory_readU32(nation, NATION_UNIQUE_ID, &out->nationality);
 	}
 	out->age = ageOn(person);
 	return ok;
 }
+
+#ifdef GAME_WEIGHT_FROM_BODY_TYPE
+// The weight the game gives the player in a match, from the body type their record holds in place
+// of a weight.
+static bool readWeight(const uint8_t *player, uint16_t height, uint8_t *out) {
+	uint8_t bodyType = 0;
+	if (!memory_read(player + PLAYER_BODY_TYPE, &bodyType, 1)) {
+		return false;
+	}
+	*out = game_playerWeight(bodyType, height);
+	return true;
+}
+#endif
 
 // The person's age in years on the human manager's next match day (as a match built now would
 // have it), or on the current date if there is no next fixture.
@@ -145,7 +166,7 @@ static bool writePlayer(const wchar_t *path, const PlayerValues *values, const c
 	if (!file) {
 		return false;
 	}
-	fprintf(file, "{\n  \"format\": \"fm24-player/1\",\n  \"source\": ");
+	fprintf(file, "{\n  \"format\": \"" EDITION_PLAYER_FORMAT "\",\n  \"source\": ");
 	configWriter_writeString(file, name);
 	fprintf(file, ",\n  \"fields\": [\n    {\"name\": \"person_uid\", \"player\": ");
 	configWriter_writeString(file, name);

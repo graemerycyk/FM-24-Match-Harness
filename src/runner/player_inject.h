@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Puts a player's database values ("fm24-player/1", from `fm24ctl get-player`) into one player
+// Puts a player's database values ("fmNN-player/1", from `fmNNctl get-player`) into one player
 // block of a match config, in place of that player's own. Only the values of the block's named
 // fields are changed (and its "player" annotation), so the config keeps its structure: the block's
 // derived values (ability, role ratings) stay those of the player it replaces.

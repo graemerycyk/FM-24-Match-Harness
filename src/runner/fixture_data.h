@@ -3,6 +3,7 @@
 #pragma once
 
 #include "buffer.h"
+#include "edition.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -10,6 +11,9 @@
 
 
 enum { FIXTURE_TEXT = 512, FIXTURE_PLAYERS = 256, FIXTURE_SLOTS = 11 };
+// The phases a tactic plan's formation has (EDITION_TACTIC_PHASES): 1, or 2, in possession and out
+// of possession.
+enum { FIXTURE_PHASES = EDITION_TACTIC_PHASES };
 
 typedef struct FixtureNumber {
 	uint64_t value;
@@ -33,8 +37,13 @@ enum {
 
 // A player's tactical familiarity with one tactic setting category, as {setting, amount} entries
 // (docs/FIXTURE.md#tactical-familiarity). Categories, in file order: mentality, passing style,
-// creative freedom, trigger press, marking, tempo, width.
+// creative freedom, trigger press, marking, tempo, width; with two phases, six whose meaning is not
+// known yet, numbered.
+#if EDITION_TACTIC_PHASES == 2
+enum { FIXTURE_FAMILIARITY_CATEGORIES = 6, FIXTURE_FAMILIARITY_ENTRIES = 24 };
+#else
 enum { FIXTURE_FAMILIARITY_CATEGORIES = 7, FIXTURE_FAMILIARITY_ENTRIES = 24 };
+#endif
 
 typedef struct FixtureFamiliarity {
 	bool known; // its count was read and every entry fits
@@ -68,6 +77,11 @@ typedef struct FixtureTeam {
 	FixtureNumber planByte18;      // plan[0]'s unnamed u8 before the mentality: creative freedom
 	FixtureNumber instructions[3]; // plan[0] team instructions
 	FixtureSlot slots[FIXTURE_SLOTS];
+#if EDITION_TACTIC_PHASES == 2
+	// Out of possession (slot[i].oop); slots and formation are then in possession (slot[i].ip).
+	FixtureSlot oopSlots[FIXTURE_SLOTS];
+	char oopFormation[64];
+#endif
 	FixturePlayer players[FIXTURE_PLAYERS];
 	bool lineupKnown;
 } FixtureTeam;
@@ -125,6 +139,7 @@ bool fixtureData_writeVenue(
 	size_t errorSize
 );
 
+#if EDITION_TACTIC_PHASES == 1
 // The tactic's setting (1-20 scale) for each familiarity category, as the game works it out from
 // plan[0]'s mentality, team instructions and creative freedom byte. False if any is missing.
 bool fixtureData_familiaritySettings(
@@ -139,6 +154,7 @@ bool fixtureData_familiarity(
 	unsigned category,
 	unsigned *value
 );
+#endif
 
 void fixtureData_position(uint64_t mask, char *out, size_t size);
 const char *fixtureData_role(uint64_t mask);

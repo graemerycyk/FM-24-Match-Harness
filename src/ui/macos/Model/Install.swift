@@ -1,43 +1,44 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import Foundation
 
-/// What `fm24ctl install` reported (macos_game.c's macosGame_install): the harness it wrote and
+/// What `fmNNctl install` reported (macos_game.c's macosGame_install): the harness it wrote and
 /// where, the launcher Steam's launch option runs, the game it found, whether that option is
 /// already set, the account's option if it has another, and its advice: where it looked for a game
-/// it did not find, and a data folder the option sets in a way fm24ctl does not follow.
+/// it did not find, and a data folder the option sets in a way fmNNctl does not follow.
 struct InstallReport: Equatable {
 	/// The harness's protocol version.
 	var version: String
 	/// The folder the harness and its launcher are in.
 	var folder: String
 	var launcher: String
-	/// FM24's fm.app, or nil if Steam's libraries have none.
+	/// FMNN's fm.app, or nil if Steam's libraries have none.
 	var game: String?
-	/// Steam's launch option for FM24 already runs the launcher.
+	/// Steam's launch option for FMNN already runs the launcher.
 	var optionSet: Bool
 	/// The launch option to set: /bin/sh "<launcher>" %command%.
 	var launchOption: String
-	/// The account's launch option for FM24 if it has another one.
+	/// The account's launch option for FMNN if it has another one.
 	var currentOption: String? = nil
 	/// install's advice, in its words.
 	var notes: [String] = []
 
 	private static let installedPrefix = "installed harness "
 	private static let launcherPrefix = "launcher: "
-	private static let gamePrefix = "Football Manager 2024: "
+	private static let gamePrefix = "\(EDITION_GAME): "
 	private static let optionSetPrefix =
-		"Steam's launch option for Football Manager 2024 already uses this launcher"
+		"Steam's launch option for \(EDITION_GAME) already uses this launcher"
 	private static let currentOptionPrefix =
-		"Steam's launch option for Football Manager 2024 is now: "
+		"Steam's launch option for \(EDITION_GAME) is now: "
 	/// The starts of install's advice: no Steam, no game in its libraries, and a data folder the
-	/// option sets in a way fm24ctl does not follow.
+	/// option sets in a way fmNNctl does not follow.
 	private static let notePrefixes = [
-		"Steam is not in ", "Install Football Manager 2024 ", "It sets FM24's data folder",
+		"Steam is not in ", "Install \(EDITION_GAME) ", "It sets \(EDITION_PRODUCT)'s data folder",
 	]
 
-	/// The launch option that runs `launcher`, as fm24ctl prints it.
+	/// The launch option that runs `launcher`, as fmNNctl prints it.
 	static func launchOption(_ launcher: String) -> String {
 		"/bin/sh \"\(launcher)\" %command%"
 	}
@@ -77,7 +78,7 @@ struct InstallReport: Equatable {
 	}
 }
 
-/// The Install Harness sheet: fm24ctl installing, what it reported, or why it failed.
+/// The Install Harness sheet: fmNNctl installing, what it reported, or why it failed.
 enum InstallState: Equatable {
 	case installing
 	case installed(InstallReport)

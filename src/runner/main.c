@@ -1,47 +1,50 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// fm24ctl: drives the harness DLL inside the running fm.exe, injecting it when needed.
+// fmNNctl: drives the harness DLL inside the running fm.exe, injecting it when needed.
 //
-//   fm24ctl
+//   fmNNctl
 //       exports the next fixture to the OS temp directory and opens the viewer (on macOS,
-//       FM24Viewer.app)
-//   fm24ctl <fixture.bin|.json>
+//       FMNNViewer.app)
+//   fmNNctl <fixture.bin|.json>
 //       opens the fixture in the viewer
-//   fm24ctl run <input.bin|.json> [seeds] [output.csv] [--threads N]
+//   fmNNctl run <input.bin|.json> [seeds] [output.csv] [--threads N]
 //       [--profile <samples.txt>] [--detailed] [--human-control] [--keep-build]
 //       [--no-launch] [--any-save] (macOS)
 //       seeds: "keep" (the input's own seed), "42", "1-1000", or "1,5,10-20"
 //       (default "keep"); output defaults to the input with a .csv extension
-//   fm24ctl get-next-fixture <output.json|.bin> [--seed N] [--full]
+//   fmNNctl get-next-fixture <output.json|.bin> [--seed N] [--full]
 //       [--save <name>] [--no-launch] [--any-save] (macOS)
-//   fm24ctl encode <input.json> <output.bin>
-//   fm24ctl decode <input.bin> <output.json> [--full]
+//   fmNNctl encode <input.json> <output.bin>
+//   fmNNctl decode <input.bin> <output.json> [--full]
 //       the game's decoding of a binary fixture, without building or playing a match
-//   fm24ctl replace-away <input.json> <team ID or club name> <output.json> [--full]
+//   fmNNctl replace-away <input.json> <team ID or club name> <output.json> [--full]
 //       [--no-launch] [--any-save] (macOS)
-//   fm24ctl replace-home <input.json> <team ID or club name> <output.json> [--full]
+//   fmNNctl replace-home <input.json> <team ID or club name> <output.json> [--full]
 //       [--no-launch] [--any-save] (macOS)
+//       (a <team unique ID> only, where the clubs' names have not been located)
 //       the input rebuilt against another away team, keeping its other edits
-//   fm24ctl list-teams <output.txt> [--save <name>] [--no-launch] [--any-save] (macOS)
-//   fm24ctl list-players <output.txt> [--save <name>] [--no-launch] [--any-save] (macOS)
-//   fm24ctl get-player <person unique ID> <output.json>
+//   fmNNctl list-teams <output.txt> [--save <name>] [--no-launch] [--any-save] (macOS)
+//   fmNNctl list-players <output.txt> [--save <name>] [--no-launch] [--any-save] (macOS)
+//   fmNNctl get-player <person unique ID> <output.json>
 //       [--save <name>] [--no-launch] [--any-save] (macOS)
 //       a player's database values, as a config's player block has them
-//   fm24ctl inject-player <input.json> <home|away>.player[N] <person unique ID|player.json>
+//   fmNNctl inject-player <input.json> <home|away>.player[N] <person unique ID|player.json>
 //       <output.json> [--allow-duplicate] [--no-launch] [--any-save] (macOS)
 //       the input with that player block's database values replaced by another player's
-//   fm24ctl status
+//   fmNNctl status
 //       what the game is doing; succeeds only if it has a game loaded and idle (macOS; exit code 3
 //       if it has not)
-//   fm24ctl probe [path to fm.exe]
+//   fmNNctl probe [path to fm.exe]
 //       where another build of fm.exe has the code the harness uses (writes probe.txt); on
 //       macOS, which builds of the game the harness supports
-//   fm24ctl install (macOS)
-//       installs the harness for Football Manager 2024 from Steam and prints the launch option
-//   fm24ctl launch [--save <name|path.fm>] [--timeout <s>] [--user-data <dir>] [--rosetta]
+//   fmNNctl install [--log-only] (macOS)
+//       installs the harness for the game from Steam and prints the launch option; with
+//       --log-only (where the game loads its engine as a plugin), a harness that only logs how
+//       the game loads and unloads the engine and serves no jobs
+//   fmNNctl launch [--save <name|path.fm>] [--timeout <s>] [--user-data <dir>] [--rosetta]
 //       [path to fm.app]
-//       (macOS) starts Football Manager 2024 with the harness loaded; with --save, has the game
+//       (macOS) starts the game with the harness loaded; with --save, has the game
 //       load that save and waits until it is loaded and idle (exit code 3 if the running game has
 //       another save loaded); with --rosetta, its x86_64 slice under Rosetta on Apple silicon (exit
 //       code 3 if the running game runs natively)
@@ -50,13 +53,16 @@
 // list-teams, list-players and get-player first make sure the game has the save loaded and idle
 // (the input's "save", or --save's): they wait while it is busy, start the game with the save if
 // it is not running (not with --no-launch) and stop with exit code 3 if another save is loaded
-// (unless --any-save). Without a save, with a .bin input and on Windows, jobs go ahead as before.
+// (unless --any-save). Without a save, with a .bin input and on Windows, jobs go ahead as before;
+// but where the edition's exports record no save, an input without one is for the save the running
+// game has loaded: they wait until it is idle, and stop if no game is running.
 //
-// fm24ctl.exe, the DLL, the job file and the result file all live in the same directory. On macOS
-// the harness lives in ~/Library/Application Support/fm24-harness (see embedded.h) and job files
+// fmNNctl.exe, the DLL, the job file and the result file all live in the same directory. On macOS
+// the harness lives in ~/Library/Application Support/fmNN-harness (see embedded.h) and job files
 // in the user's temporary directory.
 
 #include "commands.h"
+#include "edition.h"
 #include "files.h"
 #include "protocol.h"
 
@@ -91,40 +97,50 @@
 // clang-format off: one usage line per source line, with the platform's option lines after them
 static const char usage[] =
 	"usage:\n"
-	"  fm24ctl  (export and view the next fixture)\n"
-	"  fm24ctl <fixture.bin|.json>  (open the native fixture viewer)\n"
-	"  fm24ctl run <input.bin|.json> [seeds] [output.csv] [--threads N]\n"
+	"  " EDITION_CLI "  (export and view the next fixture)\n"
+	"  " EDITION_CLI " <fixture.bin|.json>  (open the native fixture viewer)\n"
+	"  " EDITION_CLI " run <input.bin|.json> [seeds] [output.csv] [--threads N]\n"
 	"      [--profile <samples.txt>] [--detailed] [--human-control] [--keep-build]\n"
 	SAVE_FLAGS_LINE
-	"  fm24ctl get-next-fixture <output.json|.bin> [--seed N] [--full]\n"
+	"  " EDITION_CLI " get-next-fixture <output.json|.bin> [--seed N] [--full]\n"
 	SAVE_OPTIONS_LINE
-	"  fm24ctl encode <input.json> <output.bin>\n"
-	"  fm24ctl decode <input.bin> <output.json> [--full]\n"
-	"  fm24ctl replace-away <input.json> <team ID or club name> <output.json> [--full]\n"
+	"  " EDITION_CLI " encode <input.json> <output.bin>\n"
+	"  " EDITION_CLI " decode <input.bin> <output.json> [--full]\n"
+	"  " EDITION_CLI " replace-away <input.json> " COMMANDS_TEAM_ARGUMENT " <output.json> [--full]\n"
 	SAVE_FLAGS_LINE
-	"  fm24ctl replace-home <input.json> <team ID or club name> <output.json> [--full]\n"
+	"  " EDITION_CLI " replace-home <input.json> " COMMANDS_TEAM_ARGUMENT " <output.json> [--full]\n"
 	SAVE_FLAGS_LINE
-	"  fm24ctl list-teams <output.txt>\n"
+	"  " EDITION_CLI " list-teams <output.txt>\n"
 	SAVE_OPTIONS_LINE
-	"  fm24ctl list-players <output.txt>\n"
+	"  " EDITION_CLI " list-players <output.txt>\n"
 	SAVE_OPTIONS_LINE
-	"  fm24ctl get-player <person unique ID> <output.json>\n"
+	"  " EDITION_CLI " get-player <person unique ID> <output.json>\n"
 	SAVE_OPTIONS_LINE
-	"  fm24ctl inject-player <input.json> <home|away>.player[N]\n"
+	"  " EDITION_CLI " inject-player <input.json> <home|away>.player[N]\n"
 	"      <person unique ID|player.json> <output.json> [--allow-duplicate]\n"
 	SAVE_FLAGS_LINE
 #ifdef _WIN32
-	"  fm24ctl probe [path to fm.exe]\n";
+	"  " EDITION_CLI " probe [path to fm.exe]\n";
 #else
-	"  fm24ctl status  (whether FM24 has a game loaded and idle)\n"
-	"  fm24ctl probe [path to fm.app]\n"
-	"  fm24ctl install  (set up the harness for Football Manager 2024 from Steam)\n"
-	"  fm24ctl launch [--save <name|path.fm>] [--timeout <s>] [--user-data <dir>]\n"
+	"  " EDITION_CLI " status  (whether " EDITION_PRODUCT " has a game loaded and idle)\n"
+	"  " EDITION_CLI " probe [path to fm.app]\n"
+#if EDITION_ENGINE_PLUGIN
+	"  " EDITION_CLI " install [--log-only]  (set up the harness for " EDITION_GAME " from Steam;\n"
+	"      --log-only has it only log how the game loads and unloads its engine)\n"
+#else
+	"  " EDITION_CLI " install  (set up the harness for " EDITION_GAME " from Steam)\n"
+#endif
+	"  " EDITION_CLI " launch [--save <name|path.fm>] [--timeout <s>] [--user-data <dir>]\n"
 	"      [--rosetta] [path to fm.app]  (start the game with the harness; --save loads\n"
 	"      a save, --rosetta runs its x86_64 slice under Rosetta on Apple silicon)\n"
-	"Commands with these options first make sure FM24 has the input's save (or --save's)\n"
+	"Commands with these options first make sure " EDITION_PRODUCT " has the input's save (or --save's)\n"
 	"loaded and idle, starting the game with it if needed (not with --no-launch);\n"
-	"--any-save lets them use another loaded save.\n";
+	"--any-save lets them use another loaded save.\n"
+#if EDITION_ENGINE_PLUGIN
+	"An input without a save, as " EDITION_PRODUCT "'s exports are, is for the save " EDITION_PRODUCT " has loaded:\n"
+	"they wait until it is idle, and never start the game.\n"
+#endif
+	;
 #endif
 // clang-format on
 
@@ -139,7 +155,7 @@ int wmain(int argc, wchar_t **argv);
 int wmain(int argc, wchar_t **argv) {
 	if (argc == 1) {
 		wchar_t path[HARNESS_PATH_LENGTH];
-		static const wchar_t filename[] = L"temp-fixture.json";
+		static const wchar_t filename[] = L"" EDITION_TEMPORARY_FIXTURE;
 		size_t filenameLength = sizeof filename / sizeof filename[0];
 		DWORD length = GetTempPathW(HARNESS_PATH_LENGTH, path);
 		if (!length) {
@@ -165,8 +181,8 @@ int wmain(int argc, wchar_t **argv) {
 #else
 // macOS hands over UTF-8 arguments; the commands take them as wide (UTF-32) strings, like Windows.
 int main(int argc, char **argv) {
-	// A line at a time, even into a pipe: the viewer shows fm24ctl's progress as it is printed, and
-	// a full buffer would hold it back until fm24ctl exits (or lose it if fm24ctl is ended).
+	// A line at a time, even into a pipe: the viewer shows fmNNctl's progress as it is printed, and
+	// a full buffer would hold it back until fmNNctl exits (or lose it if fmNNctl is ended).
 	(void)setvbuf(stdout, NULL, _IOLBF, 0);
 	// Wide strings print through the C library's locale; make sure it can encode any path. There
 	// are no other threads yet.
@@ -188,7 +204,7 @@ int main(int argc, char **argv) {
 			break;
 		}
 	}
-	// As wmain does, with the viewer in FM24Viewer.app: fm24ctl returns once it has handed the
+	// As wmain does, with the viewer in FMNNViewer.app: fmNNctl returns once it has handed the
 	// fixture over.
 	if (converted == argc && argc == 1) {
 		status = exportAndOpen(wide[0]);
@@ -205,8 +221,8 @@ int main(int argc, char **argv) {
 	return status;
 }
 
-// Exports the next fixture to temp-fixture.json in the user's temporary directory, which the game
-// can always write to, and opens it in the viewer if that worked.
+// Exports the next fixture to the edition's EDITION_TEMPORARY_FIXTURE in the user's temporary
+// directory, which the game can always write to, and opens it in the viewer if that worked.
 static int exportAndOpen(wchar_t *program) {
 	wchar_t directory[HARNESS_PATH_LENGTH];
 	wchar_t path[HARNESS_PATH_LENGTH];

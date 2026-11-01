@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Graeme Rycyk <grae@workanywhere.io>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Edition
 import SwiftUI
 
 /// The fixture summary at the top of the window: the file on show (or, for an export not yet
@@ -9,7 +10,7 @@ import SwiftUI
 /// selected and copied.
 struct SummaryView: View {
 	/// The export link's target, which the viewer handles itself.
-	static let exportURL = URL(string: "fm24viewer:export")!
+	static let exportURL = URL(string: "\(EDITION_VIEWER_EXECUTABLE):export")!
 
 	@ObservedObject var model: ViewerModel
 	let fixture: FixtureHandle
@@ -50,7 +51,7 @@ struct SummaryView: View {
 		for line in fixture.summaryLines {
 			text += AttributedString(line + "\n")
 		}
-		// The save the fixture was exported from, which fm24ctl checks before a job (macOS only).
+		// The save the fixture was exported from, which fmNNctl checks before a job (macOS only).
 		if let save = fixture.saveLine {
 			text += AttributedString(save + "\n")
 		}

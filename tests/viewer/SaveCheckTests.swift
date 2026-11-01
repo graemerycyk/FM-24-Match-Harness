@@ -376,7 +376,7 @@ enum SaveCheckTests {
 		let fixture = setup.scratch.file("next.json", plainSampleJSON())
 		setup.standIn.set([:])
 		open(setup, fixture)
-		let bytes = try FixtureHandle.write(json: json, playerEdits: nil, venue: nil, binary: true)
+		let bytes = try FixtureHandle.write(json: json, changes: nil, venue: nil, binary: true)
 		let binary = setup.scratch.file("next.bin", bytes)
 		setup.standIn.set(["BUSY": "loading"])
 		model.open(binary)

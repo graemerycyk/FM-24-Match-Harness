@@ -48,6 +48,12 @@ typedef struct Job {
 	char team[JOB_TEAM_LENGTH];     // replace: the new team (database_findTeam's spec)
 	char teams[2][JOB_TEAM_LENGTH]; // run, replace: input's home/away overrides ("": the fixture's)
 	uint32_t personId;              // get_player: the player's unique ID (0: missing)
+	// Protocol 1.4.0 (run):
+	bool perMatch;       // also write each match's player and team rows (match_stats.h)
+	bool skipSeedErrors; // seed_errors=skip: record a seed whose rebuild fails, and go on
+	bool report;         // append the run's report to the result line (job_run.c)
+	uint64_t indexBase;  // the per-match rows' index of the first seed (+1 per seed after it)
+	wchar_t stopFile[HARNESS_PATH_LENGTH]; // no seed starts once this file exists ("": none)
 } Job;
 
 // Parses a job's key=value lines (modifying `text`); logs and returns false if it is malformed.
@@ -56,6 +62,14 @@ bool job_parse(char *text, Job *job);
 // other than status are refused while the game is loading or processing.
 void job_execute(char *text);
 void job_free(Job *job);
+
+// Notes when the harness loaded (once, as it starts serving jobs).
+void job_markLoaded(void);
+// That time in seconds since 1970, 0 before job_markLoaded.
+int64_t job_loadedAt(void);
+// How many jobs other than status the harness has received since it loaded, the current one
+// included, whether it ran them or not.
+uint64_t job_count(void);
 
 // Sets the job's one-line outcome (must start with "ok" or "error"); a later call replaces it.
 void job_writeResult(const char *format, ...) PLATFORM_PRINTF(1, 2);

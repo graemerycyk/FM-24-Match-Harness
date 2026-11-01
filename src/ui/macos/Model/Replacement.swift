@@ -128,6 +128,13 @@ final class SwapPrompt: ObservableObject, Identifiable {
 		"Swap \(name) for..."
 	}
 
+	/// What Confirm says, without asking the game, when the new player is already in the side's
+	/// squad, at `place` ("Sub", or "Slot 6, DM").
+	static func inSquad(name: String, team: String, place: String) -> String {
+		"\(name) is already in \(team)'s squad (\(place)). Use Edit Line-up to move this player, or "
+			+ "tick \"\(duplicatesLabel)\" to put a copy here."
+	}
+
 	/// What the field takes: a name once the player list has loaded, otherwise only an ID.
 	var cue: String {
 		switch players.state {
@@ -207,24 +214,39 @@ enum ReplacementJob: Equatable {
 		return false
 	}
 
-	/// The pending player edits the job carries over: all but the replaced side's, or all but the
-	/// swapped-out player's.
-	func carriedEdits(_ edits: [UInt8]) -> [UInt8] {
-		var carried = edits
-		let blocks = FixtureHandle.blockCount
+	/// The side a team replacement keeps, whose line-up the rebuild lists as the game's build does;
+	/// nil for a swap, which keeps the order.
+	var keptSide: Int? {
+		guard case .team(let side, _) = self else {
+			return nil
+		}
+		return 1 - side
+	}
+
+	/// The pending player edits the job carries over: all but the replaced side's (its Max edits
+	/// and new order), or all but the swapped-out player's Max edits.
+	func carriedEdits(_ edits: PlayerChanges) -> PlayerChanges {
 		switch self {
 		case .team(let side, _):
-			let range = (side * blocks)..<((side + 1) * blocks)
-			carried.replaceSubrange(range, with: repeatElement(0, count: blocks))
+			return edits.dropping(side: side)
 		case .swap(let side, let block, _, _):
-			carried[side * blocks + block] = 0
+			return edits.dropping(side: side, block: block)
 		}
-		return carried
 	}
 
 	/// "home.player[N]" or "away.player[N]", for inject-player.
 	static func block(side: Int, block: Int) -> String {
 		"\(side == 0 ? "home" : "away").player[\(block)]"
+	}
+
+	/// What a swap gives inject-player: the swapped-out player's place in its input, in which the
+	/// pending orders are written. Nil for a team.
+	func injected(_ fixture: FixtureHandle) -> String? {
+		guard case .swap(let side, let block, _, _) = self else {
+			return nil
+		}
+		let place = fixture.placeOf(side: side, block: block) ?? block
+		return ReplacementJob.block(side: side, block: place)
 	}
 
 	/// What fm24ctl's refusal of a player already in the fixture says, pointed at the prompt's
@@ -242,13 +264,18 @@ enum ReplacementJob: Equatable {
 /// given and the one the game writes back.
 enum ReplacementFiles {
 	/// Writes what the job is given to `url`: the fixture's JSON (a binary fixture's decoded JSON)
-	/// with the edits it carries over, but not the venue, which goes into the result.
-	static func writeInput(_ source: FixtureSource, carrying edits: [UInt8]?, to url: URL) throws {
-		let changed = edits?.contains { $0 != 0 } == true ? edits : nil
+	/// with the edits it carries over, new orders included, but not the venue, which goes into the
+	/// result.
+	static func writeInput(
+		_ source: FixtureSource,
+		carrying edits: PlayerChanges?,
+		to url: URL
+	) throws {
+		let changed = edits?.isEmpty == false ? edits : nil
 		let bytes =
 			changed == nil
 			? source.json
-			: try FixtureHandle.write(json: source.json, playerEdits: changed, venue: nil, binary: false)
+			: try FixtureHandle.write(json: source.json, changes: changed, venue: nil, binary: false)
 		do {
 			try bytes.write(to: url, options: .withoutOverwriting)
 		} catch {
@@ -271,7 +298,7 @@ enum ReplacementFiles {
 			throw ViewerError(message: "cannot read replacement fixture")
 		}
 		if FixtureHandle.hasVenue(venue) {
-			json = try FixtureHandle.write(json: json, playerEdits: nil, venue: venue, binary: false)
+			json = try FixtureHandle.write(json: json, changes: nil, venue: venue, binary: false)
 		}
 		return (json, try FixtureHandle(json: json))
 	}

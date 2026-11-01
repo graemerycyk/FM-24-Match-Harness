@@ -15,6 +15,7 @@
 #include <mach/machine.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/sysctl.h>
 
 
 const MacosRequirement macosRequirements[] = {
@@ -119,6 +120,18 @@ uintptr_t game_base(void) {
 
 uint32_t game_timestamp(void) {
 	return build ? build->bundleVersion : 0;
+}
+
+const char *game_architecture(void) {
+	return macosTables.architecture;
+}
+
+bool game_translated(void) {
+	int translated = 0;
+	size_t size = sizeof translated;
+	// Missing (ENOENT) where there is no Rosetta: on Intel Macs.
+	return sysctlbyname("sysctl.proc_translated", &translated, &size, NULL, 0) == 0 &&
+				 translated == 1;
 }
 
 void *game_address(uint32_t rva) {

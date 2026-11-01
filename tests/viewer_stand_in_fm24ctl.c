@@ -172,7 +172,8 @@ static const char backwardsText[] = "the seed range %.*s runs backwards: write %
 static const char rangeSizeText[] = "the seed range %.*s has more than %d seeds: split it\n";
 static const char runUsageText[] =
 	"usage: fm24ctl run <input.bin|.json> [seeds] [output.csv] [--threads N]"
-	" [--profile <samples.txt>] [--detailed] [--human-control] [--keep-build]";
+	" [--profile <samples.txt>] [--detailed] [--human-control] [--keep-build] [--per-match]"
+	" [--keep-going] [--manifest]";
 
 static long number(const char *name, long fallback);
 static void sleepFor(long milliseconds);

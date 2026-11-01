@@ -7,18 +7,22 @@
 
 #include "buffer.h"
 #include "fixture_data.h"
+#include "fixture_lineup.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 
 
-// Applies `players` (NULL or none: unchanged), then the venue `values` (NULL: unchanged), as
-// fixtureData_writePlayers and fixtureData_writeVenue do, then encodes the result as a binary
-// fixture if `binary`. `out` receives the JSON or binary bytes; on failure it is empty.
+// Applies `players` (NULL or none: unchanged) as fixtureData_writePlayers does, by the blocks'
+// names in `json`, then the new order `lineup` (NULL or no side changed: unchanged) as
+// fixtureLineup_apply does, then the venue `values` (NULL: unchanged) as fixtureData_writeVenue
+// does, then encodes the result as a binary fixture if `binary`. `out` receives the JSON or binary
+// bytes; on failure it is empty.
 bool fixtureEdit_apply(
 	const char *json,
 	size_t length,
 	const FixturePlayerEdits *players,
+	const FixtureLineup *lineup,
 	const FixtureNumber values[VENUE_FIELD_COUNT],
 	bool binary,
 	ByteBuffer *out,

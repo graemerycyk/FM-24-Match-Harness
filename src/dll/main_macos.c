@@ -120,6 +120,7 @@ static void *serveJobs(void *parameter) {
 
 // Opens the log, checks the game build and opens the job socket. Returns the listener, or -1.
 static int startServing(void) {
+	job_markLoaded();
 	setDirectory();
 	log_open(harnessDirectory);
 	log_message("harness %s loaded (pid %d)", HARNESS_PROTOCOL_TEXT, (int)getpid());

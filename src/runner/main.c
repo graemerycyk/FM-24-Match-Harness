@@ -10,7 +10,7 @@
 //       opens the fixture in the viewer
 //   fm24ctl run <input.bin|.json> [seeds] [output.csv] [--threads N]
 //       [--profile <samples.txt>] [--detailed] [--human-control] [--keep-build]
-//       [--no-launch] [--any-save] (macOS)
+//       [--per-match] [--keep-going] [--manifest] [--no-launch] [--any-save] (macOS)
 //       seeds: "keep" (the input's own seed), "42", "1-1000", or "1,5,10-20"
 //       (default "keep"); output defaults to the input with a .csv extension
 //   fm24ctl get-next-fixture <output.json|.bin> [--seed N] [--full]
@@ -31,12 +31,26 @@
 //   fm24ctl inject-player <input.json> <home|away>.player[N] <person unique ID|player.json>
 //       <output.json> [--allow-duplicate] [--no-launch] [--any-save] (macOS)
 //       the input with that player block's database values replaced by another player's
+//   fm24ctl lineup <input.json> <home|away>
+//   fm24ctl lineup <input.json> <home|away> <player> <player> <output.json> [--allow-ai-side]
+//   fm24ctl lineup <input.json> <home|away> <player,player,...> <output.json> [--allow-ai-side]
+//       offline: a side's players, or the input with two of them exchanged or with a new XI (then
+//       any substitutes), their blocks moved to their new places
 //   fm24ctl status
 //       what the game is doing; succeeds only if it has a game loaded and idle (macOS; exit code 3
 //       if it has not)
 //   fm24ctl probe [path to fm.exe]
 //       where another build of fm.exe has the code the harness uses (writes probe.txt); on
 //       macOS, which builds of the game the harness supports
+//   fm24ctl version
+//       the protocol, the commit fm24ctl was built from, whether it had uncommitted changes, and
+//       the slice that runs
+//   fm24ctl batch create <plan.txt> <dir> | status <dir> | verify <dir> [--deep]
+//       | stop <dir> [--now]
+//       a batch of thousands of matches or more, in chunks committed one at a time (see batch.c)
+//   fm24ctl batch run <dir> [--threads N] [--until HH:MM] [--max-chunks N]
+//       [--allow-harness-change]
+//       (macOS) plays a batch's chunks in the game, and resumes it after any stop
 //   fm24ctl install (macOS)
 //       installs the harness for Football Manager 2024 from Steam and prints the launch option
 //   fm24ctl launch [--save <name|path.fm>] [--timeout <s>] [--user-data <dir>] [--rosetta]
@@ -95,6 +109,7 @@ static const char usage[] =
 	"  fm24ctl <fixture.bin|.json>  (open the native fixture viewer)\n"
 	"  fm24ctl run <input.bin|.json> [seeds] [output.csv] [--threads N]\n"
 	"      [--profile <samples.txt>] [--detailed] [--human-control] [--keep-build]\n"
+	"      [--per-match] [--keep-going] [--manifest]\n"
 	SAVE_FLAGS_LINE
 	"  fm24ctl get-next-fixture <output.json|.bin> [--seed N] [--full]\n"
 	SAVE_OPTIONS_LINE
@@ -113,6 +128,16 @@ static const char usage[] =
 	"  fm24ctl inject-player <input.json> <home|away>.player[N]\n"
 	"      <person unique ID|player.json> <output.json> [--allow-duplicate]\n"
 	SAVE_FLAGS_LINE
+	"  fm24ctl lineup <input.json> <home|away>  (show a side's line-up)\n"
+	"  fm24ctl lineup <input.json> <home|away> <player> <player> <output.json>\n"
+	"      [--allow-ai-side]  (exchange two players)\n"
+	"  fm24ctl lineup <input.json> <home|away> <player,player,...> <output.json>\n"
+	"      [--allow-ai-side]  (a new XI, then any substitutes)\n"
+	"  fm24ctl version  (the protocol, commit and slice of this build)\n"
+	"  fm24ctl batch create <plan.txt> <dir> | status <dir> | verify <dir> [--deep]\n"
+	"      | stop <dir> [--now]  (a batch of matches; see docs/CLI.md)\n"
+	"  fm24ctl batch run <dir> [--threads N] [--until HH:MM] [--max-chunks N]\n"
+	"      [--allow-harness-change]  (play a batch in the game; macOS)\n"
 #ifdef _WIN32
 	"  fm24ctl probe [path to fm.exe]\n";
 #else
@@ -237,8 +262,11 @@ static int runCommand(int argc, wchar_t **argv) {
 		{L"list-players", commands_listPlayers},
 		{L"get-player", commands_getPlayer},
 		{L"inject-player", commands_injectPlayer},
+		{L"lineup", commands_lineup},
 		{L"status", commands_status},
 		{L"probe", commands_probe},
+		{L"version", commands_version},
+		{L"batch", commands_batch},
 #ifndef _WIN32
 		{L"install", macosGame_install},
 		{L"launch", macosGame_launch},

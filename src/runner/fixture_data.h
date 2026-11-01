@@ -9,7 +9,12 @@
 #include <stdint.h>
 
 
-enum { FIXTURE_TEXT = 512, FIXTURE_PLAYERS = 256, FIXTURE_SLOTS = 11 };
+enum {
+	FIXTURE_TEXT = 512,
+	FIXTURE_PLAYERS = 256,
+	FIXTURE_SLOTS = 11,
+	FIXTURE_POSITIONS = 15, // position ratings, pos_gk to pos_wbr (docs/FIXTURE.md#ratings)
+};
 
 typedef struct FixtureNumber {
 	uint64_t value;
@@ -51,6 +56,9 @@ typedef struct FixturePlayer {
 	FixtureNumber sharpness[2];
 	FixtureNumber fatigue;
 	FixtureFamiliarity familiarity[FIXTURE_FAMILIARITY_CATEGORIES];
+	FixtureNumber personUid;                    // its .person_uid
+	uint8_t positionRatings[FIXTURE_POSITIONS]; // the first .ratings values, in file order (1-20)
+	bool positionRatingsKnown;
 } FixturePlayer;
 
 typedef struct FixtureSlot {
@@ -70,6 +78,16 @@ typedef struct FixtureTeam {
 	FixtureSlot slots[FIXTURE_SLOTS];
 	FixturePlayer players[FIXTURE_PLAYERS];
 	bool lineupKnown;
+	// The substitutes' places after the first 11: the formation's non-zero bench templates
+	// (formation[11..25]), but no more than there are players, and all of them if it is unknown.
+	unsigned benchSize;
+	int goalkeeperSlot;  // the plan[0] slot whose position is the goalkeeper's, or -1
+	unsigned blockCount; // the side's player blocks
+	// Each block's number is its place in the file; if not, the first block whose number is not its
+	// place, and that place.
+	bool blocksInOrder;
+	unsigned misplacedBlock;
+	unsigned misplacedPlace;
 } FixtureTeam;
 
 typedef struct FixtureData {

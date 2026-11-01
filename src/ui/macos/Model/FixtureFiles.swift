@@ -102,15 +102,15 @@ enum FixtureFiles {
 	/// exist yet, and returns the exported fixture's source. Nothing to write gives a copy.
 	static func export(
 		_ source: FixtureSource,
-		playerEdits: [UInt8]?,
+		changes: PlayerChanges?,
 		venue: [FixtureViewNumber],
 		to url: URL
 	) throws -> FixtureSource {
-		let edits = playerEdits?.contains { $0 != 0 } == true ? playerEdits : nil
+		let edits = changes?.isEmpty == false ? changes : nil
 		let json =
 			edits == nil && !FixtureHandle.hasVenue(venue)
 			? source.json
-			: try FixtureHandle.write(json: source.json, playerEdits: edits, venue: venue, binary: false)
+			: try FixtureHandle.write(json: source.json, changes: edits, venue: venue, binary: false)
 		let folder = url.deletingLastPathComponent()
 		do {
 			try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -190,17 +190,18 @@ enum FixtureFiles {
 
 	/// Saves `source` with its pending edits as `kind` at `url`, and returns the saved fixture's
 	/// source. A file of the same kind with nothing to write is copied as it is; otherwise the player
-	/// edits, then the venue (whenever any of its values is stored, which recomputes the values
-	/// derived from them), then the binary encoding are applied. A binary file has no place for the
-	/// save an export names, so the JSON kept with it has none either, as when it is opened again.
+	/// edits (the Max edits, then the new orders), then the venue (whenever any of its values is
+	/// stored, which recomputes the values derived from them), then the binary encoding are applied.
+	/// A binary file has no place for the save an export names, so the JSON kept with it has none
+	/// either, as when it is opened again.
 	static func save(
 		_ source: FixtureSource,
-		playerEdits: [UInt8]?,
+		changes: PlayerChanges?,
 		venue: [FixtureViewNumber],
 		as kind: FixtureSource.Kind,
 		to url: URL
 	) throws -> FixtureSource {
-		let edits = playerEdits?.contains { $0 != 0 } == true ? playerEdits : nil
+		let edits = changes?.isEmpty == false ? changes : nil
 		let writesVenue = FixtureHandle.hasVenue(venue)
 		var json = source.json
 		var bytes: Data
@@ -209,13 +210,13 @@ enum FixtureFiles {
 		} else {
 			json = try FixtureHandle.write(
 				json: source.json,
-				playerEdits: edits,
+				changes: edits,
 				venue: venue,
 				binary: false
 			)
 			bytes =
 				kind == .binary
-				? try FixtureHandle.write(json: json, playerEdits: nil, venue: nil, binary: true)
+				? try FixtureHandle.write(json: json, changes: nil, venue: nil, binary: true)
 				: json
 		}
 		if kind == .binary {

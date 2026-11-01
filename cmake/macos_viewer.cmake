@@ -123,6 +123,7 @@ add_library(viewer_core STATIC
 	src/common/tactic_names.c
 	src/runner/fixture_data.c
 	src/runner/fixture_edit.c
+	src/runner/fixture_lineup.c
 	src/runner/json_reader.c
 	src/runner/match_config.c
 	src/runner/saves.c

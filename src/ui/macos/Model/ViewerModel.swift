@@ -25,11 +25,12 @@ struct SummaryHeading: Equatable {
 
 /// The viewer window's state and rules, as the Windows viewer's WindowState keeps them: the fixture
 /// on show and the file it came from, the selection, the player and venue edits not yet saved, the
-/// team editor and swap prompt with the team and player lists they search, and the one operation
-/// that may run: a file operation (which includes the harness jobs that export the next fixture
-/// and decode binary ones), a team replacement or player swap, or a simulation, beside which only
-/// an export may run. While a question, panel or the swap prompt waits for an answer, nothing
-/// starts, as nothing can while a Windows dialog is open.
+/// team editor and swap prompt with the team and player lists they search, the Edit line-up sheet,
+/// and the one operation that may run: a file operation (which includes the harness jobs that
+/// export the next fixture and decode binary ones), a team replacement or player swap, or a
+/// simulation, beside which only an export may run. While a question, panel, the swap prompt or
+/// the Edit line-up sheet waits for an answer, nothing starts, as nothing can while a Windows
+/// dialog is open.
 @MainActor
 final class ViewerModel: ObservableObject {
 	enum Busy: Equatable {
@@ -148,6 +149,10 @@ final class ViewerModel: ObservableObject {
 		+ "JSON for rebuilds. Save as binary anyway?"
 	static let binaryTeamsAction = "Save as Binary"
 	static let runAnywayAction = "Run Anyway"
+	static let rebuildQuestion =
+		"The line-up changes are not played when each seed is rebuilt: FM24 picks its own line-up "
+		+ "again. Tick \"Skip rebuild\" to play them."
+	static let simulateAnywayAction = "Simulate Anyway"
 	/// What the question about another loaded save says in place of fm24ctl's --any-save.
 	static let runAnywayHint = ", or choose Run Anyway to use the loaded save"
 	static let launchFailed = "Cannot start FM24 with the harness. See the log."
@@ -226,6 +231,8 @@ final class ViewerModel: ObservableObject {
 	@Published private(set) var teamEditor: TeamEditor?
 	/// The open swap prompt.
 	@Published private(set) var swapPrompt: SwapPrompt?
+	/// The open Edit line-up sheet.
+	@Published private(set) var lineupEditor: LineupEditor?
 	/// A pencil or squad list that should take the keyboard focus, until it has.
 	@Published private(set) var squadFocus: SquadFocus?
 	/// The open Launch FM24 sheet.
@@ -329,10 +336,11 @@ final class ViewerModel: ObservableObject {
 		busy != .none
 	}
 
-	/// A question, panel, the swap prompt or the Launch FM24 or Install Harness sheet waits for the
-	/// user.
+	/// A question, panel, the swap prompt or the Edit line-up, Launch FM24 or Install Harness sheet
+	/// waits for the user.
 	var isAsking: Bool {
-		questions > 0 || swapPrompt != nil || launchPrompt != nil || installState != nil
+		questions > 0 || swapPrompt != nil || lineupEditor != nil || launchPrompt != nil
+			|| installState != nil
 	}
 
 	/// Venue or player edits that no save has written.
@@ -525,6 +533,7 @@ final class ViewerModel: ObservableObject {
 		venueFocus = nil
 		teamEditor = nil
 		swapPrompt = nil
+		lineupEditor = nil
 		squadFocus = nil
 		revision += 1
 	}
@@ -672,7 +681,7 @@ final class ViewerModel: ObservableObject {
 		guard let venue = readVenue() else {
 			return
 		}
-		let edits = fixture.hasPlayerEdits ? fixture.playerEdits : nil
+		let edits = fixture.hasPlayerEdits ? fixture.playerChanges : nil
 		fileOperation = true
 		log.add("Saving \(url.path)")
 		Task {
@@ -680,7 +689,7 @@ final class ViewerModel: ObservableObject {
 				Result {
 					try FixtureFiles.save(
 						source,
-						playerEdits: edits,
+						changes: edits,
 						venue: venue,
 						as: binary ? .binary : .json,
 						to: url
@@ -698,10 +707,17 @@ final class ViewerModel: ObservableObject {
 		}
 	}
 
-	/// After a save or an export: the file written is the one on show, with no edits pending; a
-	/// binary file names no save.
+	/// After a save or an export: the file written is the one on show, with no edits pending, its
+	/// players in the blocks of the places the save gave them, the selection with them; a binary
+	/// file names no save.
 	private func written(_ saved: FixtureSource, venue: [FixtureViewNumber]) {
-		fixture?.clearPlayerEdits()
+		if let fixture {
+			selection = selection.enumerated().map { side, blocks in
+				Set(blocks.compactMap { fixture.placeOf(side: side, block: $0) })
+			}
+			fixture.clearPlayerEdits()
+			fixture.commitOrder()
+		}
 		fixture?.setVenue(venue)
 		if saved.kind == .binary {
 			fixture?.forgetSave()
@@ -746,13 +762,13 @@ final class ViewerModel: ObservableObject {
 			return
 		}
 		let destination = settings.exportFolder.appendingPathComponent(name)
-		let edits = fixture.hasPlayerEdits ? fixture.playerEdits : nil
+		let edits = fixture.hasPlayerEdits ? fixture.playerChanges : nil
 		fileOperation = true
 		log.add("Exporting \(destination.path)")
 		Task {
 			let result = await Task.detached(priority: .userInitiated) {
 				Result {
-					try FixtureFiles.export(source, playerEdits: edits, venue: venue, to: destination)
+					try FixtureFiles.export(source, changes: edits, venue: venue, to: destination)
 				}
 			}.value
 			fileOperation = false
@@ -828,6 +844,55 @@ final class ViewerModel: ObservableObject {
 			let players = blocks.count == 1 ? "player" : "players"
 			log.add("\(edit.title): \(blocks.count) \(side == 0 ? "home" : "away") \(players)")
 		}
+	}
+
+	// MARK: The line-up
+
+	/// Edit line-up: a fixture whose side's order can be changed, and no operation running. It
+	/// opens only while nothing waits for the user either, as the menus have it.
+	func canEditLineup(side: Int) -> Bool {
+		!isBusy && fixture?.lineupEditable(side: side) == true
+	}
+
+	/// Why Edit line-up is off for the side whatever runs: FM24's AI picks its XI. Nil otherwise.
+	func lineupHelp(side: Int) -> String? {
+		guard let fixture, (0..<FixtureHandle.sideCount).contains(side),
+			!fixture.lineupKnown(side: side)
+		else {
+			return nil
+		}
+		return LineupEditor.aiHelp
+	}
+
+	/// Opens the side's Edit line-up sheet, at its pending order, with the player in `block`
+	/// selected if one is given.
+	func editLineup(side: Int, block: Int? = nil) {
+		guard canEditLineup(side: side), !isAsking, let fixture else {
+			return
+		}
+		lineupEditor = LineupEditor(fixture: fixture, side: side, selecting: block)
+	}
+
+	func cancelLineup() {
+		lineupEditor = nil
+	}
+
+	/// The sheet's Confirm: its order becomes the side's pending order, which the lists show and
+	/// the next save, export, replacement or simulation writes.
+	func confirmLineup() {
+		guard let editor = lineupEditor else {
+			return
+		}
+		lineupEditor = nil
+		guard let fixture, editor.fixture === fixture, !editor.moved.isEmpty else {
+			return
+		}
+		guard fixture.setOrder(side: editor.side, editor.order) else {
+			report("The \(editor.sideName) line-up cannot be changed.")
+			return
+		}
+		revision += 1
+		log.add(editor.summary)
 	}
 
 	// MARK: The venue
@@ -963,6 +1028,22 @@ final class ViewerModel: ObservableObject {
 			prompt.requestFocus()
 			return
 		}
+		// A player of the side's own squad is moved with Edit line-up, not fetched from the game.
+		if !prompt.allowDuplicates, let fixture, let block = squadBlock(side: prompt.side, person) {
+			let problem = SwapPrompt.inSquad(
+				name: fixture.playerName(side: prompt.side, block: block),
+				team: fixture.teamName(side: prompt.side),
+				place: LineupEditor.placeLabel(
+					fixture,
+					side: prompt.side,
+					place: fixture.placeOf(side: prompt.side, block: block) ?? block
+				)
+			)
+			log.error(problem)
+			prompts?.showError(problem, title: SwapPrompt.title)
+			prompt.requestFocus()
+			return
+		}
 		swapPrompt = nil
 		guard fixture != nil else {
 			return
@@ -979,6 +1060,17 @@ final class ViewerModel: ObservableObject {
 				allowDuplicate: prompt.allowDuplicates
 			)
 		)
+	}
+
+	/// The block of the side's player with unique ID `person`, when the side's line-up can be
+	/// edited.
+	private func squadBlock(side: Int, _ person: String) -> Int? {
+		guard let fixture, fixture.lineupEditable(side: side), let id = Int64(person) else {
+			return nil
+		}
+		return (0..<fixture.rowCount(side: side)).first {
+			fixture.personId(side: side, block: $0) == id
+		}
 	}
 
 	/// A pencil or list has taken the focus `request` asked for.
@@ -1001,26 +1093,41 @@ final class ViewerModel: ObservableObject {
 		guard let venue = readVenue() else {
 			return
 		}
-		let edits = job.carriedEdits(fixture.playerEdits)
+		let edits = job.carriedEdits(fixture.playerChanges)
+		// The swapped-out player's place in the input, which has the pending orders written in.
+		let injected = job.injected(fixture) ?? ""
+		// The other side's changed line-up, which the rebuild lists as the game's build does.
+		let kept = job.keptSide.flatMap { KeptLineup(fixture, side: $0) }
 		replacement = job
 		teamEditor?.error = nil
 		switch job {
 		case .team(let side, let team):
 			activity = ViewerModel.replacingActivity(side: side)
 			log.add("Replacing the \(side == 0 ? "home" : "away") team with \(team)")
-		case .swap(let side, let block, let person, _):
+		case .swap(_, _, let person, _):
 			activity = ViewerModel.swappingActivity
-			log.add("Swapping \(ReplacementJob.block(side: side, block: block)) for player \(person)")
+			log.add("Swapping \(injected) for player \(person)")
 		}
 		Task {
-			await replace(job, source: source, edits: edits, venue: venue, anySave: anySave, harness)
+			await replace(
+				job,
+				injecting: injected,
+				source: source,
+				edits: edits,
+				keeping: kept,
+				venue: venue,
+				anySave: anySave,
+				harness
+			)
 		}
 	}
 
 	private func replace(
 		_ job: ReplacementJob,
+		injecting injected: String,
 		source: FixtureSource,
-		edits: [UInt8],
+		edits: PlayerChanges,
+		keeping kept: KeptLineup?,
 		venue: [FixtureViewNumber],
 		anySave: Bool,
 		_ harness: HarnessService
@@ -1054,10 +1161,10 @@ final class ViewerModel: ObservableObject {
 				anySave: anySave,
 				onLine: onLine
 			)
-		case .swap(let side, let block, let person, let allowDuplicate):
+		case .swap(_, _, let person, let allowDuplicate):
 			result = await harness.injectPlayer(
 				input: input,
-				block: ReplacementJob.block(side: side, block: block),
+				block: injected,
 				person: person,
 				output: output,
 				allowDuplicate: allowDuplicate,
@@ -1089,14 +1196,20 @@ final class ViewerModel: ObservableObject {
 			}.value
 		}
 		work.remove(input, output)
-		finishReplacement(job, loaded.map { (json: $0.json, handle: $0.handle, url: output) })
+		finishReplacement(
+			job,
+			loaded.map { (json: $0.json, handle: $0.handle, url: output) },
+			keeping: kept
+		)
 	}
 
-	/// Shows the result as a fixture not yet saved, whose edits are in it now, or says why there is
-	/// none: a team's in red in its editor, a swap's in an error box.
+	/// Shows the result as a fixture not yet saved, whose edits are in it now, with the other side's
+	/// changed line-up `kept` pending again, or says why there is none: a team's in red in its
+	/// editor, a swap's in an error box.
 	private func finishReplacement(
 		_ job: ReplacementJob,
-		_ result: Result<(json: Data, handle: FixtureHandle, url: URL), ViewerError>
+		_ result: Result<(json: Data, handle: FixtureHandle, url: URL), ViewerError>,
+		keeping kept: KeptLineup? = nil
 	) {
 		replacement = nil
 		activity = nil
@@ -1104,6 +1217,7 @@ final class ViewerModel: ObservableObject {
 		switch result {
 		case .success(let (json, handle, url)):
 			let side = job.side
+			let restored = kept?.restore(in: handle)
 			display(
 				FixtureSource(url: url, kind: .json, json: json, original: nil, temporary: true),
 				handle
@@ -1113,6 +1227,16 @@ final class ViewerModel: ObservableObject {
 					? "Swapped the player; the fixture is not saved yet"
 					: "Replaced the \(side == 0 ? "home" : "away") team; the fixture is not saved yet"
 			)
+			switch restored {
+			case .success(let lines):
+				for line in lines {
+					log.add(line)
+				}
+			case .failure(let failure):
+				log.error(failure.message)
+			case nil:
+				break
+			}
 			if tab == .squads {
 				focusSerial += 1
 				squadFocus = SquadFocus(
@@ -1279,8 +1403,9 @@ final class ViewerModel: ObservableObject {
 	/// stores a venue value), shows the progress as the results arrive, and moves them beside the
 	/// fixture as <name>.csv, or into the export folder under the export's name for a fixture not
 	/// yet saved. The fixture's own file is never written. With `anySave` (Run Anyway), a fixture
-	/// for another save than the one FM24 has loaded plays in that one.
-	func simulate(anySave: Bool = false) {
+	/// for another save than the one FM24 has loaded plays in that one. A changed line-up is played
+	/// only without a rebuild, so a run that would rebuild it asks first, unless `rebuildAsked`.
+	func simulate(anySave: Bool = false, rebuildAsked: Bool = false) {
 		guard !refuseWhileBusy(), let source, let fixture else {
 			return
 		}
@@ -1310,12 +1435,19 @@ final class ViewerModel: ObservableObject {
 			}
 			exportedName = name
 		}
+		let lineups = (0..<FixtureHandle.sideCount).contains {
+			fixture.lineupEdited(side: $0) || fixture.lineupMarked(side: $0)
+		}
+		if lineups, simulationForm.rebuilds, !rebuildAsked {
+			askRebuild(anySave: anySave)
+			return
+		}
 		let run = SimulationRun(
 			source: source,
 			fixture: fixture,
 			options: options,
 			venue: venue,
-			edits: fixture.hasPlayerEdits ? fixture.playerEdits : nil,
+			edits: fixture.hasPlayerEdits ? fixture.playerChanges : nil,
 			exportedName: exportedName,
 			anySave: anySave
 		)
@@ -1338,6 +1470,29 @@ final class ViewerModel: ObservableObject {
 		}
 	}
 
+	/// The run would rebuild each seed, which puts FM24's own line-ups back: asks whether to simulate
+	/// anyway, as Run Anyway asks; Cancel, the default, shows the Simulation tab to tick Skip
+	/// rebuild, which Simulate (⌘R) does not switch to.
+	private func askRebuild(anySave: Bool) {
+		ask { prompts, answered in
+			prompts.confirm(
+				ViewerModel.rebuildQuestion,
+				title: ViewerModel.errorTitle,
+				action: ViewerModel.simulateAnywayAction
+			) { [weak self] simulate in
+				answered()
+				guard let self else {
+					return
+				}
+				if simulate {
+					self.simulate(anySave: anySave, rebuildAsked: true)
+				} else {
+					self.tab = .simulation
+				}
+			}
+		}
+	}
+
 	/// Shows the last simulation's results in Finder.
 	func revealResults() {
 		let files = simulation.results.filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -1354,7 +1509,7 @@ final class ViewerModel: ObservableObject {
 		let fixture: FixtureHandle
 		let options: SimulationOptions
 		let venue: [FixtureViewNumber]
-		let edits: [UInt8]?
+		let edits: PlayerChanges?
 		/// The export's name with .csv, for a fixture not yet saved.
 		let exportedName: String?
 		/// --any-save.
@@ -1368,7 +1523,7 @@ final class ViewerModel: ObservableObject {
 		do {
 			let inputExtension = SimulationFiles.inputExtension(
 				source,
-				playerEdits: run.edits,
+				changes: run.edits,
 				venue: run.venue
 			)
 			input = try work.file("in", extension: inputExtension)
@@ -1379,7 +1534,7 @@ final class ViewerModel: ObservableObject {
 		}
 		let written = await Task.detached(priority: .userInitiated) {
 			Result {
-				try SimulationFiles.writeInput(source, playerEdits: run.edits, venue: run.venue, to: input)
+				try SimulationFiles.writeInput(source, changes: run.edits, venue: run.venue, to: input)
 			}
 		}.value
 		if case .failure(let error) = written {
@@ -1418,7 +1573,7 @@ final class ViewerModel: ObservableObject {
 			endGameWait()
 			simulation = SimulationState()
 			askRunAnyway(result) { [weak self] in
-				self?.simulate(anySave: true)
+				self?.simulate(anySave: true, rebuildAsked: true)
 			}
 			return
 		}

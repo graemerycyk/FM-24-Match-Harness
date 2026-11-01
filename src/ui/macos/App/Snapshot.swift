@@ -5,12 +5,14 @@ import AppKit
 import SwiftUI
 
 /// A developer check of the layout without showing a window:
-///   fm24viewer --render-snapshot <fixture.json|-> <squads|venue|simulation|team|swap|start|log|
-///       launch|install> <out.png> [light|dark] [<width>x<height>] [edited] [temporary] [busy]
+///   fm24viewer --render-snapshot <fixture.json|-> <squads|venue|simulation|team|swap|lineup|start|
+///       log|launch|install> <out.png> [light|dark] [<width>x<height>] [edited] [temporary] [busy]
 ///       [failed] [simulating] [simulated] [replacing] [filtered] [unclear]
 /// lays the window's content out offscreen, renders it to a PNG and exits ("-": no fixture).
 /// `team` is the home team's editor, as its popover shows it, and `swap` the swap prompt for the
-/// first away player, as its sheet shows it, `launch` the Launch FM24 sheet over a few made-up
+/// first away player, as its sheet shows it, `lineup` the home team's Edit line-up sheet (with
+/// `edited`, its last starter and last substitute exchanged and seeds 1-100 that rebuild, for the
+/// changed rows, warnings and the rebuild note), `launch` the Launch FM24 sheet over a few made-up
 /// saves and `install` the Install Harness sheet after a made-up install, each at its own size
 /// unless one is given. On `launch`, `busy` shows a launch in progress, `failed` one that FM24's
 /// other save stopped and `unclear` the sheet when Steam's launch option sets FM24's data folder in
@@ -33,9 +35,9 @@ enum Snapshot {
 		"unclear",
 	]
 	private static let usage =
-		"usage: fm24viewer \(argument) <fixture.json|-> <squads|venue|simulation|team|swap|start|log|"
-		+ "launch|install> <out.png> [light|dark] [<width>x<height>] [edited] [temporary] [busy]"
-		+ " [failed] [simulating] [simulated] [replacing] [filtered] [unclear]"
+		"usage: fm24viewer \(argument) <fixture.json|-> <squads|venue|simulation|team|swap|lineup|"
+		+ "start|log|launch|install> <out.png> [light|dark] [<width>x<height>] [edited] [temporary]"
+		+ " [busy] [failed] [simulating] [simulated] [replacing] [filtered] [unclear]"
 
 	static func run(_ arguments: [String]) -> Int32 {
 		guard arguments.count >= 3, arguments.count <= 14 else {
@@ -88,7 +90,7 @@ enum Snapshot {
 		model.progressInterval = 0.02
 		let view: NSView
 		switch arguments[1] {
-		case "squads", "venue", "simulation", "team", "swap":
+		case "squads", "venue", "simulation", "team", "swap", "lineup":
 			guard arguments[0] != "-" else {
 				return fail("\(arguments[1]) needs a fixture")
 			}
@@ -146,10 +148,18 @@ enum Snapshot {
 					rootView: SwapSheet(model: model, prompt: prompt, players: model.players)
 						.background(Color(nsColor: .windowBackgroundColor))
 				)
+			case "lineup":
+				guard let editor = lineup(model, chosen) else {
+					return fail("the Edit line-up sheet cannot open: the home line-up cannot be changed")
+				}
+				view = NSHostingView(
+					rootView: LineupSheet(model: model, editor: editor)
+						.background(Color(nsColor: .windowBackgroundColor))
+				)
 			default:
 				view = NSHostingView(rootView: ViewerView(model: model))
 			}
-			if ["team", "swap"].contains(arguments[1]), !sized {
+			if ["team", "swap", "lineup"].contains(arguments[1]), !sized {
 				size = view.fittingSize
 			}
 		case "start":
@@ -270,6 +280,23 @@ enum Snapshot {
 			turn { !prompt.filterPending }
 		}
 		return prompt
+	}
+
+	/// Opens the home team's Edit line-up sheet; if `edited`, exchanges its last starter and last
+	/// substitute and asks for seeds 1-100 with a rebuild.
+	private static func lineup(_ model: ViewerModel, _ chosen: Set<String>) -> LineupEditor? {
+		model.editLineup(side: 0)
+		guard let editor = model.lineupEditor else {
+			return nil
+		}
+		if chosen.contains("edited") {
+			let last = FixtureHandle.slotCount + editor.benchSize - 1
+			editor.exchange(FixtureHandle.slotCount - 1, min(last, editor.count - 1))
+			editor.selection = FixtureHandle.slotCount - 1
+			model.setSeeds("1-100")
+			model.setKeepBuild(false)
+		}
+		return editor
 	}
 
 	/// Opens the Launch FM24 sheet over a few made-up saves in a home folder of the snapshot's own,

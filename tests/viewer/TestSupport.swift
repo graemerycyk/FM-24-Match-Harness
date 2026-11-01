@@ -107,6 +107,75 @@ func plainSampleJSON(saved: Bool = false) -> Data {
 	)
 }
 
+/// The lineup sample: Liverpool (22 players, a bench of 9), whose line-up can be changed, v
+/// Newcastle, whose XI FM24's AI picks.
+func lineupSampleJSON(saved: Bool = false) -> Data {
+	let json = sampleJSON(FIXTURE_SAMPLE_LINEUP)
+	guard saved else {
+		return json
+	}
+	return replacing(
+		json,
+		"\"format\": \"fm24-match-config/1\",",
+		with: "\"format\": \"fm24-match-config/1\", \"save\": \"\(FIXTURE_SAMPLE_SAVE)\", "
+			+ "\"game_date\": \"\(FIXTURE_SAMPLE_GAME_DATE)\","
+	)
+}
+
+/// The lineup sample with the managers' flags exchanged: Newcastle's line-up (away: 13 players, a
+/// bench of 2) can be changed, and FM24's AI picks Liverpool's.
+func awayLineupSampleJSON() -> Data {
+	replacing(
+		replacing(
+			lineupSampleJSON(),
+			"\"home.manager\", \"u32\": 131848}",
+			with: "\"home.manager\", \"u32\": 212992}"
+		),
+		"\"away.manager\", \"u32\": 212992}",
+		with: "\"away.manager\", \"u32\": 131848}"
+	)
+}
+
+/// The exchanges that move Newcastle's players in a cycle of three: Botman 2 to 1, Miley 12 to 2
+/// and Trippier 1 to 12.
+let awayCycle = [(1, 2), (2, 12)]
+
+/// Both sides' orders as PlayerChanges keeps them, with the side's places `first` and `second`
+/// exchanged.
+func exchangedOrder(_ first: Int, _ second: Int, side: Int = 0) -> [UInt8] {
+	exchangedOrder([(first, second)], side: side)
+}
+
+/// Both sides' orders as PlayerChanges keeps them, with each pair of the side's places exchanged in
+/// turn.
+func exchangedOrder(_ pairs: [(Int, Int)], side: Int) -> [UInt8] {
+	let blocks = FixtureHandle.blockCount
+	var order = (0..<(2 * blocks)).map { UInt8($0 % blocks) }
+	for (first, second) in pairs {
+		order.swapAt(side * blocks + first, side * blocks + second)
+	}
+	return order
+}
+
+/// The places of a side of `count` players, with `first` and `second` exchanged.
+func exchangedPlaces(_ first: Int, _ second: Int, count: Int = 22) -> [Int] {
+	exchangedPlaces([(first, second)], count: count)
+}
+
+/// The places of a side of `count` players, with each pair exchanged in turn.
+func exchangedPlaces(_ pairs: [(Int, Int)], count: Int) -> [Int] {
+	var order = Array(0..<count)
+	for (first, second) in pairs {
+		order.swapAt(first, second)
+	}
+	return order
+}
+
+/// How many times `text` is in the UTF-8 `data`.
+func occurrences(_ text: String, in data: Data) -> Int {
+	String(decoding: data, as: UTF8.self).components(separatedBy: text).count - 1
+}
+
 /// A fixture's "save" and "game_date", by which fm24ctl checks that the game has the fixture's
 /// save loaded before a job; nil for a key it lacks.
 struct SaveOrigin: Equatable {

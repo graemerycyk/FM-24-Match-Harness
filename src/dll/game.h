@@ -274,6 +274,12 @@ uintptr_t game_base(void);
 // macOS the game's bundle version (macos_builds.h). Configs record it as their game_build.
 uint32_t game_timestamp(void);
 
+// The slice of the game the harness runs in: "arm64" or "x86_64" on macOS, "x86_64" on Windows.
+const char *game_architecture(void);
+
+// True if the game runs translated by Rosetta (macOS); false on Windows.
+bool game_translated(void);
+
 // The address of an RVA in the loaded image. RVAs, here and in game_rva, are those of the Steam
 // build; the older build's are translated.
 void *game_address(uint32_t rva);

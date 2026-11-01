@@ -221,7 +221,7 @@ enum HarnessModelTests {
 		}
 		let model = setup.model
 		let json = plainJSON()
-		let bytes = try FixtureHandle.write(json: json, playerEdits: nil, venue: nil, binary: true)
+		let bytes = try FixtureHandle.write(json: json, changes: nil, venue: nil, binary: true)
 		let binary = setup.scratch.file("Next Fixture.bin", bytes)
 		var noted: [URL] = []
 		model.noteFile = { noted.append($0) }
@@ -454,7 +454,7 @@ enum HarnessModelTests {
 		check(setup.prompts.errors.count == 1, "\(setup.prompts.errors)")
 		let written = try FixtureHandle.write(
 			json: plainJSON(),
-			playerEdits: edits,
+			changes: PlayerChanges(flags: edits),
 			venue: fixture.venue,
 			binary: false
 		)

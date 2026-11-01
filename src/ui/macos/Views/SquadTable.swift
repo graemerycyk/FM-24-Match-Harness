@@ -6,8 +6,8 @@ import SwiftUI
 
 /// A side's squad list: an AppKit table, for the Windows list's exact column widths, horizontal
 /// scrolling, gridlines and tooltips on cut-off text. Only real players can be selected, and the
-/// selection is frozen while an operation runs. Its context menu has the Max buttons' edits and
-/// Swap player.
+/// selection is frozen while an operation runs. Its context menu has the Max buttons' edits, Swap
+/// player and Edit line-up.
 struct SquadTable: NSViewRepresentable {
 	@ObservedObject var model: ViewerModel
 	let side: Int
@@ -154,10 +154,10 @@ struct SquadTable: NSViewRepresentable {
 			menu.removeAllItems()
 			let model = parent.model
 			let side = parent.side
-			if let table, let fixture, !model.isBusy, table.clickedRow >= 0,
-				let block = fixture.rowBlock(side: side, row: table.clickedRow),
-				!model.selection[side].contains(block)
-			{
+			let clicked = table.flatMap { table in
+				table.clickedRow >= 0 ? fixture?.rowBlock(side: side, row: table.clickedRow) : nil
+			}
+			if let table, let clicked, !model.isBusy, !model.selection[side].contains(clicked) {
 				table.selectRowIndexes([table.clickedRow], byExtendingSelection: false)
 			}
 			for edit in PlayerEdit.allCases {
@@ -180,6 +180,17 @@ struct SquadTable: NSViewRepresentable {
 			swap.target = self
 			swap.isEnabled = model.canSwap(side: side)
 			menu.addItem(swap)
+			// It opens with the clicked player selected.
+			let lineup = NSMenuItem(
+				title: "Edit Line-up…",
+				action: #selector(editLineup(_:)),
+				keyEquivalent: ""
+			)
+			lineup.target = self
+			lineup.representedObject = clicked
+			lineup.isEnabled = model.canEditLineup(side: side)
+			lineup.toolTip = model.lineupHelp(side: side)
+			menu.addItem(lineup)
 		}
 
 		@objc func maxPlayers(_ sender: NSMenuItem) {
@@ -190,6 +201,10 @@ struct SquadTable: NSViewRepresentable {
 
 		@objc func swapPlayer(_ sender: NSMenuItem) {
 			parent.model.requestSwap(side: parent.side)
+		}
+
+		@objc func editLineup(_ sender: NSMenuItem) {
+			parent.model.editLineup(side: parent.side, block: sender.representedObject as? Int)
 		}
 	}
 }
@@ -234,5 +249,22 @@ final class SquadCell: NSTableCellView {
 	var text: String {
 		get { label.stringValue }
 		set { label.stringValue = newValue }
+	}
+
+	/// Bold text, for a changed row of the Edit line-up sheet.
+	var bold = false {
+		didSet {
+			let size = NSFont.smallSystemFontSize
+			label.font = bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size)
+		}
+	}
+
+	/// The cell's tooltip, over its text too.
+	var help: String? {
+		get { toolTip }
+		set {
+			toolTip = newValue
+			label.toolTip = newValue
+		}
 	}
 }

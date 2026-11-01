@@ -43,7 +43,10 @@ enum {
 	PROGRESS_INTERVAL_S = 60, // between "still waiting" lines
 	SAVE_TIMEOUT_S = 900,     // then until the save is loaded (--timeout; Rosetta is slower)
 	MAX_TIMEOUT_S = 86400,    // the longest --timeout, a day
-	VDF_DEPTH = 8,            // KeyValues blocks deeper than this are skipped
+	STOP_KILL_WAIT_S = 30,    // macosGame_stop: after SIGKILL, and for the harness's lock to go
+	STOP_EXIT_WAIT_S = 5,     // and for a process that no longer has a path, as it exits, to go
+	STOP_POLL_MS = 250,
+	VDF_DEPTH = 8, // KeyValues blocks deeper than this are skipped
 	VDF_KEY = 64,
 };
 
@@ -70,6 +73,7 @@ typedef struct LaunchOptions {
 	unsigned timeoutS;       // --timeout
 	bool rosetta;            // --rosetta: the x86_64 slice, under Rosetta on Apple silicon
 	const SessionNeed *job;  // the command's job that follows, or NULL for `launch`
+	SessionOutcome *outcome; // receives how the wait for the save ended, if set
 } LaunchOptions;
 
 // The save `--save` stands for.
@@ -79,11 +83,12 @@ typedef struct SaveTarget {
 	char date[SAVES_DATE_LENGTH]; // its in-game date once it is ready, "" if unknown
 } SaveTarget;
 
-// What pollGame samples: the game's process, and how long a status query may wait for another
-// runner's job.
+// What pollGame samples: the game's process, how long a status query may wait for another
+// runner's job, and what ends the wait (a batch's stop, or NULL).
 typedef struct GamePoll {
 	pid_t pid;
 	unsigned timeoutMs;
+	SessionStop *stop;
 } GamePoll;
 
 // A `"key" "value"` pair of a Valve KeyValues text, with the keys of the blocks it is in.
@@ -124,10 +129,10 @@ static bool
 parseLaunchArguments(int argc, wchar_t **argv, bool appleSilicon, LaunchOptions *options);
 static bool parseTimeout(const wchar_t *text, unsigned *seconds);
 static int launchGame(const LaunchOptions *options, const char *launcher, pid_t pid);
-static int ensureSave(const SessionNeed *need, pid_t pid, char *date, size_t size);
+static int
+ensureSave(const SessionNeed *need, pid_t pid, char *date, size_t size, SessionOutcome *outcome);
 static int launchForJob(const LaunchOptions *options, SaveTarget *target);
 static int useRunningGame(pid_t pid, const LaunchOptions *options, SaveTarget *target);
-static bool underRosetta(pid_t pid);
 static bool
 runsAskedSlice(pid_t pid, const LaunchOptions *options, bool started, bool throughSteam);
 static int launchWithSave(
@@ -156,6 +161,7 @@ static void reportMissingSave(const SaveSearch *search, const char *data, bool l
 static bool findSaveFile(const LaunchOptions *options, bool throughSteam, SaveTarget *target);
 static bool uniquelyNamed(const char *data, const SaveTarget *target, const struct stat *file);
 static bool dataFolder(const LaunchOptions *options, bool throughSteam, char *out, size_t size);
+static MacosDataFolder gameDataFolder(bool throughSteam, char *out, size_t size);
 static bool listSaves(const char *data, SavesFolder folder, SaveSearch *search);
 static bool launcherFolder(const char *launcher, char *out, size_t size);
 static bool autoplayPath(const char *folder, bool throughSteam, char *out, size_t size);
@@ -169,6 +175,7 @@ static void removeAutoplay(
 );
 static void removeStaleAutoplay(const char *directory, bool gameRunning);
 static bool processRunning(pid_t pid);
+static SessionOutcome noteOutcome(const LaunchOptions *options, SessionOutcome outcome);
 static void pollGame(void *context, SessionSample *sample);
 static SessionOutcome waitForSave(
 	pid_t pid,
@@ -351,7 +358,8 @@ static int useRunningGame(pid_t pid, const LaunchOptions *options, SaveTarget *t
 		return EXIT_WRONG_STATE;
 	}
 	if (options->save) {
-		return saveExitCode(waitForSave(pid, target, options, false, false), options->job);
+		SessionOutcome outcome = waitForSave(pid, target, options, false, false);
+		return saveExitCode(noteOutcome(options, outcome), options->job);
 	}
 	printf(
 		"Football Manager 2024 (pid %d) is already running with the harness%s\n",
@@ -361,8 +369,7 @@ static int useRunningGame(pid_t pid, const LaunchOptions *options, SaveTarget *t
 	return 0;
 }
 
-// True if process `pid` runs under Rosetta; false if it does not, or has exited.
-static bool underRosetta(pid_t pid) {
+bool macosGame_underRosetta(pid_t pid) {
 	struct kinfo_proc info = {0};
 	size_t size = sizeof info;
 	int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
@@ -370,12 +377,19 @@ static bool underRosetta(pid_t pid) {
 				 size == sizeof info && (info.kp_proc.p_flag & P_TRANSLATED) != 0;
 }
 
+uint64_t macosGame_residentBytes(pid_t pid) {
+	struct rusage_info_v2 usage = {0};
+	return pid > 0 && proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *)&usage) == 0
+					 ? usage.ri_phys_footprint
+					 : 0;
+}
+
 // False (with a message) if --rosetta asks for the x86_64 slice and game `pid` does not run under
 // Rosetta: a game that was already running, which fm24ctl never restarts, or one it has just
 // `started`, `throughSteam` or directly.
 static bool
 runsAskedSlice(pid_t pid, const LaunchOptions *options, bool started, bool throughSteam) {
-	if (!options->rosetta || underRosetta(pid)) {
+	if (!options->rosetta || macosGame_underRosetta(pid)) {
 		return true;
 	}
 	if (!started) {
@@ -425,32 +439,52 @@ static int launchWithSave(
 	int status = startGame(launcher, throughSteam, options, file, &pid);
 	SessionOutcome outcome =
 		status == 0 ? waitForSave(pid, target, options, true, throughSteam) : SESSION_EXITED;
+	(void)noteOutcome(options, outcome);
 	removeAutoplay(folder, file, throughSteam, pid, outcome);
 	return status != 0 ? status : saveExitCode(outcome, options->job);
 }
 
 int macosGame_ensureSave(const SessionNeed *need, char *date, size_t size) {
-	char running[PATH_LENGTH];
-	return ensureSave(need, macosGame_findRunning(running, sizeof running), date, size);
+	return macosGame_checkSave(need, date, size, NULL);
 }
 
-// macosGame_ensureSave with the running game's process ID, 0 if there is none.
-static int ensureSave(const SessionNeed *need, pid_t pid, char *date, size_t size) {
+int macosGame_checkSave(const SessionNeed *need, char *date, size_t size, SessionOutcome *outcome) {
+	char running[PATH_LENGTH];
+	return ensureSave(need, macosGame_findRunning(running, sizeof running), date, size, outcome);
+}
+
+// macosGame_checkSave with the running game's process ID, 0 if there is none. A game it starts
+// loads the save from `need->savePath` if given, and runs under Rosetta with `need->rosetta`.
+static int
+ensureSave(const SessionNeed *need, pid_t pid, char *date, size_t size, SessionOutcome *outcome) {
 	if (date && size) {
 		date[0] = 0;
 	}
+	if (outcome) {
+		*outcome = SESSION_WAITING;
+	}
 	SessionPlan plan = session_plan(need, pid != 0, pid && harnessListening());
 	if (plan == SESSION_PLAN_SUBMIT) {
-		if (!pid && !need->launch && need->save && need->save[0]) {
+		// A batch with launch=0 says why it stops itself.
+		if (!pid && !need->launch && !need->batch && need->save && need->save[0]) {
 			reportNotLaunched(need->save);
 		}
 		return 0;
 	}
-	wchar_t save[SAVES_NAME_LENGTH];
-	LaunchOptions options = {.save = save, .timeoutS = SAVE_TIMEOUT_S, .job = need};
+	const char *given = plan == SESSION_PLAN_LAUNCH && need->savePath && need->savePath[0]
+												? need->savePath
+												: need->save;
+	wchar_t save[HARNESS_PATH_LENGTH];
+	LaunchOptions options = {
+		.save = save,
+		.timeoutS = need->readyS ? need->readyS : SAVE_TIMEOUT_S,
+		.rosetta = need->rosetta,
+		.job = need,
+		.outcome = outcome,
+	};
 	SaveTarget target = {0};
-	if (!platform_fromUtf8(need->save, save, SAVES_NAME_LENGTH)) {
-		fprintf(stderr, "bad save name: %s\n", need->save);
+	if (!platform_fromUtf8(given, save, HARNESS_PATH_LENGTH)) {
+		fprintf(stderr, "bad save name: %s\n", given);
 		return 1;
 	}
 	(void)snprintf(target.name, sizeof target.name, "%s", need->save);
@@ -473,7 +507,10 @@ static int launchForJob(const LaunchOptions *options, SaveTarget *target) {
 		return 1;
 	}
 	printf(
-		"Football Manager 2024 is not running; starting it to load %s (--no-launch turns this off)\n",
+		options->job && options->job->batch
+			? "Football Manager 2024 is not running; starting it to load %s\n"
+			: "Football Manager 2024 is not running; starting it to load %s (--no-launch turns this "
+				"off)\n",
 		target->name
 	);
 	return launchWithSave(launcher, throughSteam, options, target);
@@ -922,31 +959,44 @@ static bool dataFolder(const LaunchOptions *options, bool throughSteam, char *ou
 		}
 		return ok;
 	}
+	switch (gameDataFolder(throughSteam, out, size)) {
+		case MACOS_DATA_FOUND: return true;
+		case MACOS_DATA_UNCLEAR:
+			fprintf(
+				stderr,
+				"Steam's launch option for FM24 sets its data folder (user_data_location) in a way "
+				"fm24ctl does not follow; %s\n",
+				options->job ? "load the save with fm24ctl launch --save <name> --user-data <dir>, then "
+											 "run this again"
+										 : "pass the folder with --user-data"
+			);
+			return false;
+		default:
+			fprintf(stderr, "cannot find FM24's data folder; pass it with --user-data\n");
+			return false;
+	}
+}
+
+MacosDataFolder macosGame_dataFolder(char *out, size_t size) {
+	char launcher[PATH_LENGTH];
+	return gameDataFolder(
+		launcherPath(launcher, sizeof launcher) && launchOptionSet(launcher), out, size
+	);
+}
+
+// FM24's data folder without --user-data, printing nothing: the one Steam's launch option gives
+// the game if Steam starts it (`throughSteam`), else the usual one in the home folder.
+static MacosDataFolder gameDataFolder(bool throughSteam, char *out, size_t size) {
 	char option[PATH_LENGTH];
 	OptionData given = throughSteam && readLaunchOption(option, sizeof option)
 											 ? optionDataFolder(option, out, size)
 											 : OPTION_DATA_NONE;
-	if (given == OPTION_DATA_FOUND) {
-		return true;
-	}
-	if (given == OPTION_DATA_UNCLEAR) {
-		fprintf(
-			stderr,
-			"Steam's launch option for FM24 sets its data folder (user_data_location) in a way fm24ctl "
-			"does not follow; %s\n",
-			options->job ? "load the save with fm24ctl launch --save <name> --user-data <dir>, then run "
-										 "this again"
-									 : "pass the folder with --user-data"
-		);
-		return false;
+	if (given != OPTION_DATA_NONE) {
+		return given == OPTION_DATA_FOUND ? MACOS_DATA_FOUND : MACOS_DATA_UNCLEAR;
 	}
 	const char *home = getenv("HOME"); // NOLINT(concurrency-mt-unsafe): fm24ctl has one thread
 	int written = home ? snprintf(out, size, "%s/%s", home, dataFolderPath) : -1;
-	if (written <= 0 || (size_t)written >= size) {
-		fprintf(stderr, "cannot find FM24's data folder; pass it with --user-data\n");
-		return false;
-	}
-	return true;
+	return written > 0 && (size_t)written < size ? MACOS_DATA_FOUND : MACOS_DATA_NO_HOME;
 }
 
 // Adds each regular file in one of `data`'s save folders to the search. False if the folder
@@ -1010,7 +1060,8 @@ static bool writeAutoplay(const char *path, const char *save) {
 
 // After launchWithSave wrote `file` in `folder` and the wait for game `pid` (0 if none started)
 // ended in `outcome`: deletes the request the launcher did not take, so that no later start loads
-// the save, and the game's copy, unless the game may still be loading it.
+// the save, and the game's copy, unless the game may still be loading it (the wait timed out, or
+// a batch's stop ended it).
 static void removeAutoplay(
 	const char *folder,
 	const char *file,
@@ -1028,7 +1079,8 @@ static void removeAutoplay(
 	} else {
 		written = snprintf(copy, sizeof copy, "%s", file);
 	}
-	if (outcome != SESSION_TIMED_OUT && written > 0 && (size_t)written < sizeof copy) {
+	bool loading = outcome == SESSION_TIMED_OUT || outcome == SESSION_STOPPED;
+	if (!loading && written > 0 && (size_t)written < sizeof copy) {
 		(void)unlink(copy);
 	}
 }
@@ -1076,8 +1128,25 @@ static void removeStaleAutoplay(const char *directory, bool gameRunning) {
 	closedir(folder);
 }
 
+// True if process `pid` runs: one that is exiting, or has exited and waits for its parent to reap
+// it (a zombie), does not, although kill still finds it.
 static bool processRunning(pid_t pid) {
-	return pid > 0 && (kill(pid, 0) == 0 || errno == EPERM);
+	if (pid <= 0 || (kill(pid, 0) != 0 && errno != EPERM)) {
+		return false;
+	}
+	struct kinfo_proc info = {0};
+	size_t size = sizeof info;
+	int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+	return sysctl(name, (unsigned)(sizeof name / sizeof name[0]), &info, &size, NULL, 0) != 0 ||
+				 size != sizeof info || (info.kp_proc.p_stat != SZOMB && !(info.kp_proc.p_flag & P_WEXIT));
+}
+
+// Passes how the wait for the save ended to whoever asked (macosGame_checkSave).
+static SessionOutcome noteOutcome(const LaunchOptions *options, SessionOutcome outcome) {
+	if (options->outcome) {
+		*options->outcome = outcome;
+	}
+	return outcome;
 }
 
 // Samples the game for waitForSave (`context` is a GamePoll).
@@ -1085,8 +1154,9 @@ static void pollGame(void *context, SessionSample *sample) {
 	const GamePoll *game = context;
 	sample->running = processRunning(game->pid);
 	sample->answer = sample->running && harnessListening()
-										 ? session_query(&sample->status, game->timeoutMs)
+										 ? session_query(&sample->status, game->timeoutMs, game->stop)
 										 : SESSION_ANSWER_NONE;
+	sample->stopped = game->stop && game->stop->asked(game->stop->context);
 }
 
 // Waits until game `pid` has `target` loaded and idle, for at most `options->timeoutS`, and says
@@ -1101,7 +1171,11 @@ static SessionOutcome waitForSave(
 ) {
 	SessionWait wait;
 	// A command's status queries wait for another runner's job as long as its own job would.
-	GamePoll game = {pid, options->job ? options->job->timeoutMs : CLIENT_STATUS_TIMEOUT_MS};
+	GamePoll game = {
+		pid,
+		options->job ? options->job->timeoutMs : CLIENT_STATUS_TIMEOUT_MS,
+		options->job ? options->job->stop : NULL,
+	};
 	session_start(&wait, target->name, launched, options->timeoutS, time(NULL));
 	if (launched) {
 		printf("waiting for it to load %s (at most %u s)...\n", target->name, options->timeoutS);
@@ -1210,13 +1284,17 @@ static void reportSave(
 	}
 }
 
-// Another save is loaded and idle: `launch` and a command stop, unless --any-save lets the
-// command's job use it.
+// Another save is loaded and idle: `launch` and a command stop, unless --any-save, or a batch's
+// any_save=1, lets the job use it. A batch's frozen plan cannot take any_save=1 later, so a batch
+// is not told to.
 static void
 reportOtherSave(const GameStatus *last, const SaveTarget *target, const SessionNeed *job) {
 	if (job && job->anySave) {
 		printf(
-			"FM24 has '%s' loaded, not '%s'; using it, as --any-save asks\n", last->save, target->name
+			job->batch ? "FM24 has '%s' loaded, not '%s'; using it, as any_save=1 asks\n"
+								 : "FM24 has '%s' loaded, not '%s'; using it, as --any-save asks\n",
+			last->save,
+			target->name
 		);
 		return;
 	}
@@ -1227,7 +1305,7 @@ reportOtherSave(const GameStatus *last, const SaveTarget *target, const SessionN
 		"harness work since), then run this again%s.\n",
 		last->save,
 		target->name,
-		job ? ", or pass --any-save to use the loaded save" : ""
+		job && !job->batch ? ", or pass --any-save to use the loaded save" : ""
 	);
 }
 
@@ -1757,6 +1835,59 @@ static bool writeLauncher(const char *path, const char *dylibName) {
 				 embedded_write(wide, script, (size_t)written);
 }
 
+bool macosGame_harnessListening(void) {
+	return harnessListening();
+}
+
+bool macosGame_running(pid_t pid) {
+	return processRunning(pid);
+}
+
+bool macosGame_stop(pid_t pid, unsigned graceS) {
+	char path[PROC_PIDPATHINFO_MAXSIZE];
+	if (!processRunning(pid)) {
+		return true;
+	}
+	// A process ID can be reused: only the game's own process is signalled. One that is exiting
+	// has no path any more, and is given a moment to go.
+	bool named = proc_pidpath(pid, path, sizeof path) > 0;
+	for (unsigned waitedMs = 0; !named && processRunning(pid) && waitedMs < STOP_EXIT_WAIT_S * 1000U;
+		waitedMs += STOP_POLL_MS) {
+		platform_sleep(STOP_POLL_MS);
+	}
+	if (!named && !processRunning(pid)) {
+		return true;
+	}
+	if (!named || !macosGame_isGameExecutable(path)) {
+		fprintf(stderr, "process %d is not Football Manager 2024; leaving it alone\n", (int)pid);
+		return false;
+	}
+	printf("quitting Football Manager 2024 (pid %d), as kill_game=1 allows\n", (int)pid);
+	static const int signals[] = {SIGTERM, SIGKILL};
+	for (size_t i = 0; i < sizeof signals / sizeof signals[0] && processRunning(pid); ++i) {
+		if (kill(pid, signals[i]) != 0 && errno != ESRCH) {
+			fprintf(stderr, "cannot signal process %d (%s)\n", (int)pid, platform_errorText(errno).text);
+			return false;
+		}
+		unsigned waitedMs = 0;
+		unsigned limitMs = (i == 0 ? graceS : STOP_KILL_WAIT_S) * 1000U;
+		while (processRunning(pid) && waitedMs < limitMs) {
+			platform_sleep(STOP_POLL_MS);
+			waitedMs += STOP_POLL_MS;
+		}
+	}
+	// The kernel frees the harness's lock once the process is gone.
+	for (unsigned waitedMs = 0; harnessListening() && waitedMs < STOP_KILL_WAIT_S * 1000U;
+		waitedMs += STOP_POLL_MS) {
+		platform_sleep(STOP_POLL_MS);
+	}
+	if (processRunning(pid)) {
+		fprintf(stderr, "Football Manager 2024 (pid %d) did not quit\n", (int)pid);
+		return false;
+	}
+	return true;
+}
+
 // True if a running game serves this protocol's harness socket: its harness holds the socket's
 // lock. A socket file left by a game that crashed or was force-quit does not count.
 static bool harnessListening(void) {
@@ -1766,12 +1897,35 @@ static bool harnessListening(void) {
 				 stat(path, &status) == 0 && S_ISSOCK(status.st_mode);
 }
 
+// Runs open to its end in a process group of its own, as batch_host_macos.c starts its programs,
+// and waits through signals: Ctrl-C, which `batch run` takes as asking for a stop at the next chunk
+// boundary, reaches neither. SIGTTIN and SIGTTOU are blocked, so it still writes to the terminal.
 static bool runProgram(char *const *arguments) {
+	posix_spawnattr_t attributes;
+	sigset_t blocked;
+	(void)sigemptyset(&blocked);
+	(void)sigaddset(&blocked, SIGTTIN);
+	(void)sigaddset(&blocked, SIGTTOU);
+	int error = posix_spawnattr_init(&attributes);
+	bool made = error == 0;
+	error = made ? posix_spawnattr_setflags(
+									 &attributes, (short)(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK)
+								 )
+							 : error;
+	error = error == 0 ? posix_spawnattr_setpgroup(&attributes, 0) : error;
+	error = error == 0 ? posix_spawnattr_setsigmask(&attributes, &blocked) : error;
 	pid_t child = 0;
-	int error = posix_spawn(&child, arguments[0], NULL, NULL, arguments, environ);
+	error =
+		error == 0 ? posix_spawn(&child, arguments[0], NULL, &attributes, arguments, environ) : error;
+	if (made) {
+		(void)posix_spawnattr_destroy(&attributes);
+	}
 	int status = 0;
-	if (error != 0 || waitpid(child, &status, 0) < 0 || !WIFEXITED(status) ||
-			WEXITSTATUS(status) != 0) {
+	pid_t waited = error == 0 ? waitpid(child, &status, 0) : -1;
+	while (error == 0 && waited < 0 && errno == EINTR) {
+		waited = waitpid(child, &status, 0);
+	}
+	if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		fprintf(stderr, "cannot start the game (%s failed)\n", arguments[0]);
 		return false;
 	}

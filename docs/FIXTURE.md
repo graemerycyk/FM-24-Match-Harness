@@ -26,7 +26,8 @@ everything the viewer does.
 The viewer's player buttons, Venue tab and Simulation tab work as described
 below. Its team picker and swap prompt use the commands under [Changing
 teams](#changing-teams) and [Putting another player in a
-slot](#putting-another-player-in-a-slot).
+slot](#putting-another-player-in-a-slot). Its **Edit line-up** writes what
+`fm24ctl lineup` writes (see [Changing the line-up](#changing-the-line-up)).
 
 # The rules
 
@@ -34,7 +35,8 @@ slot](#putting-another-player-in-a-slot).
   add, remove or reorder fields. The file is a list of every value the game
   wrote, in order, and the encoder writes them back in that order. A missing
   or extra field shifts everything after it and the game can't read the
-  result.
+  result. To move players to other places, use `fm24ctl lineup` (see
+  [Changing the line-up](#changing-the-line-up)).
 - **Edit the number, not the annotation.** Only the value keys (`u8`, `u16`,
   `u32`, `u64`, `str`, `hex`, `u8map`) are read back. Everything else is a
   note for you and is ignored when the file is played: `name`, `player`,
@@ -90,9 +92,11 @@ The file has a header and a `fields` array:
 
 Only `format` and the fields' values are needed to play the file. The
 `home_team` and `away_team` header keys record replacements made by
-`replace-home` and `replace-away` (see [Changing teams](#changing-teams)). The
-rest of the header is information. `game_build` is the bundle version of the
-game that wrote it: 2081827 for FM24 24.4.2 from Steam, in both its arm64
+`replace-home` and `replace-away` (see [Changing teams](#changing-teams)).
+`home_lineup` and `away_lineup`, when `true`, record that `fm24ctl lineup`
+changed that side's order (see [Changing the line-up](#changing-the-line-up)).
+The rest of the header is information. `game_build` is the bundle version of
+the game that wrote it: 2081827 for FM24 24.4.2 from Steam, in both its arm64
 and x86_64 slices. Fixtures exported by the original Windows project carry
 that project's build numbers instead: the PE timestamp of the game's
 `fm.exe`.
@@ -235,15 +239,63 @@ the game's first build of a club's match after it starts and later builds (see
 plays out, so a file exported from such a first build gives other results when
 played as it is (`keep` or `--keep-build`) than when rebuilt.
 
-You can't swap players in or out, or move a player to another slot: players
-write different numbers of fields, so another player changes the structure,
-and a rebuild puts each player where the game's build lists that player, so a
-moved block goes back to its place in every rebuilt seed. Played as it is
-(`keep` or `--keep-build`), a moved block keeps its new place, which changes
-the results, and on your submitted side the slot the player plays. Pick the
-line-up in the game and export again. You *can* make a player play like
-another by copying ratings (below), or have the harness copy all of another
-player's database values into the block (see [Putting another player in a
+## Changing the line-up
+
+```
+fm24ctl lineup next-fixture.json home
+fm24ctl lineup next-fixture.json home Gravenberch Wirtz wirtz.json
+```
+
+The first command lists the home players by place; the second exchanges
+Ryan Gravenberch, a starter, with Florian Wirtz, a substitute, and writes the
+result to `wirtz.json` (see [the CLI reference](CLI.md#change-a-sides-line-up-lineup)
+for the forms). Don't move player blocks by hand: players write different
+numbers of fields, so a block has to move whole, and its names have to
+follow it. `lineup` does both:
+
+| Data | What `lineup` does |
+|---|---|
+| The block: its first 15 fields (the same in every export checked), ratings, wellbeing, reputations, `.squad_number`, `.traits`, `.preferred_position`, familiarity (with `position_role_duty` and `role_rating`), `.ability`, the database index, `.person_uid` and its copies, names and relationships | Moves it with the player. Blocks whose first 15 fields differ are refused |
+| The names in the block | Renames them to the new place: `home.player[19]` and every `home.player[19].` field become `home.player[10]` |
+| The `player` note, `flags` and the `--full` keys | Leaves them on their fields, which move with the block |
+| `<side>.player_count`, the tactic's slots (`plan[*].slot[i]`: position, role and instructions) and `formation[0..25]` | Leaves them with the place: `player[i]` plays `slot[i]` |
+| `takers`, the tactic's `slot_6920[*]` and the team block's list of 11 unique IDs | Leaves them: they name people (by database index or unique ID), not places |
+| The other side's marking of a specific player (see [Player instructions](#player-instructions)) | Points it at the marked player's new place |
+| The other side's `part_4240` (see [Opposition instructions](#opposition-instructions)) | Leaves it, since what its records belong to isn't known, and warns if they are not all the same; in every export checked they are |
+| The header | Adds `"home_lineup": true` (or `away_lineup`) before `fields` |
+
+Every other byte stays as it was, annotations, `save`, `game_date` and the
+team overrides included, and the file encodes to as many bytes as before.
+`lineup` refuses a file whose blocks were moved without being renamed
+(place 10 named `home.player[19]`, as a hand edit or script may leave it),
+and FM24 Viewer won't open one.
+
+Who plays the new order depends on who manages the side and how the file is
+played:
+
+| Side, and how it is played | Who starts |
+|---|---|
+| Yours, as `run` plays it by default (see [Substitutions and the manager's flags](#substitutions-and-the-managers-flags)) | Places 0-10, in their slots. The substitutes are the next places, as many as the formation's bench places (the `formation[11..25]` that are not 0; nine in every export checked). No player after them was brought on in the matches checked: they appear to be left out of the match-day squad |
+| Yours, with `--human-control`, exported before match day | The manager's own selection in the game; the file's order only changes how the match plays out |
+| Yours, with `--human-control`, exported on match day | Not checked yet |
+| FM24's AI's | The AI picks the XI at kick-off, whatever the order, so `lineup` refuses such a side without `--allow-ai-side` |
+| Either, rebuilt for each seed (numeric seeds without `--keep-build`) | The game's build order: a rebuild pairs players by person, so an order alone is no edit |
+
+So play a changed line-up as it is, with `keep` or `--keep-build`; `run`
+warns otherwise (see [Seeds](CLI.md#seeds)), and FM24 Viewer asks first.
+Its **Edit line-up** makes the same change (see
+[the macOS guide](MACOS.md#the-fixture-viewer)). A `.bin` keeps the order
+but not the marker. `replace-home` and `replace-away` rebuild the other side
+too, in the game's order, so when the input marks that side they put each of
+its players back in their place, by unique ID, and write the marker again; a
+player the rebuilt side lacks is missing, and the first player the input
+does not name takes that place (see [Replace a
+team](CLI.md#replace-a-team-replace-home-replace-away)). The replaced side's
+order is dropped.
+
+You *can* also make a player play like another by copying ratings (below),
+or have the harness copy all of another player's database values into the
+block (see [Putting another player in a
 slot](#putting-another-player-in-a-slot)).
 
 ## Putting another player in a slot
@@ -1212,6 +1264,8 @@ Leave them as they are.
 (member `fn_1a0fca0+0xc`) holds the opponent's index, and 255 means nobody.
 The index is a place in the opponent's list, which a rebuild can order
 differently, so an edited index can point at another player in some seeds.
+When `fm24ctl lineup` moves the marked player, it points the index at the
+player's new place.
 With "mark a specific position" on, the set's last `u32` is the position, as a
 position bit set (see the position table).
 
@@ -1529,7 +1583,9 @@ real match. The unchanged side keeps its tactic and edits. If it is your
 managed team, it keeps the selections you picked in the game. Otherwise the
 game picks its line-up again, which against another opponent can list its
 players in another order or leave some out: your edits follow each player, and
-the replacement fails if it leaves out a player you edited.
+the replacement fails if it leaves out a player you edited. An order
+`fm24ctl lineup` gave the unchanged side is put back by person, with the
+marker (see [Changing the line-up](#changing-the-line-up)).
 Your edits to the rest of the file are kept, as `run` keeps them. Edits to the
 replaced team's block are dropped, because those players aren't in the match any more.
 The result line says how many edits were kept and dropped.

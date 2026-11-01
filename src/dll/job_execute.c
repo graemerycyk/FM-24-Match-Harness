@@ -5,14 +5,23 @@
 #include "job.h"
 #include "log.h"
 
+#include <stdint.h>
 #include <stdio.h>
 
 
+static uint64_t jobsReceived; // jobs other than status (see job_count)
+
 static bool mustWait(const Job *job, char *reason, size_t size);
+
+uint64_t job_count(void) {
+	return jobsReceived;
+}
 
 void job_execute(char *text) {
 	Job job;
-	if (!job_parse(text, &job)) {
+	bool parsed = job_parse(text, &job);
+	jobsReceived += !parsed || job.command != JOB_STATUS;
+	if (!parsed) {
 		job_writeResult("error: cannot read the job; see harness.log");
 		return;
 	}

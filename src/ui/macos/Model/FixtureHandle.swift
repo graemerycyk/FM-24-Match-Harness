@@ -44,6 +44,57 @@ enum PlayerEdit: Int, CaseIterable {
 	}
 }
 
+/// The pending player edits that a save writes, or a replacement or simulation carries: the Max
+/// buttons' flags and the new line-ups.
+struct PlayerChanges: Equatable {
+	/// The edit flags, FixtureHandle.blockCount per side, home first.
+	var flags: [UInt8]
+	/// The new orders, FixtureHandle.blockCount places per side, home first: for each place, the
+	/// block whose player moves there (FixtureHandle.order). Nil if neither side has one.
+	var lineup: [UInt8]?
+
+	init(
+		flags: [UInt8] = [UInt8](repeating: 0, count: 2 * FixtureHandle.blockCount),
+		lineup: [UInt8]? = nil
+	) {
+		self.flags = flags
+		self.lineup = lineup
+	}
+
+	/// Nothing to write: no flag is set and no order moves a player.
+	var isEmpty: Bool {
+		!flags.contains { $0 != 0 } && !movesPlayers
+	}
+
+	/// An order moves a player to another place.
+	var movesPlayers: Bool {
+		lineup?.enumerated().contains { Int($0.element) != $0.offset % FixtureHandle.blockCount }
+			== true
+	}
+
+	/// The changes without a side's: its flags cleared and its order dropped, as when its team is
+	/// replaced.
+	func dropping(side: Int) -> PlayerChanges {
+		let blocks = FixtureHandle.blockCount
+		let range = (side * blocks)..<((side + 1) * blocks)
+		var changes = self
+		changes.flags.replaceSubrange(range, with: repeatElement(0, count: blocks))
+		changes.lineup?.replaceSubrange(range, with: (0..<blocks).map { UInt8($0) })
+		if !changes.movesPlayers {
+			changes.lineup = nil
+		}
+		return changes
+	}
+
+	/// The changes without the flags of the side's player in `block`, as when that player is swapped
+	/// out; the orders stay.
+	func dropping(side: Int, block: Int) -> PlayerChanges {
+		var changes = self
+		changes.flags[side * FixtureHandle.blockCount + block] = 0
+		return changes
+	}
+}
+
 /// A fixture read by the C core (src/ui/fixture_view.h), with its pending player edits. It may be
 /// created on any thread and is then used only on the main actor; the fixture itself stays in C.
 final class FixtureHandle: @unchecked Sendable {
@@ -162,6 +213,15 @@ final class FixtureHandle: @unchecked Sendable {
 		return flags
 	}
 
+	/// The edit flags with the pending orders, if either side has one.
+	var playerChanges: PlayerChanges {
+		let edited = (0..<FixtureHandle.sideCount).contains { lineupEdited(side: $0) }
+		let lineup = (0..<FixtureHandle.sideCount).flatMap { order(side: $0).map { UInt8($0) } }
+		return PlayerChanges(flags: playerEdits, lineup: edited ? lineup : nil)
+	}
+
+	/// Forgets the Max edits once a save has written them; a pending order stays until
+	/// commitOrder.
 	func clearPlayerEdits() {
 		fixtureView_clearPlayerEdits(view)
 	}
@@ -185,6 +245,138 @@ final class FixtureHandle: @unchecked Sendable {
 			flags[block] = true
 		}
 		return flags
+	}
+
+	// MARK: The line-up
+
+	/// FM24's AI does not manage the side, so its first 11 players are its XI.
+	func lineupKnown(side: Int) -> Bool {
+		fixtureView_lineupKnown(view, UInt32(side))
+	}
+
+	/// The side's order can be changed: its line-up is known and its blocks are as many as its
+	/// players, at least 11. Its squad list then has a row per place.
+	func lineupEditable(side: Int) -> Bool {
+		fixtureView_lineupEditable(view, UInt32(side))
+	}
+
+	/// The fixture says the side's line-up was changed ("<side>_lineup"), or a save changed it.
+	func lineupMarked(side: Int) -> Bool {
+		fixtureView_lineupMarked(view, UInt32(side))
+	}
+
+	/// A new order of the side is pending.
+	func lineupEdited(side: Int) -> Bool {
+		fixtureView_lineupEdited(view, UInt32(side))
+	}
+
+	/// The substitutes' places after the first 11.
+	func benchSize(side: Int) -> Int {
+		Int(fixtureView_benchSize(view, UInt32(side)))
+	}
+
+	/// The side's pending order, FixtureHandle.blockCount places: for each place, the block whose
+	/// player plays there (the place's own block without an order).
+	func order(side: Int) -> [Int] {
+		var from = [UInt8](repeating: 0, count: FixtureHandle.blockCount)
+		fixtureView_order(view, UInt32(side), &from)
+		return from.map(Int.init)
+	}
+
+	/// Makes `order` (the block for each of the side's places, the rest left in their own) the
+	/// side's pending order; false, changing nothing, if it does not place each player once or the
+	/// side's order cannot be changed.
+	@discardableResult
+	func setOrder(side: Int, _ order: [Int]) -> Bool {
+		guard order.count <= FixtureHandle.blockCount,
+			order.allSatisfy({ (0..<FixtureHandle.blockCount).contains($0) })
+		else {
+			return false
+		}
+		var from = (0..<FixtureHandle.blockCount).map { UInt8($0) }
+		for (place, block) in order.enumerated() {
+			from[place] = UInt8(block)
+		}
+		return fixtureView_setOrder(view, UInt32(side), from)
+	}
+
+	/// The place the pending order gives the side's player in `block`, or nil if there is no such
+	/// player.
+	func placeOf(side: Int, block: Int) -> Int? {
+		guard block >= 0 else {
+			return nil
+		}
+		let place = fixtureView_placeOf(view, UInt32(side), UInt32(block))
+		return place >= 0 ? Int(place) : nil
+	}
+
+	/// After a save that wrote the pending orders: each player's block becomes their new place's.
+	func commitOrder() {
+		fixtureView_commitOrder(view)
+	}
+
+	/// The side's order with the players whose unique IDs are `people` in those places, as
+	/// replace-home and replace-away keep a line-up (fixtureLineup_byPeople), for setOrder; for each
+	/// person, whether the side has them, and their place, or for one it lacks the place another
+	/// player takes instead (nil if none is left to). Nil if the side's order cannot be changed.
+	func order(
+		side: Int,
+		people: [UInt32]
+	) -> (order: [Int], found: [Bool], places: [Int?])? {
+		guard people.count <= FixtureHandle.blockCount else {
+			return nil
+		}
+		var from = [UInt8](repeating: 0, count: FixtureHandle.blockCount)
+		var found = [Bool](repeating: false, count: people.count)
+		var places = [Int32](repeating: -1, count: people.count)
+		guard
+			fixtureView_orderByPeople(
+				view,
+				UInt32(side),
+				people,
+				UInt32(people.count),
+				&from,
+				&found,
+				&places
+			)
+		else {
+			return nil
+		}
+		return (from.map(Int.init), found, places.map { $0 >= 0 ? Int($0) : nil })
+	}
+
+	/// The unique ID of the side's player in `block`, if it is stored.
+	func personId(side: Int, block: Int) -> Int64? {
+		guard block >= 0 else {
+			return nil
+		}
+		let id = fixtureView_personId(view, UInt32(side), UInt32(block))
+		return id >= 0 ? id : nil
+	}
+
+	/// The rating (1-20) of the side's player in `block` for the position of `slot`, if both are
+	/// known.
+	func positionRating(side: Int, block: Int, slot: Int) -> Int? {
+		guard block >= 0, slot >= 0 else {
+			return nil
+		}
+		let rating = fixtureView_positionRating(view, UInt32(side), UInt32(block), UInt32(slot))
+		return rating >= 0 ? Int(rating) : nil
+	}
+
+	/// What `fm24ctl lineup` would warn of in the side's order `order`, a sentence each.
+	func lineupWarnings(side: Int, order: [Int]) -> [String] {
+		guard order.count <= FixtureHandle.blockCount,
+			order.allSatisfy({ (0..<FixtureHandle.blockCount).contains($0) })
+		else {
+			return []
+		}
+		var from = (0..<FixtureHandle.blockCount).map { UInt8($0) }
+		for (place, block) in order.enumerated() {
+			from[place] = UInt8(block)
+		}
+		let text = FixtureHandle.text { fixtureView_lineupWarnings(view, UInt32(side), from, $0, $1) }
+		return text.split(separator: "\n").map(String.init)
 	}
 
 	// MARK: The venue
@@ -259,11 +451,12 @@ final class FixtureHandle: @unchecked Sendable {
 
 	// MARK: Saving
 
-	/// The bytes a save writes for `json`: player edits (playerEdits' flags, or nil), the venue
-	/// (written if any value is stored), then encoded as a binary fixture if `binary`.
+	/// The bytes a save writes for `json`: player edits (the Max flags, then the new orders; or
+	/// nil), the venue (written if any value is stored), then encoded as a binary fixture if
+	/// `binary`.
 	static func write(
 		json: Data,
-		playerEdits: [UInt8]?,
+		changes: PlayerChanges?,
 		venue: [FixtureViewNumber]?,
 		binary: Bool
 	) throws -> Data {
@@ -272,9 +465,22 @@ final class FixtureHandle: @unchecked Sendable {
 		var bytes: UnsafeMutablePointer<UInt8>?
 		var length = 0
 		let written = withBytes(json) { text, count in
-			withOptionalArray(playerEdits) { flags in
-				withOptionalArray(venue) { values in
-					fixtureView_write(text, count, flags, values, binary, &bytes, &length, &error, errorSize)
+			withOptionalArray(changes?.flags) { flags in
+				withOptionalArray(changes?.lineup) { order in
+					withOptionalArray(venue) { values in
+						fixtureView_write(
+							text,
+							count,
+							flags,
+							order,
+							values,
+							binary,
+							&bytes,
+							&length,
+							&error,
+							errorSize
+						)
+					}
 				}
 			}
 		}

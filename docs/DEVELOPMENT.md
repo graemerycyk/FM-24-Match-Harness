@@ -138,10 +138,11 @@ Xcode has: `@State`, `@Entry`, `@Animatable`, `@AnimatableIgnored`,
 `@Previewable`, `#Preview`, `#Predicate`, `#Expression` and `#bundle`.
 That is the rule for viewer sources: keep view state in small
 `ObservableObject` models (`@StateObject`, or the model's own objects, as
-the team editor and swap prompt are). `@Observable`, whose plugin the
-Command Line Tools do have, is left out as well, because Observation needs
-macOS 14. The `viewer_sources` test fails on all of these. The configure
-step checks the toolchain again whenever the compiler's version or the SDK
+the team editor, swap prompt and Edit line-up sheet are). `@Observable`,
+whose plugin the Command Line Tools do have, is left out as well, because
+Observation needs macOS 14. The `viewer_sources` test fails on all of
+these. The configure step checks the toolchain again whenever the
+compiler's version or the SDK
 changes, including an update that moves the Command Line Tools'
 `MacOSX.sdk` link. With an older
 toolchain the configure step's probe may build only some slices (it warns
@@ -195,14 +196,18 @@ build/FM24Viewer.app/Contents/MacOS/fm24viewer --render-snapshot \
 
 The views are `squads`, `venue`, `simulation`, `team` (the home team's
 picker, as its popover shows it), `swap` (the swap prompt for the first
-away player, as its sheet shows it), `start` (no fixture: pass `-`),
+away player, as its sheet shows it), `lineup` (the home team's Edit
+line-up sheet), `start` (no fixture: pass `-`),
 `log`, `launch` (the Launch FM24 sheet over a few made-up saves in a home
 folder of its own; pass `-`) and `install` (the Install Harness sheet
-after a made-up install; pass `-`); `team`, `swap`, `launch` and `install`
-are rendered at their own size unless one is given.
+after a made-up install; pass `-`); `team`, `swap`, `lineup`, `launch` and
+`install` are rendered at their own size unless one is given.
 `edited` first selects the first three players of each side that can be
 selected, maximises their happiness and condition where it can, and changes
-the venue's capacity, to show edited cells and the unsaved-edit marker.
+the venue's capacity, to show edited cells and the unsaved-edit marker; on
+`lineup`, it also exchanges the last starter with the last substitute and
+asks for seeds 1-100 that rebuild, to show the changed rows, the warnings
+and the rebuild note.
 `temporary` shows the fixture as an export not yet saved; `busy` shows a
 job of the game's running (on `start`, the startup export; over a fixture,
 a decode), and `failed` the start panel after the startup export failed.
@@ -258,6 +263,24 @@ publish it with the zip and its `.sha256`:
 gh release create v1.1.0-macos.1 dist/FM24-Harness-macOS-v1.1.0-macos.1.zip* \
   --target main --title "macOS v1.1.0-macos.1"
 ```
+
+## The build's commit
+
+Each build embeds the commit it was built from and whether tracked files
+had uncommitted changes. On every build, `cmake/build_info.cmake` reads
+them with Git into `build/generated/build_info.c` (declared in
+`src/common/build_info.h`), and rewrites it only when they change, so the
+harness and `fm24ctl` carry the same values. `fm24ctl version` prints them
+with the protocol and the slice that runs:
+
+```text
+fm24ctl 1.4.0 ff79e5b1a6cea96602d84c28e1543bdb5c2f75b8 clean arm64
+```
+
+Sources that are not the top folder of a Git checkout, or a build without
+Git, say `unknown unknown`. The `build_info` test checks the generator
+against repositories it makes, and the `version` test the line `fm24ctl`
+prints.
 
 ## Continuous integration
 
@@ -317,11 +340,22 @@ ctest --test-dir build --output-on-failure
 
 `ctest` also runs the release check.
 
+The batch tools in `tools/batch` have their own tests, which need Python
+3.9 or newer and nothing else, and check that the tools read the headers
+the C sources write. `ctest` runs them as `batch_tools` when it finds such
+a Python:
+
+```sh
+python3 -I -m unittest discover -s tools/batch
+```
+
 To run a single test suite, pass its name, for example:
 
 ```sh
 bin/fm24_tests fixture_data
 ```
 
-The suites are `job`, `dll`, `fixture_data`, `runner`, `runner_main`,
-`fixture_export`, `fixture_view`, `player_inject` and `macos`.
+The suites are `job`, `dll`, `job_run`, `common`, `fixture_data`, `runner`,
+`runner_main`, `batch`, `fixture_export`, `fixture_view`, `player_inject`,
+`fixture_lineup` and `macos`. `batch` also runs the season batches' tests
+that need no fake game, in `tests/batch_season_test.c`.

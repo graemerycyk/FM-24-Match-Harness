@@ -10,12 +10,18 @@
 #include <string.h>
 
 
+static bool keepQuerying(void *context, ClientPhase phase);
 static SessionOutcome judge(SessionWait *wait, const SessionSample *sample);
 static time_t since(time_t start, bool holds, time_t now);
 
-SessionAnswer session_query(GameStatus *status, unsigned timeoutMs) {
+SessionAnswer session_query(GameStatus *status, unsigned timeoutMs, SessionStop *stop) {
 	char result[CLIENT_RESULT_LENGTH];
-	if (!client_submit("command=status\n", timeoutMs, result, sizeof result)) {
+	ClientWatch watch = {.tickMs = stop ? stop->tickMs : 0, .tick = keepQuerying, .context = stop};
+	bool replied =
+		stop ? client_submitWatched("command=status\n", timeoutMs, &watch, result, sizeof result) ==
+						 CLIENT_REPLIED
+				 : client_submit("command=status\n", timeoutMs, result, sizeof result);
+	if (!replied) {
 		return SESSION_ANSWER_NONE;
 	}
 	if (saves_parseStatus(result, status)) {
@@ -76,6 +82,9 @@ SessionOutcome session_step(SessionWait *wait, const SessionSample *sample) {
 		wait->readySamples = 0;
 		wait->waited = true;
 	}
+	if (outcome == SESSION_WAITING && sample->stopped) {
+		return SESSION_STOPPED;
+	}
 	if (outcome == SESSION_WAITING && sample->at - wait->started >= (time_t)wait->timeoutS) {
 		return SESSION_TIMED_OUT;
 	}
@@ -101,6 +110,13 @@ SessionOutcome session_waitReady(SessionWait *wait, SessionPoll *poll, void *con
 		}
 		platform_sleep(SESSION_POLL_MS);
 	}
+}
+
+// A status query's tick: a stop ends the wait for the harness to take it, which then never runs it;
+// once taken, it answers at once.
+static bool keepQuerying(void *context, ClientPhase phase) {
+	const SessionStop *stop = context;
+	return phase == CLIENT_RUNNING || !stop->asked(stop->context);
 }
 
 // The outcome after the harness's answer.

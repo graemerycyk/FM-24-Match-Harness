@@ -140,6 +140,103 @@ TEST(parses_status_jobs_without_keys) {
 	ASSERT_BOOL_EQ(job_parse(misspelt, &job), false);
 }
 
+// The run keys of protocol 1.4.0: their defaults, values and malformed values.
+TEST(parses_the_per_match_keys) {
+	Job job;
+	char plain[] = "command=run\ninput=/in.bin\nseeds=1-3\noutput=/out.csv\n";
+	ASSERT_BOOL_EQ(job_parse(plain, &job), true);
+	ASSERT_BOOL_EQ(job.perMatch || job.skipSeedErrors || job.report, false);
+	ASSERT_BOOL_EQ(job.indexBase == 0 && job.stopFile[0] == 0, true);
+	job_free(&job);
+	char all[] =
+		"command=run\ninput=/in.bin\nseeds=1-3\noutput=/out.csv\nper_match=1\n"
+		"index_base=18446744073709551612\nseed_errors=skip\nstop_file=/b\xc3\xa4tch/stop-now\n"
+		"report=1\nunknown_key=whatever\n";
+	ASSERT_BOOL_EQ(job_parse(all, &job), true);
+	ASSERT_BOOL_EQ(job.perMatch && job.skipSeedErrors && job.report, true);
+	ASSERT_BOOL_EQ(job.indexBase == UINT64_MAX - 3, true);
+	ASSERT_INT_EQ(wcscmp(job.stopFile, L"/bätch/stop-now"), 0);
+	job_free(&job);
+	char off[] = "command=run\ninput=/in.bin\nseeds=keep\noutput=/out.csv\nper_match=0\n"
+							 "seed_errors=stop\nreport=0\nindex_base=0\nstop_file=\n";
+	ASSERT_BOOL_EQ(job_parse(off, &job), true);
+	ASSERT_BOOL_EQ(job.perMatch || job.skipSeedErrors || job.report, false);
+	ASSERT_BOOL_EQ(job.indexBase == 0 && job.stopFile[0] == 0, true);
+	job_free(&job);
+	static const char *const invalid[] = {
+		"per_match=2",
+		"per_match=",
+		"per_match=true",
+		"per_match= 1",
+		"report=yes",
+		"report=10",
+		"seed_errors=x",
+		"seed_errors=Skip",
+		"seed_errors=",
+		"index_base=-1",
+		"index_base=+1",
+		"index_base=1x",
+		"index_base=",
+		"index_base=18446744073709551616",
+		// index_base plus the 3 seeds would not fit in 64 bits:
+		"index_base=18446744073709551613",
+	};
+	for (size_t i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
+		char text[256];
+		(void)snprintf(
+			text, sizeof text, "command=run\ninput=/in.bin\nseeds=1-3\noutput=/out.csv\n%s\n", invalid[i]
+		);
+		bool parsed = job_parse(text, &job);
+		ASSERT_BOOL_EQ(parsed, false);
+		if (parsed) {
+			fprintf(stderr, "accepted %s\n", invalid[i]);
+			job_free(&job);
+		}
+	}
+	// The input's own seed counts as one.
+	char keepAtEnd[] =
+		"command=run\ninput=/in.bin\nseeds=keep\noutput=/out.csv\nindex_base=18446744073709551614\n";
+	ASSERT_BOOL_EQ(job_parse(keepAtEnd, &job), true);
+	job_free(&job);
+	char keepPastEnd[] =
+		"command=run\ninput=/in.bin\nseeds=keep\noutput=/out.csv\nindex_base=18446744073709551615\n";
+	ASSERT_BOOL_EQ(job_parse(keepPastEnd, &job), false);
+}
+
+// A batch's part: about 1,430 scattered ten-digit seeds still fit in one job.
+TEST(parses_a_job_of_scattered_seeds) {
+	enum { SEEDS = 1430 };
+	static char text[HARNESS_JOB_LENGTH];
+	int length = snprintf(
+		text,
+		sizeof text,
+		"command=run\ninput=/b/inputs/baseline.bin\noutput=/b/attempts/baseline/0000037000/a1/"
+		"results.csv\nthreads=4\nper_match=1\nindex_base=37000\nseed_errors=skip\n"
+		"stop_file=/b/control/stop-now\nreport=1\nseeds="
+	);
+	uint32_t seed = 4210832071U;
+	for (int i = 0; i < SEEDS && length > 0 && (size_t)length < sizeof text; ++i) {
+		seed = seed * 1664525U + 1013904223U;
+		length += snprintf(
+			text + length, sizeof text - (size_t)length, "%s%u", i ? "," : "", seed | 1000000000U
+		);
+	}
+	ASSERT_BOOL_EQ(length > 0 && (size_t)length < HARNESS_JOB_LENGTH, true);
+	Job job;
+	ASSERT_BOOL_EQ(job_parse(text, &job), true);
+	ASSERT_INT_EQ((int)job.seedCount, SEEDS);
+	ASSERT_BOOL_EQ(job.seedCount == SEEDS && job.seeds[SEEDS - 1] == (seed | 1000000000U), true);
+	ASSERT_BOOL_EQ(job.indexBase == 37000 && job.perMatch && job.report, true);
+	job_free(&job);
+}
+
+TEST(notes_when_the_harness_loaded) {
+	int64_t before = (int64_t)time(NULL);
+	job_markLoaded();
+	int64_t loaded = job_loadedAt();
+	ASSERT_BOOL_EQ(loaded >= before && loaded <= (int64_t)time(NULL), true);
+}
+
 void registerJobTests(void) {
 	test_run(
 		"job parses progress window handles and rejects invalid values", test_parses_progress_window
@@ -151,4 +248,9 @@ void registerJobTests(void) {
 	test_run("job rejects malformed and overflowing seeds", test_rejects_invalid_seeds);
 	test_run("job parses job messages and keeps one result", test_parses_job_messages);
 	test_run("job parses status jobs, which need no keys", test_parses_status_jobs_without_keys);
+	test_run(
+		"job parses the per-match keys and rejects malformed values", test_parses_the_per_match_keys
+	);
+	test_run("job parses a job of 1,430 scattered seeds", test_parses_a_job_of_scattered_seeds);
+	test_run("job notes when the harness loaded", test_notes_when_the_harness_loaded);
 }

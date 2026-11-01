@@ -19,7 +19,15 @@ enum ReplacementTests {
 		Tests.test("the swap prompt searches player names after a pause", searchesSwaps)
 		Tests.test("the team and player lists are dropped when the game quits", dropsLists)
 		Tests.test("viewer warns before saving replaced teams as binary", warnsBinaryTeams)
+		Tests.test("a swap after a line-up change gives the player's new place", swapsAfterLineup)
+		Tests.test("a player already in the side's squad is not swapped in", refusesSquadSwaps)
+		Tests.test("a team replacement drops the replaced side's new line-up", dropsReplacedLineup)
+		Tests.test("a team replacement keeps the other side's changed line-up", keepsLineup)
+		Tests.test("a home replacement keeps the away side's changed line-up", keepsAwayLineup)
+		Tests.test("an away swap after a line-up change gives the new place", swapsAfterAwayLineup)
 	}
+
+	private static let happiness = UInt8(FIXTURE_VIEW_MAX_HAPPINESS.rawValue)
 
 	private static let homeEdit = 0
 	private static let awayEdits = [2, 3]
@@ -149,7 +157,7 @@ enum ReplacementTests {
 			try Data(contentsOf: input),
 			try FixtureHandle.write(
 				json: plainSampleJSON(),
-				playerEdits: flags(home: [homeEdit], away: []),
+				changes: PlayerChanges(flags: flags(home: [homeEdit], away: [])),
 				venue: nil,
 				binary: false
 			)
@@ -320,14 +328,14 @@ enum ReplacementTests {
 		values[capacity].value = 50000
 		checkEqual(
 			model.source?.json,
-			try FixtureHandle.write(json: json, playerEdits: nil, venue: values, binary: false)
+			try FixtureHandle.write(json: json, changes: nil, venue: values, binary: false)
 		)
 		check(!model.venue.dirty)
 		checkEqual(model.venue.texts[capacity], "50000")
 
 		// A binary fixture's decoded JSON is what the game is given.
 		let plain = plainSampleJSON()
-		let bytes = try FixtureHandle.write(json: plain, playerEdits: nil, venue: nil, binary: true)
+		let bytes = try FixtureHandle.write(json: plain, changes: nil, venue: nil, binary: true)
 		setup.standIn.set(["FIXTURE": setup.scratch.file("decoded.json", plain).path])
 		open(setup, setup.scratch.file("next.bin", bytes))
 		checkEqual(model.source?.kind, .binary)
@@ -463,7 +471,7 @@ enum ReplacementTests {
 			try Data(contentsOf: input),
 			try FixtureHandle.write(
 				json: plainSampleJSON(),
-				playerEdits: flags(home: [homeEdit], away: [3]),
+				changes: PlayerChanges(flags: flags(home: [homeEdit], away: [3])),
 				venue: nil,
 				binary: false
 			)
@@ -619,5 +627,463 @@ enum ReplacementTests {
 		checkEqual(prompts.questions.count, 2)
 		check(FileManager.default.fileExists(atPath: setup.scratch.file("plain.bin").path))
 		check(prompts.errors.isEmpty, "\(prompts.errors)")
+	}
+
+	/// Exchanges the lineup sample's home places `first` and `second` in the Edit line-up sheet.
+	private static func exchange(_ model: ViewerModel, _ first: Int, _ second: Int) {
+		model.editLineup(side: 0)
+		check(model.lineupEditor != nil, "no Edit line-up sheet")
+		model.lineupEditor?.exchange(first, second)
+		model.confirmLineup()
+	}
+
+	static func swapsAfterLineup() throws {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let json = lineupSampleJSON()
+		open(setup, setup.scratch.file("lu.json", json))
+		let folder = model.work.folder.path
+		// Wirtz into the XI and Gravenberch to the bench, with both their happiness maximised.
+		model.select(side: 0, blocks: [10, 19])
+		model.maxPlayers(.happiness, side: 0)
+		exchange(model, 10, 19)
+		// Gravenberch, selected, is in place 19 of the input, which has the new order written in.
+		model.select(side: 0, blocks: [10])
+		let input = setup.scratch.file("input.json")
+		setup.standIn.set([
+			"INPUT": input.path, "FIXTURE": setup.scratch.file("swapped.json", json).path,
+		])
+		model.requestSwap(side: 0)
+		guard let prompt = model.swapPrompt else {
+			check(false, "no swap prompt")
+			return
+		}
+		checkEqual(prompt.label, "Swap Ryan Gravenberch for...")
+		check(waitUntil { model.players.state != .loading }, "the player list did not load")
+		prompt.type("40347")
+		model.confirmSwap()
+		wait(model)
+		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
+		checkEqual(
+			setup.standIn.runs.last,
+			["inject-player", folder + "/in-2.json", "home.player[19]", "40347", folder + "/out-3.json"]
+		)
+		check(model.log.text.contains("Swapping home.player[19] for player 40347"), model.log.text)
+		// Wirtz's edit goes with the order; Gravenberch's, swapped out, does not.
+		var flags = [UInt8](repeating: 0, count: 512)
+		flags[19] = happiness
+		let written = try Data(contentsOf: input)
+		checkEqual(
+			written,
+			try FixtureHandle.write(
+				json: json,
+				changes: PlayerChanges(flags: flags, lineup: exchangedOrder(10, 19)),
+				venue: nil,
+				binary: false
+			)
+		)
+		checkEqual(occurrences("\"home_lineup\": true", in: written), 1)
+		checkEqual(try FixtureHandle(json: written).playerName(side: 0, block: 19), "Ryan Gravenberch")
+		// The result has no edits pending.
+		check(model.isTemporary)
+		checkEqual(model.fixture?.hasPlayerEdits, false)
+		setup.checkTemporaryOnly()
+		checkEqual(workFiles(setup), [])
+	}
+
+	static func refusesSquadSwaps() {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let json = lineupSampleJSON()
+		let url = setup.scratch.file("lu.json", json)
+		open(setup, url)
+		let folder = model.work.folder.path
+		exchange(model, 10, 19)
+		model.select(side: 0, blocks: [5])
+		model.requestSwap(side: 0)
+		guard let prompt = model.swapPrompt else {
+			check(false, "no swap prompt")
+			return
+		}
+		check(waitUntil { model.players.state != .loading }, "the player list did not load")
+		let runs = setup.standIn.runs.count
+		// The home squad's unique IDs, at the places the pending order gives them: the prompt stays
+		// open with the reason, and the game is not asked.
+		let squad = [
+			("91193048", "Florian Wirtz is already in Liverpool's squad (Slot 10, ST)."),
+			("37071197", "Ryan Gravenberch is already in Liverpool's squad (Sub)."),
+			("2000164850", "Ben Doak is already in Liverpool's squad (Reserve)."),
+			("29056345", "Wataru Endo is already in Liverpool's squad (Slot 5, DMCR)."),
+		]
+		for (person, reason) in squad {
+			prompt.type(person)
+			model.confirmSwap()
+			check(model.swapPrompt === prompt, "the prompt closed for \(person)")
+			checkEqual(setup.prompts.errors.last?.title, "Swap player")
+			checkEqual(
+				setup.prompts.lastError,
+				reason
+					+ " Use Edit Line-up to move this player, or tick \"Allow duplicates?\" to put a copy "
+					+ "here."
+			)
+			check(!model.isBusy)
+		}
+		checkEqual(setup.standIn.runs.count, runs)
+		check(model.log.text.contains("Error: Florian Wirtz is already in Liverpool's squad"))
+		// The away side's IDs are the game's to check, and so is a copy that Allow duplicates asks for.
+		setup.standIn.set(["FIXTURE": url.path])
+		prompt.type("29083750")
+		model.confirmSwap()
+		wait(model)
+		checkEqual(
+			setup.standIn.runs.last,
+			[
+				"inject-player", folder + "/in-2.json", "home.player[5]", "29083750",
+				folder + "/out-3.json",
+			]
+		)
+		open(setup, url)
+		exchange(model, 10, 19)
+		model.select(side: 0, blocks: [5])
+		model.requestSwap(side: 0)
+		guard let copy = model.swapPrompt else {
+			check(false, "no swap prompt")
+			return
+		}
+		copy.type("91193048")
+		copy.allowDuplicates = true
+		model.confirmSwap()
+		wait(model)
+		checkEqual(
+			setup.standIn.runs.last,
+			[
+				"inject-player", folder + "/in-4.json", "home.player[5]", "91193048",
+				folder + "/out-5.json", "--allow-duplicate",
+			]
+		)
+		// FM24's AI picks the away XI, which Edit line-up cannot change: fm24ctl's refusal, as before.
+		open(setup, url)
+		model.select(side: 1, blocks: [2])
+		setup.standIn.set(["DUPLICATE": "1"])
+		model.requestSwap(side: 1)
+		model.swapPrompt?.type("29083750")
+		model.confirmSwap()
+		wait(model)
+		checkEqual(setup.standIn.runs.last?.first, "inject-player")
+		checkEqual(setup.standIn.runs.last?[2], "away.player[2]")
+		check(
+			setup.prompts.lastError?.hasSuffix("tick \"Allow duplicates?\" to swap them in anyway")
+				== true,
+			"\(setup.prompts.lastError ?? "")"
+		)
+	}
+
+	static func dropsReplacedLineup() throws {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let json = lineupSampleJSON()
+		let url = setup.scratch.file("lu.json", json)
+		let input = setup.scratch.file("input.json")
+		setup.standIn.set([
+			"INPUT": input.path, "FIXTURE": setup.scratch.file("replaced.json", json).path,
+		])
+		var awayFlags = [UInt8](repeating: 0, count: 512)
+		awayFlags[FixtureHandle.blockCount + 2] = happiness
+		// A home order and an away edit; the away team's replacement keeps the home order.
+		for side in 0..<2 {
+			open(setup, url)
+			exchange(model, 10, 19)
+			model.select(side: 1, blocks: [2])
+			model.maxPlayers(.happiness, side: 1)
+			check(model.fixture?.lineupEdited(side: 0) == true)
+			model.editTeam(side: side)
+			loadTeams(model)
+			model.teamEditor?.type("677")
+			model.confirmTeam()
+			wait(model)
+			check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
+			let carried =
+				side == 0
+				? PlayerChanges(flags: awayFlags)
+				: PlayerChanges(lineup: exchangedOrder(10, 19))
+			let written = try Data(contentsOf: input)
+			checkEqual(
+				written,
+				try FixtureHandle.write(json: json, changes: carried, venue: nil, binary: false)
+			)
+			checkEqual(occurrences("\"home_lineup\": true", in: written), side == 0 ? 0 : 1)
+			// The result is the game's build, with the home order pending again only if it was kept.
+			check(model.isTemporary)
+			checkEqual(model.fixture?.hasPlayerEdits, side == 1)
+			checkEqual(model.fixture?.lineupEdited(side: 0), side == 1)
+			checkEqual(model.fixture?.lineupEdited(side: 1), false)
+		}
+		checkEqual(
+			setup.standIn.runs.map { $0.first ?? "" },
+			["list-teams", "replace-home", "replace-away"]
+		)
+	}
+
+	/// The away team's replacement through the stand-in, which writes the fixture its FIXTURE names.
+	private static func replaceAway(_ setup: HarnessSetup) {
+		replaceTeam(setup, side: 1)
+	}
+
+	/// The side's team replacement through the stand-in, which writes the fixture its FIXTURE names.
+	private static func replaceTeam(_ setup: HarnessSetup, side: Int) {
+		let model = setup.model
+		model.editTeam(side: side)
+		loadTeams(model)
+		model.teamEditor?.type("677")
+		model.confirmTeam()
+		wait(model)
+		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
+	}
+
+	/// The log's lines from `first` on, without their times.
+	private static func logged(_ model: ViewerModel, from first: Int) -> [String] {
+		model.log.lines.dropFirst(first).map { String($0.drop { $0 != " " }.dropFirst()) }
+	}
+
+	static func keepsLineup() throws {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let json = lineupSampleJSON()
+		let lu = setup.scratch.file("lu.json", json)
+		// What lineup writes, and a save after Edit line-up: Wirtz and Gravenberch exchanged, marked.
+		let exchanged = PlayerChanges(lineup: exchangedOrder(10, 19))
+		let marked = try FixtureHandle.write(
+			json: json,
+			changes: exchanged,
+			venue: nil,
+			binary: false
+		)
+		let markedURL = setup.scratch.file("marked.json", marked)
+		let built = setup.scratch.file("built.json", json)
+		let replaced = ["Replaced the away team; the fixture is not saved yet"]
+		let kept = replaced + ["Kept the home line-up from before the replacement"]
+		// A pending order, or the order of a marked file, is pending again in the game's build.
+		setup.standIn.set(["FIXTURE": built.path])
+		for url in [lu, markedURL] {
+			open(setup, url)
+			if url == lu {
+				exchange(model, 10, 19)
+			}
+			let lines = model.log.lines.count
+			replaceAway(setup)
+			checkEqual(Array(logged(model, from: lines).suffix(2)), kept)
+			checkEqual(model.fixture?.lineupEdited(side: 0), true)
+			checkEqual(model.fixture?.lineupMarked(side: 0), false)
+			checkEqual(model.fixture.map { Array($0.order(side: 0).prefix(22)) }, exchangedPlaces(10, 19))
+			checkEqual(model.fixture?.cell(side: 0, row: 10, column: 1), "Florian Wirtz")
+			check(model.fixture?.hasPlayerEdits == true)
+		}
+		// A save writes it, marker and all.
+		let saved = setup.scratch.file("kept.json")
+		setup.prompts.destination = (saved, false)
+		model.requestSave()
+		wait(model)
+		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
+		checkEqual(try Data(contentsOf: saved), marked)
+		checkEqual(model.fixture?.lineupEdited(side: 0), false)
+		checkEqual(model.fixture?.lineupMarked(side: 0), true)
+		// fm24ctl has kept it already: nothing is pending, and the result is marked.
+		setup.standIn.set(["FIXTURE": markedURL.path])
+		open(setup, lu)
+		exchange(model, 10, 19)
+		var lines = model.log.lines.count
+		replaceAway(setup)
+		checkEqual(Array(logged(model, from: lines).suffix(2)), kept)
+		checkEqual(model.fixture?.hasPlayerEdits, false)
+		checkEqual(model.fixture?.lineupMarked(side: 0), true)
+		checkEqual(model.fixture?.cell(side: 0, row: 10, column: 1), "Florian Wirtz")
+		// A line-up neither changed nor marked is the game's.
+		open(setup, lu)
+		lines = model.log.lines.count
+		replaceAway(setup)
+		checkEqual(Array(logged(model, from: lines).suffix(1)), replaced)
+		checkEqual(model.fixture?.hasPlayerEdits, false)
+		checkEqual(model.fixture?.cell(side: 0, row: 10, column: 1), "Florian Wirtz")
+		// Gravenberch, in the fixture by an ID the rebuild wrote back (as after a swap), is missing:
+		// the player no one names, Gravenberch under his own ID, takes his place.
+		let swapped = replacing(
+			replacing(json, "\"u32\": 37071197}", with: "\"u32\": 2000040347}"),
+			"\"u32\": 37071197}",
+			with: "\"u32\": 2000040347}"
+		)
+		setup.standIn.set(["FIXTURE": built.path])
+		open(setup, setup.scratch.file("swapped.json", swapped))
+		exchange(model, 10, 19)
+		lines = model.log.lines.count
+		replaceAway(setup)
+		checkEqual(
+			Array(logged(model, from: lines).suffix(3)),
+			kept + [
+				"Ryan Gravenberch (2000040347) is not in the rebuilt home squad; Ryan Gravenberch "
+					+ "(37071197) takes that place (Sub)"
+			]
+		)
+		checkEqual(model.fixture.map { Array($0.order(side: 0).prefix(22)) }, exchangedPlaces(10, 19))
+		// A rebuilt side whose order cannot change keeps the game's, with the reason in the log.
+		let uneven = setup.scratch.file(
+			"uneven.json",
+			replacing(
+				json,
+				"\"home.player_count\", \"u8\": 22",
+				with: "\"home.player_count\", \"u8\": 21"
+			)
+		)
+		setup.standIn.set(["FIXTURE": uneven.path])
+		open(setup, lu)
+		exchange(model, 10, 19)
+		lines = model.log.lines.count
+		replaceAway(setup)
+		checkEqual(
+			Array(logged(model, from: lines).suffix(2)),
+			replaced + [
+				"Error: Cannot keep the home line-up from before the replacement: the new fixture's home "
+					+ "order cannot be changed."
+			]
+		)
+		checkEqual(model.fixture?.hasPlayerEdits, false)
+		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
+	}
+
+	/// Moves Newcastle's players in awayLineupSampleJSON in a cycle in the Edit line-up sheet.
+	private static func exchangeAway(_ model: ViewerModel) {
+		model.editLineup(side: 1)
+		check(model.lineupEditor != nil, "no Edit line-up sheet")
+		for (first, second) in awayCycle {
+			model.lineupEditor?.exchange(first, second)
+		}
+		model.confirmLineup()
+	}
+
+	static func keepsAwayLineup() throws {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let json = awayLineupSampleJSON()
+		let url = setup.scratch.file("away.json", json)
+		let input = setup.scratch.file("input.json")
+		setup.standIn.set([
+			"INPUT": input.path, "FIXTURE": setup.scratch.file("built.json", json).path,
+		])
+		// The home team's replacement is given the away order, marked, and the game's build has it
+		// pending again.
+		open(setup, url)
+		exchangeAway(model)
+		let lines = model.log.lines.count
+		replaceTeam(setup, side: 0)
+		let written = try Data(contentsOf: input)
+		checkEqual(
+			written,
+			try FixtureHandle.write(
+				json: json,
+				changes: PlayerChanges(lineup: exchangedOrder(awayCycle, side: 1)),
+				venue: nil,
+				binary: false
+			)
+		)
+		checkEqual(occurrences("\"away_lineup\": true", in: written), 1)
+		checkEqual(
+			Array(logged(model, from: lines).suffix(2)),
+			[
+				"Replaced the home team; the fixture is not saved yet",
+				"Kept the away line-up from before the replacement",
+			]
+		)
+		check(model.isTemporary)
+		checkEqual(model.fixture?.lineupEdited(side: 1), true)
+		checkEqual(model.fixture?.lineupEdited(side: 0), false)
+		checkEqual(
+			model.fixture.map { Array($0.order(side: 1).prefix(13)) },
+			exchangedPlaces(awayCycle, count: 13)
+		)
+		checkEqual(model.fixture?.cell(side: 1, row: 2, column: 1), "Lewis Miley")
+		// The away team's replacement drops it.
+		open(setup, url)
+		exchangeAway(model)
+		replaceTeam(setup, side: 1)
+		checkEqual(try Data(contentsOf: input), json)
+		checkEqual(model.fixture?.hasPlayerEdits, false)
+		checkEqual(model.fixture?.lineupEdited(side: 1), false)
+		checkEqual(model.fixture?.cell(side: 1, row: 2, column: 1), "Sven Botman")
+		checkEqual(
+			setup.standIn.runs.map { $0.first ?? "" },
+			["list-teams", "replace-home", "replace-away"]
+		)
+		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
+	}
+
+	static func swapsAfterAwayLineup() throws {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let json = awayLineupSampleJSON()
+		open(setup, setup.scratch.file("away.json", json))
+		let folder = model.work.folder.path
+		exchangeAway(model)
+		// Miley, selected, is in place 2 of the input, which has the new order written in.
+		model.select(side: 1, blocks: [12])
+		let input = setup.scratch.file("input.json")
+		setup.standIn.set([
+			"INPUT": input.path, "FIXTURE": setup.scratch.file("swapped.json", json).path,
+		])
+		model.requestSwap(side: 1)
+		guard let prompt = model.swapPrompt else {
+			check(false, "no swap prompt")
+			return
+		}
+		checkEqual(prompt.label, "Swap Lewis Miley for...")
+		check(waitUntil { model.players.state != .loading }, "the player list did not load")
+		// Newcastle's own players, at the places the pending order gives them, are refused without
+		// asking the game.
+		let runs = setup.standIn.runs.count
+		let squad = [
+			("28018613", "Kieran Trippier is already in Newcastle's squad (Sub)."),
+			("37063649", "Sven Botman is already in Newcastle's squad (Slot 1, DR)."),
+		]
+		for (person, reason) in squad {
+			prompt.type(person)
+			model.confirmSwap()
+			check(model.swapPrompt === prompt, "the prompt closed for \(person)")
+			checkEqual(
+				setup.prompts.lastError,
+				reason
+					+ " Use Edit Line-up to move this player, or tick \"Allow duplicates?\" to put a copy "
+					+ "here."
+			)
+		}
+		checkEqual(setup.standIn.runs.count, runs)
+		prompt.type("40347")
+		model.confirmSwap()
+		wait(model)
+		checkEqual(
+			setup.standIn.runs.last,
+			["inject-player", folder + "/in-2.json", "away.player[2]", "40347", folder + "/out-3.json"]
+		)
+		checkEqual(
+			try Data(contentsOf: input),
+			try FixtureHandle.write(
+				json: json,
+				changes: PlayerChanges(lineup: exchangedOrder(awayCycle, side: 1)),
+				venue: nil,
+				binary: false
+			)
+		)
+		check(model.isTemporary)
+		checkEqual(model.fixture?.hasPlayerEdits, false)
+		setup.checkTemporaryOnly()
 	}
 }

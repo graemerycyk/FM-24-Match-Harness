@@ -71,6 +71,7 @@ static void serve(HANDLE pipe) {
 }
 
 static DWORD WINAPI worker(LPVOID parameter) {
+	job_markLoaded();
 	setDirectory(parameter);
 	log_open(directory);
 	if (!game_init()) {

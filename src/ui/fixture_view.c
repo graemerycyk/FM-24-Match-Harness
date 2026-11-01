@@ -6,11 +6,13 @@
 #include "fixture_data.h"
 #include "fixture_edit.h"
 #include "fixture_export.h"
+#include "fixture_lineup.h"
 #include "json_reader.h"
 #include "match_config.h"
 #include "platform.h"
 #include "protocol.h"
 #include "saves.h"
+#include "tactic_names.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -41,6 +43,8 @@ _Static_assert(sizeof(FixturePlayerEdits) == (size_t)2 * FIXTURE_VIEW_BLOCKS, ""
 struct FixtureView {
 	FixtureData data;
 	FixturePlayerEdits edits;
+	FixtureLineup lineup;         // the pending orders
+	bool marked[2];               // the header says the side's line-up was changed
 	char save[SAVES_NAME_LENGTH]; // the save fm24ctl checks before a job, "" for none
 	char gameDate[CONFIG_DATE_LENGTH];
 };
@@ -105,20 +109,34 @@ static unsigned playerCount(const FixtureTeam *team) {
 	return count < FIXTURE_PLAYERS ? (unsigned)count : FIXTURE_PLAYERS;
 }
 
-// The player a row lists: with an unknown line-up, the tactic's slots come first, with no player.
-static const FixturePlayer *rowPlayer(const FixtureTeam *team, unsigned row) {
+// The player a row lists: with an unknown line-up, the tactic's slots come first, with no player;
+// otherwise the player the pending order puts at the row's place.
+static const FixturePlayer *rowPlayer(const FixtureView *view, unsigned side, unsigned row) {
+	const FixtureTeam *team = &view->data.teams[side];
 	unsigned first = team->lineupKnown ? 0 : FIXTURE_SLOTS;
 	if (row < first || row - first >= playerCount(team)) {
 		return NULL;
 	}
-	return &team->players[row - first];
+	return &team->players[view->lineup.from[side][row - first]];
 }
 
-// The fixture's save as fm24ctl's commands read it (commands.c's readFixtureSave): the name of a
-// "save" that can be one, without control characters, and its "game_date".
-static void readSave(const char *json, size_t length, FixtureView *view) {
+static bool isIdentity(const uint8_t *from) {
+	for (unsigned place = 0; place < FIXTURE_PLAYERS; ++place) {
+		if (from[place] != place) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// The fixture's line-up markers, and its save as fm24ctl's commands read it
+// (runJob_readFixtureSave): the name of a "save" that can be one, without control characters, and
+// its "game_date".
+static void readHeader(const char *json, size_t length, FixtureView *view) {
 	ConfigOrigin origin;
 	(void)matchConfig_readOrigin(json, length, &origin);
+	view->marked[0] = origin.lineup[0];
+	view->marked[1] = origin.lineup[1];
 	bool named = origin.hasSave && saves_nameOfPath(origin.save, view->save, sizeof view->save) &&
 							 saves_isName(view->save);
 	for (const char *c = view->save; named && *c; ++c) {
@@ -146,7 +164,24 @@ FixtureView *fixtureView_open(const char *json, size_t length, char *error, size
 		free(view);
 		return NULL;
 	}
-	readSave(json, length, view);
+	for (unsigned side = 0; side < 2; ++side) {
+		const FixtureTeam *team = &view->data.teams[side];
+		if (!team->blocksInOrder) {
+			(void)snprintf(
+				error,
+				errorSize,
+				"%s.player[%u] is in place %u: its player blocks were moved without renaming them. Use "
+				"fm24ctl lineup to move players.",
+				side ? "away" : "home",
+				team->misplacedBlock,
+				team->misplacedPlace
+			);
+			free(view);
+			return NULL;
+		}
+	}
+	fixtureLineup_identity(&view->lineup);
+	readHeader(json, length, view);
 	return view;
 }
 
@@ -268,7 +303,7 @@ unsigned fixtureView_rowCount(const FixtureView *view, unsigned side) {
 
 int fixtureView_rowBlock(const FixtureView *view, unsigned side, unsigned row) {
 	const FixtureTeam *team = sideTeam(view, side);
-	const FixturePlayer *player = team ? rowPlayer(team, row) : NULL;
+	const FixturePlayer *player = team ? rowPlayer(view, side, row) : NULL;
 	return player && selectable(player) ? (int)(player - team->players) : -1;
 }
 
@@ -385,7 +420,7 @@ size_t fixtureView_cell(
 	if (!team || row >= fixtureView_rowCount(view, side) || column >= FIXTURE_VIEW_COLUMNS) {
 		return written(snprintf(out, size, "%s", ""), out, size);
 	}
-	const FixturePlayer *player = rowPlayer(team, row);
+	const FixturePlayer *player = rowPlayer(view, side, row);
 	if (column == 1) {
 		const char *name = player && player->name[0] ? player->name : "<Unknown>";
 		return written(snprintf(out, size, "%s", name), out, size);
@@ -543,11 +578,226 @@ void fixtureView_playerEdits(const FixtureView *view, uint8_t *flags) {
 }
 
 bool fixtureView_hasPlayerEdits(const FixtureView *view) {
-	return fixtureData_hasPlayerEdits(&view->edits);
+	return fixtureData_hasPlayerEdits(&view->edits) || view->lineup.changed[0] ||
+				 view->lineup.changed[1];
 }
 
 void fixtureView_clearPlayerEdits(FixtureView *view) {
 	memset(&view->edits, 0, sizeof view->edits);
+}
+
+bool fixtureView_lineupKnown(const FixtureView *view, unsigned side) {
+	const FixtureTeam *team = sideTeam(view, side);
+	return team && team->lineupKnown;
+}
+
+bool fixtureView_lineupEditable(const FixtureView *view, unsigned side) {
+	const FixtureTeam *team = sideTeam(view, side);
+	unsigned count = team ? playerCount(team) : 0;
+	return team && team->lineupKnown && team->blocksInOrder && count >= FIXTURE_SLOTS &&
+				 team->blockCount == count;
+}
+
+bool fixtureView_lineupMarked(const FixtureView *view, unsigned side) {
+	return side < 2 && view->marked[side];
+}
+
+bool fixtureView_lineupEdited(const FixtureView *view, unsigned side) {
+	return side < 2 && view->lineup.changed[side];
+}
+
+unsigned fixtureView_benchSize(const FixtureView *view, unsigned side) {
+	const FixtureTeam *team = sideTeam(view, side);
+	return team ? team->benchSize : 0;
+}
+
+void fixtureView_order(const FixtureView *view, unsigned side, uint8_t *from) {
+	for (unsigned place = 0; place < FIXTURE_PLAYERS; ++place) {
+		from[place] = side < 2 ? view->lineup.from[side][place] : (uint8_t)place;
+	}
+}
+
+bool fixtureView_setOrder(FixtureView *view, unsigned side, const uint8_t *from) {
+	if (!fixtureView_lineupEditable(view, side)) {
+		return false;
+	}
+	unsigned count = playerCount(&view->data.teams[side]);
+	bool placed[FIXTURE_PLAYERS] = {false};
+	for (unsigned place = 0; place < count; ++place) {
+		if (from[place] >= count || placed[from[place]]) {
+			return false;
+		}
+		placed[from[place]] = true;
+	}
+	uint8_t *order = view->lineup.from[side];
+	for (unsigned place = 0; place < FIXTURE_PLAYERS; ++place) {
+		order[place] = place < count ? from[place] : (uint8_t)place;
+	}
+	view->lineup.changed[side] = !isIdentity(order);
+	return true;
+}
+
+int fixtureView_placeOf(const FixtureView *view, unsigned side, unsigned block) {
+	const FixtureTeam *team = sideTeam(view, side);
+	unsigned count = team ? playerCount(team) : 0;
+	for (unsigned place = 0; place < count; ++place) {
+		if (view->lineup.from[side][place] == block) {
+			return (int)place;
+		}
+	}
+	return -1;
+}
+
+// Puts items[from[i]] at items[i] for each i < count, following each of the order's cycles with
+// `spare`, which holds one item.
+static void reorder(void *items, size_t size, const uint8_t *from, unsigned count, void *spare) {
+	unsigned char *base = items;
+	bool done[FIXTURE_PLAYERS] = {false};
+	for (unsigned start = 0; start < count; ++start) {
+		if (done[start]) {
+			continue;
+		}
+		memcpy(spare, base + start * size, size);
+		unsigned place = start;
+		while (from[place] != start) {
+			memcpy(base + place * size, base + (size_t)from[place] * size, size);
+			done[place] = true;
+			place = from[place];
+		}
+		memcpy(base + place * size, spare, size);
+		done[place] = true;
+	}
+}
+
+void fixtureView_commitOrder(FixtureView *view) {
+	for (unsigned side = 0; side < 2; ++side) {
+		if (!view->lineup.changed[side]) {
+			continue;
+		}
+		FixtureTeam *team = &view->data.teams[side];
+		const uint8_t *from = view->lineup.from[side];
+		unsigned count = playerCount(team);
+		FixturePlayer player;
+		uint8_t flags = 0;
+		reorder(team->players, sizeof player, from, count, &player);
+		reorder(view->edits.players[side], sizeof flags, from, count, &flags);
+		view->marked[side] = true;
+	}
+	fixtureLineup_identity(&view->lineup);
+}
+
+bool fixtureView_orderByPeople(
+	const FixtureView *view,
+	unsigned side,
+	const uint32_t *people,
+	unsigned count,
+	uint8_t *from,
+	bool *found,
+	int *places
+) {
+	FixtureLineup lineup;
+	FixtureLineupPeople matched;
+	fixtureLineup_identity(&lineup);
+	if (!fixtureView_lineupEditable(view, side) ||
+			!fixtureLineup_byPeople(&view->data, side, people, count, &lineup, &matched)) {
+		return false;
+	}
+	memcpy(from, lineup.from[side], FIXTURE_PLAYERS);
+	for (unsigned i = 0; i < count; ++i) {
+		found[i] = matched.found[i];
+		places[i] = matched.places[i];
+	}
+	return true;
+}
+
+int64_t fixtureView_personId(const FixtureView *view, unsigned side, unsigned block) {
+	const FixtureTeam *team = sideTeam(view, side);
+	bool known = team && block < playerCount(team) && team->players[block].personUid.known &&
+							 team->players[block].personUid.value <= INT64_MAX;
+	return known ? (int64_t)team->players[block].personUid.value : -1;
+}
+
+// The position rating (in .ratings' order, docs/FIXTURE.md#ratings) of a slot's position mask, as
+// fixtureData_position names it, or -1 if it names none.
+static int ratingIndex(uint64_t mask) {
+	// Position bits 0-14 (docs/FIXTURE.md#formation-positions-roles-and-duties); bit 1 has no name.
+	static const int indexes[15] = {0, -1, 4, 2, 3, 14, 13, 5, 8, 6, 7, 11, 9, 10, 12};
+	uint64_t sides = (UINT64_C(1) << TACTIC_LEFT_BIT) | (UINT64_C(1) << TACTIC_RIGHT_BIT);
+	if ((mask & sides) == sides) {
+		return -1;
+	}
+	for (unsigned bit = 0; bit < 15; ++bit) {
+		if ((mask & ~sides) == UINT64_C(1) << bit) {
+			return indexes[bit];
+		}
+	}
+	return -1;
+}
+
+int fixtureView_positionRating(
+	const FixtureView *view,
+	unsigned side,
+	unsigned block,
+	unsigned slot
+) {
+	const FixtureTeam *team = sideTeam(view, side);
+	if (!team || block >= playerCount(team) || slot >= FIXTURE_SLOTS ||
+			!team->slots[slot].position.known || !team->players[block].positionRatingsKnown) {
+		return -1;
+	}
+	int index = ratingIndex(team->slots[slot].position.value);
+	int rating = index >= 0 ? team->players[block].positionRatings[index] : -1;
+	return rating >= 1 && rating <= 20 ? rating : -1;
+}
+
+// Adds a character to text of `size` bytes holding `*length` (which counts what did not fit too).
+static void addCharacter(char *out, size_t size, size_t *length, char c) {
+	if (*length + 1 < size) {
+		out[*length] = c;
+	}
+	++*length;
+}
+
+size_t fixtureView_lineupWarnings(
+	const FixtureView *view,
+	unsigned side,
+	const uint8_t *from,
+	char *out,
+	size_t size
+) {
+	// A line per slot, and one for the substitutes.
+	char warnings[(FIXTURE_SLOTS + 1) * (FIXTURE_TEXT + 64)] = "";
+	if (fixtureView_lineupEditable(view, side)) {
+		FixtureLineup lineup;
+		fixtureLineup_identity(&lineup);
+		memcpy(lineup.from[side], from, playerCount(&view->data.teams[side]));
+		lineup.changed[side] = true;
+		char error[256];
+		if (!fixtureLineup_check(
+					&view->data, side, &lineup, false, error, sizeof error, warnings, sizeof warnings
+				)) {
+			warnings[0] = 0;
+		}
+	}
+	// lineup's lines as sentences: capitalised, with a full stop.
+	size_t length = 0;
+	for (const char *line = warnings; *line;) {
+		size_t lineLength = strcspn(line, "\n");
+		for (size_t i = 0; i < lineLength; ++i) {
+			char c = line[i];
+			addCharacter(out, size, &length, (char)(i == 0 && c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c));
+		}
+		addCharacter(out, size, &length, '.');
+		line += lineLength;
+		line += *line == '\n';
+		if (*line) {
+			addCharacter(out, size, &length, '\n');
+		}
+	}
+	if (size) {
+		out[length < size ? length : size - 1] = 0;
+	}
+	return length;
 }
 
 const char *fixtureView_venueLabel(unsigned field) {
@@ -670,6 +920,7 @@ bool fixtureView_write(
 	const char *json,
 	size_t length,
 	const uint8_t *playerEdits,
+	const uint8_t *order,
 	const FixtureViewNumber *venue,
 	bool binary,
 	uint8_t **out,
@@ -683,6 +934,12 @@ bool fixtureView_write(
 	if (playerEdits) {
 		memcpy(edits.players, playerEdits, sizeof edits.players);
 	}
+	FixtureLineup lineup;
+	fixtureLineup_identity(&lineup);
+	for (unsigned side = 0; order && side < 2; ++side) {
+		memcpy(lineup.from[side], order + (size_t)side * FIXTURE_VIEW_BLOCKS, FIXTURE_VIEW_BLOCKS);
+		lineup.changed[side] = !isIdentity(lineup.from[side]);
+	}
 	FixtureNumber values[VENUE_FIELD_COUNT];
 	bool withVenue = venue && fixtureView_hasVenue(venue);
 	if (withVenue) {
@@ -690,7 +947,7 @@ bool fixtureView_write(
 	}
 	ByteBuffer bytes = {0};
 	if (!fixtureEdit_apply(
-				json, length, &edits, withVenue ? values : NULL, binary, &bytes, error, errorSize
+				json, length, &edits, &lineup, withVenue ? values : NULL, binary, &bytes, error, errorSize
 			)) {
 		buffer_free(&bytes);
 		return false;

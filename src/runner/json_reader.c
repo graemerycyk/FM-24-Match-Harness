@@ -8,7 +8,19 @@
 #include <string.h>
 
 
-enum { MAX_DEPTH = 64 };
+enum {
+	MAX_DEPTH = 64,
+	FLAT_PATH_LENGTH = 160, // the longest path jsonFlat_read keeps
+	UTC_TIME_LENGTH = 20,   // "2026-10-25T09:23:18Z"
+};
+
+// A document being flattened.
+typedef struct Flattening {
+	JsonReader reader;
+	JsonFlat *flat;
+	char path[FLAT_PATH_LENGTH];
+	ByteBuffer text;
+} Flattening;
 
 static void skipWhitespace(JsonReader *reader);
 static bool appendUtf8(ByteBuffer *out, unsigned long codePoint);
@@ -22,6 +34,13 @@ convertUnsigned(JsonReader *reader, const char *start, const char *end, unsigned
 static bool skipLiteral(JsonReader *reader);
 static bool skipContainer(JsonReader *reader, bool isObject, int depth);
 static bool skipNested(JsonReader *reader, int depth);
+static bool flattenValue(Flattening *state, size_t pathLength, int depth);
+static bool flattenMembers(Flattening *state, size_t pathLength, bool isObject, int depth);
+static bool flattenLiteral(Flattening *state, size_t pathLength);
+static bool
+addEntry(Flattening *state, size_t pathLength, char kind, const char *text, size_t length);
+static bool readDecimalText(const char *text, size_t length, uint64_t *value);
+static int64_t daysFromCivil(int64_t year, unsigned month, unsigned day);
 
 void jsonReader_init(JsonReader *reader, const char *text, size_t length) {
 	*reader = (JsonReader){.begin = text, .position = text, .end = text + length};
@@ -326,4 +345,213 @@ static bool skipNested(JsonReader *reader, int depth) {
 		return skipContainer(reader, false, depth);
 	}
 	return skipLiteral(reader);
+}
+
+bool jsonFlat_read(JsonFlat *flat, const char *text, size_t length) {
+	buffer_clear(&flat->entries);
+	Flattening state = {.flat = flat};
+	jsonReader_init(&state.reader, text, length);
+	bool ok = flattenValue(&state, 0, 0);
+	skipWhitespace(&state.reader);
+	ok = ok && state.reader.position == state.reader.end;
+	buffer_free(&state.text);
+	if (!ok) {
+		buffer_clear(&flat->entries);
+	}
+	return ok;
+}
+
+void jsonFlat_free(JsonFlat *flat) {
+	buffer_free(&flat->entries);
+}
+
+const char *jsonFlat_find(const JsonFlat *flat, const char *path, char *kind) {
+	const char *at = (const char *)flat->entries.data;
+	const char *end = at + flat->entries.length;
+	while (at && at < end) {
+		size_t pathLength = strlen(at);
+		const char *value = at + pathLength + 2;
+		if (strcmp(at, path) == 0) {
+			if (kind) {
+				*kind = at[pathLength + 1];
+			}
+			return value;
+		}
+		at = value + strlen(value) + 1;
+	}
+	return NULL;
+}
+
+bool jsonFlat_unsigned(const JsonFlat *flat, const char *path, uint64_t *value) {
+	char kind = 0;
+	const char *text = jsonFlat_find(flat, path, &kind);
+	*value = 0;
+	return text && kind == 'n' && readDecimalText(text, strlen(text), value);
+}
+
+bool jsonFlat_string(const JsonFlat *flat, const char *path, char *out, size_t size) {
+	char kind = 0;
+	const char *text = jsonFlat_find(flat, path, &kind);
+	size_t length = text ? strlen(text) : 0;
+	if (!text || kind != 's' || length >= size) {
+		if (size) {
+			out[0] = 0;
+		}
+		return false;
+	}
+	memcpy(out, text, length + 1);
+	return true;
+}
+
+bool jsonFlat_bool(const JsonFlat *flat, const char *path, bool *value) {
+	char kind = 0;
+	const char *text = jsonFlat_find(flat, path, &kind);
+	*value = text && kind == 'b' && strcmp(text, "true") == 0;
+	return text && kind == 'b';
+}
+
+bool jsonFlat_isNull(const JsonFlat *flat, const char *path) {
+	char kind = 0;
+	return jsonFlat_find(flat, path, &kind) && kind == 'z';
+}
+
+bool jsonFlat_time(const JsonFlat *flat, const char *path, time_t *seconds) {
+	char text[UTC_TIME_LENGTH + 1];
+	*seconds = 0;
+	if (!jsonFlat_string(flat, path, text, sizeof text) || strlen(text) != UTC_TIME_LENGTH ||
+			text[4] != '-' || text[7] != '-' || text[10] != 'T' || text[13] != ':' || text[16] != ':' ||
+			text[19] != 'Z') {
+		return false;
+	}
+	static const size_t starts[] = {0, 5, 8, 11, 14, 17};
+	static const size_t lengths[] = {4, 2, 2, 2, 2, 2};
+	static const uint64_t limits[] = {9999, 12, 31, 23, 59, 60};
+	uint64_t parts[6] = {0};
+	for (size_t i = 0; i < 6; ++i) {
+		if (!readDecimalText(text + starts[i], lengths[i], &parts[i]) || parts[i] > limits[i]) {
+			return false;
+		}
+	}
+	if (parts[1] < 1 || parts[2] < 1) {
+		return false;
+	}
+	int64_t days = daysFromCivil((int64_t)parts[0], (unsigned)parts[1], (unsigned)parts[2]);
+	*seconds = (time_t)(days * 86400 + (int64_t)(parts[3] * 3600 + parts[4] * 60 + parts[5]));
+	return true;
+}
+
+static bool flattenValue(Flattening *state, size_t pathLength, int depth) {
+	JsonReader *reader = &state->reader;
+	if (depth > MAX_DEPTH) {
+		return jsonReader_fail(reader, "nested too deeply");
+	}
+	if (jsonReader_consume(reader, '{')) {
+		return flattenMembers(state, pathLength, true, depth);
+	}
+	if (jsonReader_consume(reader, '[')) {
+		return flattenMembers(state, pathLength, false, depth);
+	}
+	if (reader->position < reader->end && *reader->position == '"') {
+		return jsonReader_readString(reader, &state->text) &&
+					 addEntry(state, pathLength, 's', buffer_string(&state->text), state->text.length);
+	}
+	return flattenLiteral(state, pathLength);
+}
+
+// The members of an object or array whose opening bracket was consumed, each at the path
+// extended by its key or position.
+static bool flattenMembers(Flattening *state, size_t pathLength, bool isObject, int depth) {
+	JsonReader *reader = &state->reader;
+	char close = isObject ? '}' : ']';
+	if (jsonReader_consume(reader, close)) {
+		return true;
+	}
+	size_t position = 0;
+	bool ok = true;
+	do {
+		char number[24];
+		const char *name = number;
+		size_t length = 0;
+		if (isObject) {
+			ok = jsonReader_readString(reader, &state->text) &&
+					 (jsonReader_consume(reader, ':') || jsonReader_fail(reader, "expected :"));
+			name = buffer_string(&state->text);
+			length = state->text.length;
+		} else {
+			length = (size_t)snprintf(number, sizeof number, "%zu", position++);
+		}
+		size_t extended = pathLength + (pathLength ? 1 : 0) + length;
+		if (ok && extended >= FLAT_PATH_LENGTH) {
+			ok = jsonReader_fail(reader, "path too long");
+		}
+		if (ok) {
+			if (pathLength) {
+				state->path[pathLength] = '.';
+			}
+			memcpy(state->path + extended - length, name, length);
+			ok = flattenValue(state, extended, depth + 1);
+		}
+	} while (ok && jsonReader_consume(reader, ','));
+	return ok && (jsonReader_consume(reader, close) ||
+								 jsonReader_fail(reader, "expected , or closing bracket"));
+}
+
+static bool flattenLiteral(Flattening *state, size_t pathLength) {
+	JsonReader *reader = &state->reader;
+	static const struct {
+		const char *text;
+		char kind;
+	} literals[] = {{"true", 'b'}, {"false", 'b'}, {"null", 'z'}};
+	for (size_t i = 0; i < sizeof literals / sizeof literals[0]; ++i) {
+		size_t length = strlen(literals[i].text);
+		if ((size_t)(reader->end - reader->position) >= length &&
+				memcmp(reader->position, literals[i].text, length) == 0) {
+			reader->position += length;
+			const char *text = literals[i].kind == 'z' ? "" : literals[i].text;
+			return addEntry(state, pathLength, literals[i].kind, text, strlen(text));
+		}
+	}
+	const char *start = reader->position;
+	bool isUnsigned = false;
+	return jsonReader_readNumber(reader, NULL, &isUnsigned) &&
+				 addEntry(state, pathLength, 'n', start, (size_t)(reader->position - start));
+}
+
+static bool
+addEntry(Flattening *state, size_t pathLength, char kind, const char *text, size_t length) {
+	ByteBuffer *entries = &state->flat->entries;
+	if (memchr(text, 0, length)) {
+		return jsonReader_fail(&state->reader, "NUL in a string");
+	}
+	char separator[2] = {0, kind};
+	bool ok = buffer_append(entries, state->path, pathLength) &&
+						buffer_append(entries, separator, sizeof separator) &&
+						buffer_append(entries, text, length) && buffer_append(entries, "", 1);
+	return ok || jsonReader_fail(&state->reader, "out of memory");
+}
+
+// `length` decimal digits, at most UINT64_MAX.
+static bool readDecimalText(const char *text, size_t length, uint64_t *value) {
+	*value = 0;
+	if (!length) {
+		return false;
+	}
+	for (size_t i = 0; i < length; ++i) {
+		unsigned digit = (unsigned)(text[i] - '0');
+		if (text[i] < '0' || text[i] > '9' || *value > (UINT64_MAX - digit) / 10) {
+			return false;
+		}
+		*value = *value * 10 + digit;
+	}
+	return true;
+}
+
+// Days from 1970-01-01 to a date of the proleptic Gregorian calendar.
+static int64_t daysFromCivil(int64_t year, unsigned month, unsigned day) {
+	year -= month <= 2;
+	int64_t era = (year >= 0 ? year : year - 399) / 400;
+	unsigned yearOfEra = (unsigned)(year - era * 400);
+	unsigned dayOfYear = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1;
+	unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+	return era * 146097 + (int64_t)dayOfEra - 719468;
 }

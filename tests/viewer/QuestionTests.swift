@@ -3,13 +3,14 @@
 
 import Foundation
 
-/// What waits while a question, panel or the swap prompt is open, as everything waits behind a
-/// modal dialog on Windows: the prompts here answer later, as sheets do.
+/// What waits while a question, panel, the swap prompt or the Edit line-up sheet is open, as
+/// everything waits behind a modal dialog on Windows: the prompts here answer later, as sheets do.
 @MainActor
 enum QuestionTests {
 	static func register() {
 		Tests.test("nothing starts while a question or panel waits", waitsForQuestions)
 		Tests.test("nothing starts while the swap prompt is open", waitsForSwapPrompt)
+		Tests.test("nothing starts while the Edit line-up sheet is open", waitsForLineupSheet)
 	}
 
 	/// Opens the plain sample, selects away block 2, and has questions wait for their answers.
@@ -114,5 +115,37 @@ enum QuestionTests {
 		check(waitUntil { !model.isBusy }, "the swap did not finish")
 		checkEqual(setup.standIn.runs.last?.first, "inject-player")
 		check(model.isTemporary)
+	}
+
+	static func waitsForLineupSheet() {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		_ = openSample(setup)
+		model.editLineup(side: 0, block: 3)
+		guard let editor = model.lineupEditor else {
+			check(false, "no Edit line-up sheet")
+			return
+		}
+		check(model.isAsking)
+		checkEqual(editor.selection, 3)
+		tryEverything(setup, setup.scratch.file("other.json", plainSampleJSON()))
+		model.requestSwap(side: 1)
+		check(model.swapPrompt == nil)
+		model.editLineup(side: 0)
+		check(model.lineupEditor === editor, "a second sheet opened")
+		checkEqual(setup.standIn.runs, [])
+		// Confirm still changes the order; then everything works again.
+		editor.exchange(0, 11)
+		model.confirmLineup()
+		check(!model.isAsking)
+		checkEqual(model.fixture?.lineupEdited(side: 0), true)
+		checkEqual(
+			model.fixture?.cell(side: 0, row: 0, column: 1),
+			model.fixture?.playerName(side: 0, block: 11)
+		)
+		model.requestSwap(side: 1)
+		check(model.swapPrompt != nil)
 	}
 }

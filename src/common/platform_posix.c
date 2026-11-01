@@ -3,10 +3,15 @@
 
 #include "platform.h"
 
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/file.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -22,6 +27,10 @@ typedef struct ThreadStart {
 	void *argument;
 } ThreadStart;
 
+static bool systemPath(const wchar_t *path, char *out, const char *action);
+static bool syncDescriptor(int descriptor);
+static bool
+listEntries(DIR *directory, PlatformDirectoryVisit *visit, void *context, bool *stopped);
 static size_t encodeUtf8(uint32_t codePoint, char *out);
 static size_t decodeUtf8(const unsigned char *text, uint32_t *codePoint);
 static void *threadMain(void *parameter);
@@ -42,6 +51,134 @@ bool platform_removeFile(const wchar_t *path) {
 	}
 	fprintf(stderr, "cannot remove %s (%s)\n", utf8, platform_errorText(errno).text);
 	return false;
+}
+
+bool platform_syncFile(FILE *file) {
+	return fflush(file) == 0 && syncDescriptor(fileno(file));
+}
+
+bool platform_syncDirectory(const wchar_t *path) {
+	char utf8[UTF8_PATH_LENGTH];
+	if (!systemPath(path, utf8, "write to the disk")) {
+		return false;
+	}
+	int descriptor = open(utf8, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	bool ok = descriptor >= 0 && syncDescriptor(descriptor);
+	int error = errno;
+	if (descriptor >= 0) {
+		close(descriptor);
+	}
+	if (!ok) {
+		fprintf(stderr, "cannot write %s to the disk (%s)\n", utf8, platform_errorText(error).text);
+	}
+	return ok;
+}
+
+bool platform_replaceFile(const wchar_t *from, const wchar_t *to) {
+	char source[UTF8_PATH_LENGTH];
+	char target[UTF8_PATH_LENGTH];
+	if (!systemPath(from, source, "rename") || !systemPath(to, target, "replace")) {
+		return false;
+	}
+	if (rename(source, target) == 0) {
+		return true;
+	}
+	fprintf(stderr, "cannot rename %s to %s (%s)\n", source, target, platform_errorText(errno).text);
+	return false;
+}
+
+bool platform_renameFolder(const wchar_t *from, const wchar_t *to) {
+	return platform_replaceFile(from, to);
+}
+
+bool platform_makeDirectory(const wchar_t *path) {
+	char utf8[UTF8_PATH_LENGTH];
+	if (!systemPath(path, utf8, "create")) {
+		return false;
+	}
+	if (mkdir(utf8, 0755) == 0) {
+		return true;
+	}
+	int error = errno;
+	struct stat status;
+	if (error == EEXIST && stat(utf8, &status) == 0 && S_ISDIR(status.st_mode)) {
+		return true;
+	}
+	fprintf(stderr, "cannot create the folder %s (%s)\n", utf8, platform_errorText(error).text);
+	return false;
+}
+
+bool platform_listDirectory(const wchar_t *path, PlatformDirectoryVisit *visit, void *context) {
+	char utf8[UTF8_PATH_LENGTH];
+	if (!systemPath(path, utf8, "read")) {
+		return false;
+	}
+	DIR *directory = opendir(utf8);
+	bool stopped = false;
+	bool ok = directory && listEntries(directory, visit, context, &stopped);
+	int error = errno;
+	if (directory) {
+		(void)closedir(directory);
+	}
+	if (!ok && !stopped) {
+		fprintf(stderr, "cannot read the folder %s (%s)\n", utf8, platform_errorText(error).text);
+	}
+	return ok;
+}
+
+bool platform_removeDirectory(const wchar_t *path) {
+	char utf8[UTF8_PATH_LENGTH];
+	if (!systemPath(path, utf8, "remove")) {
+		return false;
+	}
+	if (rmdir(utf8) == 0 || errno == ENOENT) {
+		return true;
+	}
+	fprintf(stderr, "cannot remove the folder %s (%s)\n", utf8, platform_errorText(errno).text);
+	return false;
+}
+
+bool platform_freeBytes(const wchar_t *path, uint64_t *bytes) {
+	char utf8[UTF8_PATH_LENGTH];
+	struct statfs volume;
+	if (!systemPath(path, utf8, "check the free space of")) {
+		return false;
+	}
+	if (statfs(utf8, &volume) != 0) {
+		fprintf(
+			stderr, "cannot read the free space of %s (%s)\n", utf8, platform_errorText(errno).text
+		);
+		return false;
+	}
+	*bytes = (uint64_t)volume.f_bavail * volume.f_bsize;
+	return true;
+}
+
+PlatformLockResult platform_lockFile(const wchar_t *path, PlatformFileLock *lock) {
+	char utf8[UTF8_PATH_LENGTH];
+	if (!systemPath(path, utf8, "lock")) {
+		return PLATFORM_LOCK_FAILED;
+	}
+	int descriptor = open(utf8, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+	if (descriptor < 0) {
+		fprintf(stderr, "cannot open %s (%s)\n", utf8, platform_errorText(errno).text);
+		return PLATFORM_LOCK_FAILED;
+	}
+	if (flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+		int error = errno;
+		close(descriptor);
+		if (error == EWOULDBLOCK) {
+			return PLATFORM_LOCK_HELD;
+		}
+		fprintf(stderr, "cannot lock %s (%s)\n", utf8, platform_errorText(error).text);
+		return PLATFORM_LOCK_FAILED;
+	}
+	*lock = descriptor;
+	return PLATFORM_LOCK_TAKEN;
+}
+
+void platform_unlockFile(PlatformFileLock lock) {
+	close(lock);
 }
 
 bool platform_toUtf8(const wchar_t *text, char *out, size_t size) {
@@ -112,6 +249,12 @@ uint64_t platform_tickFrequency(void) {
 	return 1000000000U;
 }
 
+uint64_t platform_uptimeTicks(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_UPTIME_RAW, &now);
+	return (uint64_t)now.tv_sec * 1000000000U + (uint64_t)now.tv_nsec;
+}
+
 uint64_t platform_threadCpuTime(void) {
 	struct timespec used;
 	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &used) != 0) {
@@ -130,6 +273,10 @@ void platform_timeOfDay(int *hour, int *minute, int *second, int *millisecond) {
 	*minute = local.tm_min;
 	*second = local.tm_sec;
 	*millisecond = (int)(now.tv_usec / 1000);
+}
+
+bool platform_utcTime(time_t seconds, struct tm *out) {
+	return gmtime_r(&seconds, out) != NULL;
 }
 
 void platform_sleep(unsigned milliseconds) {
@@ -185,6 +332,54 @@ bool platform_startThread(PlatformThread *thread, void (*run)(void *argument), v
 void platform_joinThreads(PlatformThread *threads, size_t count) {
 	for (size_t i = 0; i < count; ++i) {
 		pthread_join(threads[i], NULL);
+	}
+}
+
+// `path` as UTF-8 for a system call; prints why and returns false if it cannot be.
+static bool systemPath(const wchar_t *path, char *out, const char *action) {
+	if (platform_toUtf8(path, out, UTF8_PATH_LENGTH)) {
+		return true;
+	}
+	fprintf(stderr, "cannot %s %ls: the path is not valid text or is too long\n", action, path);
+	return false;
+}
+
+// F_FULLFSYNC has the drive write its cache too; fsync only hands the data to it.
+static bool syncDescriptor(int descriptor) {
+	return fcntl(descriptor, F_FULLFSYNC) == 0 || fsync(descriptor) == 0;
+}
+
+// Visits each entry of an open directory but "." and ".."; false with errno set if one cannot be
+// read, or with `stopped` set if `visit` stopped.
+static bool
+listEntries(DIR *directory, PlatformDirectoryVisit *visit, void *context, bool *stopped) {
+	wchar_t name[1024]; // a name of up to 255 UTF-16 units
+	for (;;) {
+		errno = 0;
+		// NOLINTNEXTLINE(concurrency-mt-unsafe): each listing reads a stream of its own
+		const struct dirent *entry = readdir(directory);
+		if (!entry) {
+			return errno == 0;
+		}
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+			continue;
+		}
+		bool isDirectory = entry->d_type == DT_DIR;
+		struct stat status;
+		if (entry->d_type == DT_UNKNOWN) {
+			if (fstatat(dirfd(directory), entry->d_name, &status, AT_SYMLINK_NOFOLLOW) != 0) {
+				return false;
+			}
+			isDirectory = S_ISDIR(status.st_mode);
+		}
+		if (!platform_fromUtf8(entry->d_name, name, sizeof name / sizeof name[0])) {
+			errno = EILSEQ;
+			return false;
+		}
+		if (!visit(context, name, isDirectory)) {
+			*stopped = true;
+			return false;
+		}
 	}
 }
 

@@ -26,6 +26,9 @@ enum SimulationTests {
 		Tests.test("results that cannot be saved stay in the temporary folder", keepsUnsavedResults)
 		Tests.test("viewer shows the results in Finder", revealsResults)
 		Tests.test("viewer shows the harness waiting before a simulation", showsWaiting)
+		Tests.test("viewer asks before a rebuild puts FM24's line-up back", asksBeforeRebuild)
+		Tests.test("Run Anyway after the rebuild question asks nothing more", asksRebuildOnce)
+		Tests.test("an away line-up change asks before a rebuild too", asksBeforeAwayRebuild)
 	}
 
 	private static let threads = SimulationForm.threadLimit
@@ -335,7 +338,7 @@ enum SimulationTests {
 			try Data(contentsOf: copy),
 			try FixtureHandle.write(
 				json: plainSampleJSON(),
-				playerEdits: edits,
+				changes: PlayerChanges(flags: edits),
 				venue: nil,
 				binary: false
 			)
@@ -360,7 +363,7 @@ enum SimulationTests {
 		check(setup.prompts.errors.isEmpty, "\(setup.prompts.errors)")
 		checkEqual(
 			try Data(contentsOf: copy),
-			try FixtureHandle.write(json: venueJSON, playerEdits: nil, venue: venue, binary: false)
+			try FixtureHandle.write(json: venueJSON, changes: nil, venue: venue, binary: false)
 		)
 		checkEqual(try Data(contentsOf: venueFixture), venueJSON)
 		let folder = model.work.folder.path
@@ -410,7 +413,7 @@ enum SimulationTests {
 		}
 		let model = setup.model
 		let json = plainSampleJSON()
-		let bytes = try FixtureHandle.write(json: json, playerEdits: nil, venue: nil, binary: true)
+		let bytes = try FixtureHandle.write(json: json, changes: nil, venue: nil, binary: true)
 		let binary = setup.scratch.file("Next.bin", bytes)
 		setup.standIn.set(["FIXTURE": setup.scratch.file("decoded.json", json).path])
 		open(setup, binary)
@@ -740,5 +743,171 @@ enum SimulationTests {
 		check(waitUntil { !model.simulation.running })
 		checkEqual(model.activity, nil)
 		checkEqual(model.simulation.outcome, .complete)
+	}
+
+	/// Exchanges the lineup sample's home places 10 and 19 in the Edit line-up sheet.
+	private static func exchangeWirtz(_ model: ViewerModel) {
+		model.editLineup(side: 0)
+		check(model.lineupEditor != nil, "no Edit line-up sheet")
+		model.lineupEditor?.exchange(10, 19)
+		model.confirmLineup()
+	}
+
+	static func asksBeforeRebuild() throws {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let prompts = setup.prompts
+		let json = lineupSampleJSON()
+		open(setup, setup.scratch.file("lu.json", json))
+		exchangeWirtz(model)
+		let copy = setup.scratch.url.appendingPathComponent("played.json")
+		setup.standIn.set(["INPUT": copy.path])
+		let folder = model.work.folder.path
+		// Numeric seeds without Skip rebuild: the question first. Cancel, the default, shows the
+		// Simulation tab and runs nothing.
+		model.setKeepBuild(false)
+		model.setSeeds("1-3")
+		check(model.simulationForm.rebuilds)
+		model.tab = .squads
+		prompts.answers = [false]
+		model.simulate()
+		checkEqual(prompts.questions.count, 1)
+		checkEqual(prompts.questions.last?.title, "FM24 Match Harness")
+		checkEqual(
+			prompts.questions.last?.message,
+			"The line-up changes are not played when each seed is rebuilt: FM24 picks its own line-up "
+				+ "again. Tick \"Skip rebuild\" to play them."
+		)
+		checkEqual(prompts.questions.last?.action, "Simulate Anyway")
+		checkEqual(model.tab, .simulation)
+		check(!model.simulation.running && !model.isAsking)
+		checkEqual(setup.standIn.runs, [])
+		checkEqual(setup.activities.begun, [])
+		// Simulate Anyway rebuilds each seed, on the tab on show.
+		prompts.answers = [true]
+		model.tab = .squads
+		model.simulate()
+		check(model.simulation.running, "the simulation did not start")
+		check(waitUntil { !model.simulation.running }, "the simulation did not finish")
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+		checkEqual(prompts.questions.count, 2)
+		checkEqual(model.tab, .squads)
+		checkEqual(
+			setup.standIn.runs,
+			[["run", folder + "/in-1.json", "1-3", folder + "/run-2.csv", "--threads", String(threads)]]
+		)
+		// Skip rebuild plays the copy with the order, without a question; so do blank seeds and keep.
+		model.setKeepBuild(true)
+		check(!model.simulationForm.rebuilds)
+		simulate(setup, seeds: "1-3")
+		checkEqual(setup.standIn.runs.last?.last, "--keep-build")
+		let played = try Data(contentsOf: copy)
+		checkEqual(
+			played,
+			try FixtureHandle.write(
+				json: json,
+				changes: PlayerChanges(lineup: exchangedOrder(10, 19)),
+				venue: nil,
+				binary: false
+			)
+		)
+		checkEqual(occurrences("\"home_lineup\": true", in: played), 1)
+		model.setKeepBuild(false)
+		for seeds in ["", "keep"] {
+			model.setSeeds(seeds)
+			check(!model.simulationForm.rebuilds, "\(seeds) rebuilds")
+			simulate(setup, seeds: seeds)
+		}
+		checkEqual(prompts.questions.count, 2)
+		checkEqual(setup.standIn.runs.count, 4)
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+
+		// A fixture whose header says its line-up was changed asks too, with no edit pending.
+		let marked = try FixtureHandle.write(
+			json: json,
+			changes: PlayerChanges(lineup: exchangedOrder(10, 19)),
+			venue: nil,
+			binary: false
+		)
+		open(setup, setup.scratch.file("marked.json", marked))
+		check(model.fixture?.lineupMarked(side: 0) == true && model.fixture?.hasPlayerEdits == false)
+		prompts.answers = [false]
+		model.setSeeds("7")
+		model.simulate()
+		checkEqual(prompts.questions.count, 3)
+		checkEqual(setup.standIn.runs.count, 4)
+		// One whose line-up was not changed does not.
+		open(setup, setup.scratch.file("plain.json", json))
+		simulate(setup, seeds: "7")
+		checkEqual(prompts.questions.count, 3)
+		checkEqual(setup.standIn.runs.count, 5)
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+	}
+
+	/// Simulate Anyway, then another save loaded: Run Anyway runs it in that save without asking
+	/// about the rebuild again.
+	static func asksRebuildOnce() {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let prompts = setup.prompts
+		open(setup, setup.scratch.file("lu.json", lineupSampleJSON(saved: true)))
+		exchangeWirtz(model)
+		setup.standIn.set(["LOADED": "OTHER_FM24"])
+		model.setKeepBuild(false)
+		prompts.answers = [true, true]
+		simulate(setup, seeds: "1-2")
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+		checkEqual(prompts.questions.map(\.action), ["Simulate Anyway", "Run Anyway"])
+		checkEqual(setup.standIn.runs.count, 2)
+		checkEqual(setup.standIn.runs.last?.last, "--any-save")
+		checkEqual(model.simulation.outcome, .complete)
+	}
+
+	/// The away side's changed line-up, pending or in the file's header, asks as the home side's
+	/// does.
+	static func asksBeforeAwayRebuild() throws {
+		guard let setup = HarnessSetup() else {
+			return
+		}
+		let model = setup.model
+		let prompts = setup.prompts
+		let json = awayLineupSampleJSON()
+		open(setup, setup.scratch.file("away.json", json))
+		model.editLineup(side: 1)
+		check(model.lineupEditor != nil, "no Edit line-up sheet")
+		model.lineupEditor?.exchange(10, 12)
+		model.confirmLineup()
+		check(model.fixture?.lineupEdited(side: 1) == true)
+		model.setKeepBuild(false)
+		model.setSeeds("1-3")
+		prompts.answers = [false]
+		model.simulate()
+		checkEqual(prompts.questions.count, 1)
+		checkEqual(prompts.questions.last?.action, "Simulate Anyway")
+		check(!model.simulation.running && !model.isAsking)
+		checkEqual(setup.standIn.runs, [])
+		let marked = try FixtureHandle.write(
+			json: json,
+			changes: PlayerChanges(lineup: exchangedOrder(10, 12, side: 1)),
+			venue: nil,
+			binary: false
+		)
+		open(setup, setup.scratch.file("marked.json", marked))
+		check(model.fixture?.lineupMarked(side: 1) == true && model.fixture?.hasPlayerEdits == false)
+		model.setSeeds("1-3")
+		prompts.answers = [false]
+		model.simulate()
+		checkEqual(prompts.questions.count, 2)
+		checkEqual(setup.standIn.runs, [])
+		// Skip rebuild plays it without a question.
+		model.setKeepBuild(true)
+		simulate(setup, seeds: "1-3")
+		checkEqual(prompts.questions.count, 2)
+		checkEqual(setup.standIn.runs.count, 1)
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
 	}
 }

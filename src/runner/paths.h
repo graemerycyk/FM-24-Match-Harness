@@ -42,5 +42,10 @@ typedef enum PathsFolder {
 
 PathsFolder paths_parentFolder(const wchar_t *path);
 
+// Whether the folder holding absolute path `path` takes new files but lets none be renamed or
+// removed (macOS's append-only flag), so that a file written by renaming a new one over it
+// (files_replace) cannot be written there. Never on Windows.
+bool paths_folderAppendOnly(const wchar_t *path);
+
 // UTF-8 for job files and messages.
 bool paths_toUtf8(const wchar_t *text, char *out, size_t size);

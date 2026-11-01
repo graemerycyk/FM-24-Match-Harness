@@ -4,6 +4,7 @@
 #include "buffer.h"
 #include "fixture_data.h"
 #include "fixture_edit.h"
+#include "fixture_lineup.h"
 #include "fixture_samples.h"
 #include "fixture_view.h"
 #include "match_config.h"
@@ -456,16 +457,36 @@ TEST(places_slots_on_the_pitch) {
 	buffer_free(&json);
 }
 
-// The cells of every row after a save of the view's edits, read back, are those it shows.
+// Both sides' orders, as fixtureView_write takes them.
+static void viewOrder(const FixtureView *view, uint8_t order[2 * FIXTURE_VIEW_BLOCKS]) {
+	fixtureView_order(view, 0, order);
+	fixtureView_order(view, 1, order + FIXTURE_VIEW_BLOCKS);
+}
+
+// The cells of every row after a save of the view's edits and order, read back, are those it shows.
 static void checkWrittenEdits(const FixtureView *view, const ByteBuffer *json) {
 	uint8_t flags[2 * FIXTURE_VIEW_BLOCKS];
+	uint8_t order[2 * FIXTURE_VIEW_BLOCKS];
 	fixtureView_playerEdits(view, flags);
+	viewOrder(view, order);
 	uint8_t *bytes = NULL;
 	size_t length = 0;
 	char error[256] = "";
 	bool ok = fixtureView_write(
-		buffer_string(json), json->length, flags, NULL, false, &bytes, &length, error, sizeof error
+		buffer_string(json),
+		json->length,
+		flags,
+		order,
+		NULL,
+		false,
+		&bytes,
+		&length,
+		error,
+		sizeof error
 	);
+	if (!ok) {
+		fprintf(stderr, "%s\n", error);
+	}
 	ASSERT_BOOL_EQ(ok, true);
 	FixtureView *saved =
 		ok ? fixtureView_open((const char *)bytes, length, error, sizeof error) : NULL;
@@ -725,10 +746,12 @@ TEST(reads_parses_and_validates_venue_values) {
 	ASSERT_BOOL_EQ(fixtureView_hasVenue(stored), false);
 }
 
-// fixtureView_write's bytes against fixture_data.h and match_config.h's, step by step.
+// fixtureView_write's bytes against fixture_data.h, fixture_lineup.h and match_config.h's, step by
+// step: the Max edits, the order, the venue, the encoding.
 static void checkWrite(
 	const ByteBuffer *json,
 	const FixturePlayerEdits *edits,
+	const FixtureLineup *lineup,
 	const FixtureViewNumber *venue,
 	bool binary
 ) {
@@ -739,6 +762,15 @@ static void checkWrite(
 	if (ok && fixtureData_hasPlayerEdits(edits)) {
 		ok = fixtureData_writePlayers(
 			buffer_string(&expected), expected.length, edits, &step, error, sizeof error
+		);
+		buffer_free(&expected);
+		expected = step;
+		step = (ByteBuffer){0};
+	}
+	if (ok && lineup) {
+		FixtureLineupResult result;
+		ok = fixtureLineup_apply(
+			buffer_string(&expected), expected.length, lineup, &step, &result, error, sizeof error
 		);
 		buffer_free(&expected);
 		expected = step;
@@ -771,6 +803,7 @@ static void checkWrite(
 			buffer_string(json),
 			json->length,
 			edits ? &edits->players[0][0] : NULL,
+			lineup ? &lineup->from[0][0] : NULL,
 			venue,
 			binary,
 			&bytes,
@@ -797,8 +830,8 @@ TEST(writes_the_bytes_windows_saves) {
 	edits.players[0][1] = FIXTURE_MAX_FAMILIARITY | FIXTURE_MAX_HAPPINESS;
 	edits.players[1][5] = FIXTURE_MAX_CONDITION;
 	for (int binary = 0; binary < 2; ++binary) {
-		checkWrite(&json, NULL, NULL, binary != 0);
-		checkWrite(&json, &edits, NULL, binary != 0);
+		checkWrite(&json, NULL, NULL, NULL, binary != 0);
+		checkWrite(&json, &edits, NULL, NULL, binary != 0);
 	}
 	// Nothing to apply: the JSON as it is.
 	uint8_t *bytes = NULL;
@@ -806,7 +839,16 @@ TEST(writes_the_bytes_windows_saves) {
 	char error[256] = "";
 	ASSERT_BOOL_EQ(
 		fixtureView_write(
-			buffer_string(&json), json.length, NULL, NULL, false, &bytes, &length, error, sizeof error
+			buffer_string(&json),
+			json.length,
+			NULL,
+			NULL,
+			NULL,
+			false,
+			&bytes,
+			&length,
+			error,
+			sizeof error
 		),
 		true
 	);
@@ -819,6 +861,7 @@ TEST(writes_the_bytes_windows_saves) {
 			buffer_string(&json),
 			json.length,
 			&edits.players[0][0],
+			NULL,
 			NULL,
 			true,
 			&bytes,
@@ -841,11 +884,20 @@ TEST(writes_the_bytes_windows_saves) {
 		FixtureViewNumber venue[FIXTURE_VIEW_VENUE_FIELDS];
 		fixtureView_venue(view, venue);
 		for (int binary = 0; binary < 2; ++binary) {
-			checkWrite(&json, NULL, venue, binary != 0);
+			checkWrite(&json, NULL, NULL, venue, binary != 0);
 		}
 		ASSERT_BOOL_EQ(
 			fixtureView_write(
-				buffer_string(&json), json.length, NULL, venue, false, &bytes, &length, error, sizeof error
+				buffer_string(&json),
+				json.length,
+				NULL,
+				NULL,
+				venue,
+				false,
+				&bytes,
+				&length,
+				error,
+				sizeof error
 			),
 			true
 		);
@@ -854,7 +906,16 @@ TEST(writes_the_bytes_windows_saves) {
 		venue[FIXTURE_VIEW_SURFACE].value = 2;
 		ASSERT_BOOL_EQ(
 			fixtureView_write(
-				buffer_string(&json), json.length, NULL, venue, false, &bytes, &length, error, sizeof error
+				buffer_string(&json),
+				json.length,
+				NULL,
+				NULL,
+				venue,
+				false,
+				&bytes,
+				&length,
+				error,
+				sizeof error
 			),
 			false
 		);
@@ -865,12 +926,14 @@ TEST(writes_the_bytes_windows_saves) {
 	ByteBuffer out = {0};
 	ASSERT_BOOL_EQ(
 		fixtureEdit_apply(
-			buffer_string(&json), json.length, NULL, NULL, false, &out, error, sizeof error
+			buffer_string(&json), json.length, NULL, NULL, NULL, false, &out, error, sizeof error
 		),
 		true
 	);
 	ASSERT_BOOL_EQ(out.length == json.length && memcmp(out.data, json.data, json.length) == 0, true);
-	ASSERT_BOOL_EQ(fixtureEdit_apply("{", 1, NULL, NULL, true, &out, error, sizeof error), false);
+	ASSERT_BOOL_EQ(
+		fixtureEdit_apply("{", 1, NULL, NULL, NULL, true, &out, error, sizeof error), false
+	);
 	ASSERT_BOOL_EQ(out.length == 0 && error[0] != 0, true);
 	buffer_free(&out);
 	buffer_free(&json);
@@ -888,8 +951,9 @@ static bool writeFixture(
 	uint8_t *bytes = NULL;
 	size_t written = 0;
 	char error[256] = "";
-	bool ok =
-		fixtureView_write(json, length, players, venue, binary, &bytes, &written, error, sizeof error);
+	bool ok = fixtureView_write(
+		json, length, players, NULL, venue, binary, &bytes, &written, error, sizeof error
+	);
 	if (!ok) {
 		fprintf(stderr, "%s\n", error);
 	}
@@ -1363,6 +1427,692 @@ TEST(names_swapped_players_and_replaced_teams) {
 	ASSERT_BOOL_EQ(teams[0] == 0 && teams[1] == 0, true);
 }
 
+// The lineup sample (Liverpool v Newcastle, fixture_samples.h) with a stored pitch condition of
+// 200, for venue saves.
+static bool lineupJson(ByteBuffer *json) {
+	buffer_clear(json);
+	bool ok = sampleJson(FIXTURE_SAMPLE_LINEUP, json);
+	if (ok) {
+		replaceText(
+			json,
+			"{\"str\": \"Premier League\"}",
+			"{\"str\": \"Premier League\"},\n    {\"name\": \"venue.pitch_condition\", \"u16\": 200}"
+		);
+	}
+	return ok;
+}
+
+// Replaces every `from` in `json` with `to`.
+static void replaceEvery(ByteBuffer *json, const char *from, const char *to) {
+	while (strstr(buffer_string(json), from)) {
+		replaceText(json, from, to);
+	}
+}
+
+// Exchanges the names of two of a side's blocks, as a script that moves blocks without renaming
+// them leaves them.
+static void exchangeNames(ByteBuffer *json, const char *side, unsigned a, unsigned b) {
+	char nameA[32];
+	char nameB[32];
+	char spare[32];
+	(void)snprintf(nameA, sizeof nameA, "\"%s.player[%u]", side, a);
+	(void)snprintf(nameB, sizeof nameB, "\"%s.player[%u]", side, b);
+	(void)snprintf(spare, sizeof spare, "\"%s.player[moved]", side);
+	replaceEvery(json, nameA, spare);
+	replaceEvery(json, nameB, nameA);
+	replaceEvery(json, spare, nameB);
+}
+
+// The order that exchanges places a and b (that moves nobody if they are the same).
+static void exchanged(uint8_t from[FIXTURE_VIEW_BLOCKS], unsigned a, unsigned b) {
+	for (unsigned place = 0; place < FIXTURE_VIEW_BLOCKS; ++place) {
+		from[place] = (uint8_t)place;
+	}
+	from[a] = (uint8_t)b;
+	from[b] = (uint8_t)a;
+}
+
+static void checkOrder(const FixtureView *view, unsigned side, const uint8_t *expected) {
+	uint8_t from[FIXTURE_VIEW_BLOCKS];
+	fixtureView_order(view, side, from);
+	ASSERT_INT_EQ(memcmp(from, expected, sizeof from), 0);
+}
+
+// A home row of `view` shows the slot columns of the same row of `original`, the view without an
+// order, and the player columns of its row `playerRow`.
+static void checkMovedRow(
+	const FixtureView *view,
+	const FixtureView *original,
+	unsigned row,
+	unsigned playerRow
+) {
+	for (unsigned column = 0; column < FIXTURE_VIEW_COLUMNS; ++column) {
+		char shown[FIXTURE_VIEW_TEXT];
+		char expected[FIXTURE_VIEW_TEXT];
+		bool slotColumn = column == 0 || (column >= 2 && column <= 4);
+		fixtureView_cell(view, 0, row, column, shown, sizeof shown);
+		fixtureView_cell(original, 0, slotColumn ? row : playerRow, column, expected, sizeof expected);
+		if (strcmp(shown, expected) != 0) {
+			fprintf(
+				stderr, "row %u column %u: expected \"%s\", got \"%s\"\n", row, column, expected, shown
+			);
+		}
+		ASSERT_INT_EQ(strcmp(shown, expected), 0);
+	}
+}
+
+TEST(shows_a_new_order_in_the_squad_lists) {
+	ByteBuffer json = {0};
+	FixtureView *view = lineupJson(&json) ? openJson(&json) : NULL;
+	FixtureView *original = view ? openJson(&json) : NULL;
+	if (!view || !original) {
+		fixtureView_close(view);
+		buffer_free(&json);
+		return;
+	}
+	uint8_t identity[FIXTURE_VIEW_BLOCKS];
+	exchanged(identity, 0, 0);
+	ASSERT_BOOL_EQ(fixtureView_lineupEditable(view, 0), true);
+	ASSERT_BOOL_EQ(fixtureView_lineupMarked(view, 0), false);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 0), false);
+	ASSERT_BOOL_EQ(fixtureView_benchSize(view, 0) == 9, true);
+	ASSERT_BOOL_EQ(fixtureView_benchSize(view, 1) == 2, true);
+	ASSERT_BOOL_EQ(fixtureView_benchSize(view, 2) == 0, true);
+	checkOrder(view, 0, identity);
+	checkOrder(view, 2, identity);
+	ASSERT_INT_EQ(fixtureView_placeOf(view, 0, 19), 19);
+
+	// Wirtz (block 19) and Gravenberch (block 10) exchanged: each row keeps its slot and shows the
+	// player moved there, whose own block the row still gives.
+	uint8_t from[FIXTURE_VIEW_BLOCKS];
+	exchanged(from, 10, 19);
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, from), true);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 0), true);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 1), false);
+	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), true);
+	checkOrder(view, 0, from);
+	checkOrder(view, 1, identity);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 10), 19);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 19), 10);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 9), 9);
+	checkCell(view, 0, 10, 0, "10");
+	checkCell(view, 0, 10, 1, "Florian Wirtz");
+	checkCell(view, 0, 10, 2, "ST");
+	checkCell(view, 0, 10, 6, "90.19%");
+	checkCell(view, 0, 19, 1, "Ryan Gravenberch");
+	checkCell(view, 0, 19, 2, "Sub");
+	checkCell(view, 0, 19, 6, "90.10%");
+	for (unsigned row = 0; row < fixtureView_rowCount(view, 0); ++row) {
+		unsigned player = row == 10 ? 19 : row == 19 ? 10 : row;
+		checkMovedRow(view, original, row, player);
+	}
+	ASSERT_INT_EQ(fixtureView_placeOf(view, 0, 19), 10);
+	ASSERT_INT_EQ(fixtureView_placeOf(view, 0, 10), 19);
+	ASSERT_INT_EQ(fixtureView_placeOf(view, 0, 21), 21);
+	ASSERT_INT_EQ(fixtureView_placeOf(view, 0, 22), -1);
+	ASSERT_INT_EQ(fixtureView_placeOf(view, 2, 0), -1);
+	// Blocks name the players, whatever their places.
+	char text[FIXTURE_VIEW_TEXT];
+	checkText(fixtureView_playerName(view, 0, 19, text, sizeof text), text, "Florian Wirtz");
+	ASSERT_BOOL_EQ(fixtureView_personId(view, 0, 19) == 91193048, true);
+	ASSERT_BOOL_EQ(fixtureView_personId(view, 0, 22) == -1, true);
+	ASSERT_BOOL_EQ(fixtureView_personId(view, 2, 0) == -1, true);
+	// A Max edit of Wirtz's block shows in his new row.
+	bool selected[FIXTURE_VIEW_BLOCKS] = {false};
+	selected[19] = true;
+	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 0, selected, FIXTURE_VIEW_MAX_CONDITION), true);
+	checkCell(view, 0, 10, 6, "100.00%");
+	checkCell(view, 0, 19, 6, "90.10%");
+
+	// Orders that do not place each player once change nothing; places from the side's count on
+	// are its own.
+	uint8_t wrong[FIXTURE_VIEW_BLOCKS];
+	exchanged(wrong, 10, 19);
+	wrong[10] = 10;
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, wrong), false);
+	exchanged(wrong, 3, 22);
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, wrong), false);
+	checkOrder(view, 0, from);
+	exchanged(wrong, 2, 3);
+	wrong[30] = 31;
+	wrong[31] = 30;
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, wrong), true);
+	wrong[30] = 30;
+	wrong[31] = 31;
+	checkOrder(view, 0, wrong);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 2), 3);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 10), 10);
+	// An order that moves nobody clears it; the Max edit stays.
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, identity), true);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 0), false);
+	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), true);
+	fixtureView_clearPlayerEdits(view);
+	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), false);
+	// An order alone is a player edit, and forgetting the Max edits keeps it.
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, from), true);
+	fixtureView_clearPlayerEdits(view);
+	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), true);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 0), true);
+
+	// FM24's AI picks the away XI: its order cannot change, and its list is as before.
+	ASSERT_BOOL_EQ(fixtureView_lineupKnown(view, 0), true);
+	ASSERT_BOOL_EQ(fixtureView_lineupKnown(view, 1), false);
+	ASSERT_BOOL_EQ(fixtureView_lineupKnown(view, 2), false);
+	ASSERT_BOOL_EQ(fixtureView_lineupEditable(view, 1), false);
+	exchanged(wrong, 1, 2);
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 1, wrong), false);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 1), false);
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 2, identity), false);
+	ASSERT_BOOL_EQ(fixtureView_lineupEditable(view, 2), false);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 1, 1), -1);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 1, 12), 1);
+	fixtureView_close(original);
+	fixtureView_close(view);
+	buffer_free(&json);
+
+	// In the other samples too, only the human side's order can change.
+	static const struct {
+		int sample;
+		bool editable[2];
+	} sides[] = {
+		{FIXTURE_SAMPLE_LABELLED, {true, false}},
+		{FIXTURE_SAMPLE_SWAPPED, {false, true}},
+	};
+	for (size_t i = 0; i < sizeof sides / sizeof sides[0]; ++i) {
+		view = openSample(sides[i].sample);
+		for (unsigned side = 0; view && side < 2; ++side) {
+			ASSERT_BOOL_EQ(fixtureView_lineupKnown(view, side), sides[i].editable[side]);
+			ASSERT_BOOL_EQ(fixtureView_lineupEditable(view, side), sides[i].editable[side]);
+		}
+		fixtureView_close(view);
+	}
+	// A block more than player_count says.
+	if (lineupJson(&json)) {
+		replaceText(&json, "\"home.player_count\", \"u8\": 22", "\"home.player_count\", \"u8\": 21");
+		view = openJson(&json);
+		if (view) {
+			ASSERT_BOOL_EQ(fixtureView_lineupKnown(view, 0), true);
+			ASSERT_BOOL_EQ(fixtureView_lineupEditable(view, 0), false);
+			fixtureView_close(view);
+		}
+	}
+	buffer_free(&json);
+}
+
+// Writes `json` with Max edits, orders and venue values (each may be NULL), as JSON, into `out`.
+static bool writeOrdered(
+	const ByteBuffer *json,
+	const uint8_t *flags,
+	const uint8_t *order,
+	const FixtureViewNumber *venue,
+	ByteBuffer *out
+) {
+	uint8_t *bytes = NULL;
+	size_t length = 0;
+	char error[256] = "";
+	bool ok = fixtureView_write(
+		buffer_string(json),
+		json->length,
+		flags,
+		order,
+		venue,
+		false,
+		&bytes,
+		&length,
+		error,
+		sizeof error
+	);
+	if (!ok) {
+		fprintf(stderr, "%s\n", error);
+	}
+	ok = ok && buffer_append(out, bytes, length);
+	fixtureView_free(bytes);
+	return ok;
+}
+
+// Away's slot 9 marking home place 10.
+static const char wirtzMarking[] =
+	"\"away.manager.tactic.plan[0].slot[9].player_instructions[winger].bits[1]\", \"flags\": "
+	"[\"mark a specific player\"], \"u32\": 4},\n    {\"u8\": 10}";
+
+TEST(writes_and_commits_a_new_order) {
+	ByteBuffer json = {0};
+	FixtureView *view = lineupJson(&json) ? openJson(&json) : NULL;
+	if (!view) {
+		buffer_free(&json);
+		return;
+	}
+	// Max edits of Wirtz (19) and van Dijk (2), then Wirtz into Gravenberch's place (10).
+	bool selected[FIXTURE_VIEW_BLOCKS] = {false};
+	selected[19] = true;
+	selected[2] = true;
+	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 0, selected, FIXTURE_VIEW_MAX_HAPPINESS), true);
+	uint8_t from[FIXTURE_VIEW_BLOCKS];
+	exchanged(from, 10, 19);
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, from), true);
+	checkWrittenEdits(view, &json);
+	uint8_t flags[2 * FIXTURE_VIEW_BLOCKS];
+	uint8_t order[2 * FIXTURE_VIEW_BLOCKS];
+	fixtureView_playerEdits(view, flags);
+	viewOrder(view, order);
+	ASSERT_INT_EQ(flags[19], FIXTURE_VIEW_MAX_HAPPINESS);
+	ASSERT_INT_EQ(flags[10], 0);
+
+	// The bytes: the Max edits by the blocks' names, then the order, then the venue, then encoded.
+	FixturePlayerEdits edits = {0};
+	memcpy(edits.players, flags, sizeof edits.players);
+	FixtureLineup lineup;
+	fixtureLineup_identity(&lineup);
+	ASSERT_BOOL_EQ(fixtureLineup_exchange(&lineup, 0, 22, 10, 19), true);
+	FixtureViewNumber venue[FIXTURE_VIEW_VENUE_FIELDS] = {{0}};
+	venue[10] = (FixtureViewNumber){.value = 150, .known = true};
+	for (int binary = 0; binary < 2; ++binary) {
+		checkWrite(&json, NULL, &lineup, NULL, binary != 0);
+		checkWrite(&json, &edits, &lineup, venue, binary != 0);
+	}
+	ByteBuffer saved = {0};
+	ASSERT_BOOL_EQ(writeOrdered(&json, flags, order, venue, &saved), true);
+	FixtureView *reopened = saved.length ? openJson(&saved) : NULL;
+	if (reopened) {
+		ASSERT_BOOL_EQ(fixtureView_lineupMarked(reopened, 0), true);
+		ASSERT_BOOL_EQ(fixtureView_lineupMarked(reopened, 1), false);
+		ASSERT_BOOL_EQ(fixtureView_lineupEdited(reopened, 0), false);
+		ASSERT_INT_EQ(fixtureView_rowBlock(reopened, 0, 10), 10);
+		checkCell(reopened, 0, 10, 1, "Florian Wirtz");
+		checkCell(reopened, 0, 10, 5, "20");
+		checkCell(reopened, 0, 19, 5, "9");
+		FixtureViewNumber values[FIXTURE_VIEW_VENUE_FIELDS];
+		fixtureView_venue(reopened, values);
+		ASSERT_BOOL_EQ(values[10].known && values[10].value == 150, true);
+		fixtureView_close(reopened);
+	}
+	// Away's marking of Wirtz follows him to place 10, and away's line-up is not marked.
+	ASSERT_BOOL_EQ(strstr(buffer_string(&saved), wirtzMarking) != NULL, true);
+	ASSERT_BOOL_EQ(strstr(buffer_string(&json), wirtzMarking) == NULL, true);
+	ASSERT_BOOL_EQ(strstr(buffer_string(&saved), "\"away_lineup\"") == NULL, true);
+
+	// After the save the view takes the saved order: each player's block is its new place, with
+	// its Max edits, and nothing but those edits is pending.
+	fixtureView_commitOrder(view);
+	uint8_t identity[FIXTURE_VIEW_BLOCKS];
+	exchanged(identity, 0, 0);
+	checkOrder(view, 0, identity);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 0), false);
+	ASSERT_BOOL_EQ(fixtureView_lineupMarked(view, 0), true);
+	ASSERT_BOOL_EQ(fixtureView_lineupMarked(view, 1), false);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 10), 10);
+	ASSERT_INT_EQ(fixtureView_placeOf(view, 0, 19), 19);
+	char text[FIXTURE_VIEW_TEXT];
+	checkText(fixtureView_playerName(view, 0, 10, text, sizeof text), text, "Florian Wirtz");
+	checkText(fixtureView_playerName(view, 0, 19, text, sizeof text), text, "Ryan Gravenberch");
+	ASSERT_BOOL_EQ(fixtureView_personId(view, 0, 10) == 91193048, true);
+	checkCell(view, 0, 10, 5, "20");
+	fixtureView_playerEdits(view, flags);
+	ASSERT_INT_EQ(flags[10], FIXTURE_VIEW_MAX_HAPPINESS);
+	ASSERT_INT_EQ(flags[19], 0);
+	ASSERT_INT_EQ(flags[2], FIXTURE_VIEW_MAX_HAPPINESS);
+	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), true);
+	// The view now matches the saved file, edits and all.
+	checkWrittenEdits(view, &saved);
+	fixtureView_clearPlayerEdits(view);
+	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), false);
+	// Committing with nothing pending changes nothing.
+	fixtureView_commitOrder(view);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 10), 10);
+	ASSERT_BOOL_EQ(fixtureView_lineupMarked(view, 1), false);
+	fixtureView_close(view);
+
+	// A three-way move, committed: the cycles follow each player.
+	view = openJson(&json);
+	if (view) {
+		exchanged(from, 0, 0);
+		from[11] = 20;
+		from[20] = 14;
+		from[14] = 11;
+		from[5] = 6;
+		from[6] = 5;
+		ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, from), true);
+		memset(selected, 0, sizeof selected);
+		selected[14] = true;
+		ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 0, selected, FIXTURE_VIEW_MAX_CONDITION), true);
+		checkWrittenEdits(view, &json);
+		fixtureView_playerEdits(view, flags);
+		viewOrder(view, order);
+		buffer_clear(&saved);
+		ASSERT_BOOL_EQ(writeOrdered(&json, flags, order, NULL, &saved), true);
+		fixtureView_commitOrder(view);
+		checkText(fixtureView_playerName(view, 0, 11, text, sizeof text), text, "Ben Doak");
+		checkText(fixtureView_playerName(view, 0, 20, text, sizeof text), text, "Lewis Jones");
+		checkText(fixtureView_playerName(view, 0, 14, text, sizeof text), text, "Caoimhin Kelleher");
+		checkText(fixtureView_playerName(view, 0, 5, text, sizeof text), text, "Alexis Mac Allister");
+		fixtureView_playerEdits(view, flags);
+		ASSERT_INT_EQ(flags[20], FIXTURE_VIEW_MAX_CONDITION);
+		ASSERT_INT_EQ(flags[14], 0);
+		checkWrittenEdits(view, &saved);
+		fixtureView_close(view);
+	}
+	buffer_free(&saved);
+	buffer_free(&json);
+}
+
+// The lineup sample with the managers' flags exchanged: Newcastle's line-up (away: 13 players, a
+// bench of 2) can be changed, and FM24's AI picks Liverpool's.
+static bool awayLineupJson(ByteBuffer *json) {
+	bool ok = lineupJson(json);
+	if (ok) {
+		replaceText(json, "\"home.manager\", \"u32\": 131848}", "\"home.manager\", \"u32\": 212992}");
+		replaceText(json, "\"away.manager\", \"u32\": 212992}", "\"away.manager\", \"u32\": 131848}");
+	}
+	return ok;
+}
+
+TEST(writes_and_commits_an_away_order) {
+	ByteBuffer json = {0};
+	FixtureView *view = awayLineupJson(&json) ? openJson(&json) : NULL;
+	if (!view) {
+		buffer_free(&json);
+		return;
+	}
+	ASSERT_BOOL_EQ(fixtureView_lineupEditable(view, 0), false);
+	ASSERT_BOOL_EQ(fixtureView_lineupEditable(view, 1), true);
+	// Miley's happiness maximised, then a cycle of three: Botman 2 to 1, Miley 12 to 2 and Trippier 1
+	// to 12.
+	bool selected[FIXTURE_VIEW_BLOCKS] = {false};
+	selected[12] = true;
+	ASSERT_BOOL_EQ(fixtureView_applyEdit(view, 1, selected, FIXTURE_VIEW_MAX_HAPPINESS), true);
+	uint8_t from[FIXTURE_VIEW_BLOCKS];
+	exchanged(from, 0, 0);
+	from[1] = 2;
+	from[2] = 12;
+	from[12] = 1;
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 1, from), true);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 1) && !fixtureView_lineupEdited(view, 0), true);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 1, 2), 12);
+	ASSERT_INT_EQ(fixtureView_placeOf(view, 1, 12), 2);
+	checkCell(view, 1, 2, 1, "Lewis Miley");
+	checkWrittenEdits(view, &json);
+	uint8_t flags[2 * FIXTURE_VIEW_BLOCKS];
+	uint8_t order[2 * FIXTURE_VIEW_BLOCKS];
+	fixtureView_playerEdits(view, flags);
+	viewOrder(view, order);
+	ByteBuffer saved = {0};
+	ASSERT_BOOL_EQ(writeOrdered(&json, flags, order, NULL, &saved), true);
+	ASSERT_BOOL_EQ(strstr(buffer_string(&saved), "\n  \"away_lineup\": true,\n") != NULL, true);
+	ASSERT_BOOL_EQ(strstr(buffer_string(&saved), "\"home_lineup\"") == NULL, true);
+	ASSERT_BOOL_EQ(
+		strstr(buffer_string(&saved), "{\"name\": \"away.player[2]\", \"player\": \"Lewis Miley\"") !=
+			NULL,
+		true
+	);
+
+	// After the save, each away player's block is its new place, with its Max edit, and the view
+	// lists what the file holds.
+	fixtureView_commitOrder(view);
+	uint8_t identity[FIXTURE_VIEW_BLOCKS];
+	exchanged(identity, 0, 0);
+	checkOrder(view, 1, identity);
+	ASSERT_BOOL_EQ(fixtureView_lineupEdited(view, 1), false);
+	ASSERT_BOOL_EQ(fixtureView_lineupMarked(view, 1) && !fixtureView_lineupMarked(view, 0), true);
+	char text[FIXTURE_VIEW_TEXT];
+	checkText(fixtureView_playerName(view, 1, 1, text, sizeof text), text, "Sven Botman");
+	checkText(fixtureView_playerName(view, 1, 2, text, sizeof text), text, "Lewis Miley");
+	checkText(fixtureView_playerName(view, 1, 12, text, sizeof text), text, "Kieran Trippier");
+	ASSERT_BOOL_EQ(fixtureView_personId(view, 1, 2) == fixtureSamples_lineupId(1, 12), true);
+	ASSERT_INT_EQ(fixtureView_rowBlock(view, 1, 2), 2);
+	fixtureView_playerEdits(view, flags);
+	ASSERT_INT_EQ(flags[FIXTURE_VIEW_BLOCKS + 2], FIXTURE_VIEW_MAX_HAPPINESS);
+	ASSERT_INT_EQ(flags[FIXTURE_VIEW_BLOCKS + 12], 0);
+	checkWrittenEdits(view, &saved);
+	// A second save of the saved file, its Max edit written, changes nothing: the order is not
+	// applied again.
+	fixtureView_clearPlayerEdits(view);
+	ASSERT_BOOL_EQ(fixtureView_hasPlayerEdits(view), false);
+	fixtureView_playerEdits(view, flags);
+	viewOrder(view, order);
+	ByteBuffer again = {0};
+	ASSERT_BOOL_EQ(writeOrdered(&saved, flags, order, NULL, &again), true);
+	ASSERT_BOOL_EQ(
+		again.length == saved.length && memcmp(again.data, saved.data, saved.length) == 0, true
+	);
+	fixtureView_close(view);
+	buffer_free(&again);
+	buffer_free(&saved);
+	buffer_free(&json);
+}
+
+TEST(refuses_blocks_moved_without_renaming) {
+	ByteBuffer json = {0};
+	static const struct {
+		const char *side;
+		unsigned a;
+		unsigned b;
+		const char *error;
+	} moved[] = {
+		{"home",
+			10,
+			19,
+			"home.player[19] is in place 10: its player blocks were moved without renaming them. Use "
+			"fm24ctl lineup to move players."},
+		{"away",
+			1,
+			2,
+			"away.player[2] is in place 1: its player blocks were moved without renaming them. Use "
+			"fm24ctl lineup to move players."},
+	};
+	for (size_t i = 0; i < sizeof moved / sizeof moved[0]; ++i) {
+		if (!lineupJson(&json)) {
+			break;
+		}
+		exchangeNames(&json, moved[i].side, moved[i].a, moved[i].b);
+		char error[256] = "";
+		FixtureView *view = fixtureView_open(buffer_string(&json), json.length, error, sizeof error);
+		ASSERT_BOOL_EQ(view == NULL, true);
+		if (strcmp(error, moved[i].error) != 0) {
+			fprintf(stderr, "%s\n", error);
+		}
+		ASSERT_INT_EQ(strcmp(error, moved[i].error), 0);
+		fixtureView_close(view);
+		// Renamed back, it opens.
+		exchangeNames(&json, moved[i].side, moved[i].a, moved[i].b);
+		view = openJson(&json);
+		fixtureView_close(view);
+	}
+	buffer_free(&json);
+}
+
+TEST(rates_players_for_slots) {
+	ByteBuffer json = {0};
+	FixtureView *view = lineupJson(&json) ? openJson(&json) : NULL;
+	if (!view) {
+		buffer_free(&json);
+		return;
+	}
+	// The sample's pos_gk is 20 for its goalkeepers and 1 for the others, whose rating k (in
+	// docs/FIXTURE.md#ratings order) is 1 + (place + 3k) % 20.
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 0, 0), 20);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 0, 10), 1);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 10, 0), 1);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 10, 10), 7);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 19, 10), 16);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 10, 2), 20);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 10, 3), 20);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 10, 5), 6);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 1, 9, 10), 1 + (9 + 36) % 20);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 10, 11), -1);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 22, 10), -1);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 2, 0, 0), -1);
+	// The rating is the player's, whatever the order.
+	uint8_t from[FIXTURE_VIEW_BLOCKS];
+	exchanged(from, 10, 19);
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, from), true);
+	ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 19, 10), 16);
+	fixtureView_close(view);
+
+	// Each position's rating, set in slot 1 (a DR, 4): docs/FIXTURE.md's position bits against the
+	// order of its ratings. Block 0 is the goalkeeper; block 9's ratings all differ.
+	static const struct {
+		const char *position;
+		unsigned block;
+		int rating;
+	} positions[] = {
+		{"1", 0, 20},                         // GK: pos_gk
+		{"4", 9, 1 + (9 + 3 * 4) % 20},       // DR: pos_dr
+		{"8", 9, 1 + (9 + 3 * 2) % 20},       // DL: pos_dl
+		{"16", 9, 1 + (9 + 3 * 3) % 20},      // DC: pos_dc
+		{"32", 9, 1 + (9 + 3 * 14) % 20},     // WBR: pos_wbr
+		{"64", 9, 1 + (9 + 3 * 13) % 20},     // WBL: pos_wbl
+		{"128", 9, 1 + (9 + 3 * 5) % 20},     // DM: pos_dm
+		{"256", 9, 1 + (9 + 3 * 8) % 20},     // MR: pos_mr
+		{"512", 9, 1 + (9 + 3 * 6) % 20},     // ML: pos_ml
+		{"1024", 9, 1 + (9 + 3 * 7) % 20},    // MC: pos_mc
+		{"2048", 9, 1 + (9 + 3 * 11) % 20},   // AMR: pos_amr
+		{"4096", 9, 1 + (9 + 3 * 9) % 20},    // AML: pos_aml
+		{"8192", 9, 1 + (9 + 3 * 10) % 20},   // AMC: pos_amc
+		{"16384", 9, 1 + (9 + 3 * 12) % 20},  // ST: pos_st
+		{"1048704", 9, 1 + (9 + 3 * 5) % 20}, // DMCL
+		{"2097280", 9, 1 + (9 + 3 * 5) % 20}, // DMCR
+		{"3145856", 9, -1},                   // left and right
+		{"2", 9, -1},                         // bit 1 names no position
+		{"12", 9, -1},                        // DR and DL
+		{"0", 9, -1},
+		{"1", 9, 1}, // an outfield player's pos_gk
+	};
+	for (size_t i = 0; i < sizeof positions / sizeof positions[0]; ++i) {
+		if (!lineupJson(&json)) {
+			break;
+		}
+		char position[96];
+		(void)snprintf(
+			position,
+			sizeof position,
+			"\"home.manager.tactic.plan[0].slot[1].position\", \"u32\": %s}",
+			positions[i].position
+		);
+		replaceText(&json, "\"home.manager.tactic.plan[0].slot[1].position\", \"u32\": 4}", position);
+		view = openJson(&json);
+		if (view) {
+			int rating = fixtureView_positionRating(view, 0, positions[i].block, 1);
+			if (rating != positions[i].rating) {
+				fprintf(stderr, "position %s: %d\n", positions[i].position, rating);
+			}
+			ASSERT_INT_EQ(rating, positions[i].rating);
+			fixtureView_close(view);
+		}
+	}
+	// Ratings that are not all there are not known.
+	if (lineupJson(&json)) {
+		replaceText(
+			&json,
+			"\"home.player[10].ratings\", \"u8map\": {\"pos_gk\": 1, ",
+			"\"home.player[10].ratings\", \"u8map\": {"
+		);
+		view = openJson(&json);
+		if (view) {
+			ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 10, 10), -1);
+			ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 9, 10), 1 + (9 + 36) % 20);
+			fixtureView_close(view);
+		}
+	}
+	buffer_free(&json);
+	// A sample without unique IDs, whose ratings are all 20.
+	view = openSample(FIXTURE_SAMPLE_LABELLED);
+	if (view) {
+		ASSERT_BOOL_EQ(fixtureView_personId(view, 0, 0) == -1, true);
+		ASSERT_INT_EQ(fixtureView_positionRating(view, 0, 0, 0), 20);
+		fixtureView_close(view);
+	}
+}
+
+TEST(warns_about_a_new_order) {
+	FixtureView *view = openSample(FIXTURE_SAMPLE_LINEUP);
+	if (!view) {
+		return;
+	}
+	static const struct {
+		unsigned a;
+		unsigned b;
+		const char *warnings;
+	} orders[] = {
+		{0, 0, ""},
+		{0, 11, ""},
+		{0,
+			10,
+			"Ryan Gravenberch is in goal (slot 0) but is not a goalkeeper (GK 1).\n"
+			"Alisson Becker, a goalkeeper, is in slot 10 (ST)."},
+		{11, 20, "No goalkeeper among the substitutes."},
+		{10, 19, ""},
+	};
+	char text[FIXTURE_VIEW_TEXT];
+	uint8_t from[FIXTURE_VIEW_BLOCKS];
+	for (size_t i = 0; i < sizeof orders / sizeof orders[0]; ++i) {
+		exchanged(from, orders[i].a, orders[i].b);
+		checkText(
+			fixtureView_lineupWarnings(view, 0, from, text, sizeof text), text, orders[i].warnings
+		);
+	}
+	// Cut short, it still gives the full length.
+	exchanged(from, 11, 20);
+	ASSERT_BOOL_EQ(fixtureView_lineupWarnings(view, 0, from, text, 3) == 36, true);
+	ASSERT_INT_EQ(strcmp(text, "No"), 0);
+	ASSERT_BOOL_EQ(fixtureView_lineupWarnings(view, 0, from, NULL, 0) == 36, true);
+	// Nothing for an order that is not one, or a side whose order cannot change.
+	from[20] = 20;
+	checkText(fixtureView_lineupWarnings(view, 0, from, text, sizeof text), text, "");
+	exchanged(from, 0, 10);
+	checkText(fixtureView_lineupWarnings(view, 1, from, text, sizeof text), text, "");
+	checkText(fixtureView_lineupWarnings(view, 2, from, text, sizeof text), text, "");
+	// The warnings are about the order given, not the one pending.
+	exchanged(from, 11, 20);
+	ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, from), true);
+	exchanged(from, 10, 19);
+	checkText(fixtureView_lineupWarnings(view, 0, from, text, sizeof text), text, "");
+	fixtureView_close(view);
+}
+
+// A line-up kept through a team replacement: the order putting the people given back in their
+// places, which fixtureView_setOrder takes, with those the side lacks and who took their places.
+TEST(orders_a_side_by_people) {
+	FixtureView *view = openSample(FIXTURE_SAMPLE_LINEUP);
+	if (!view) {
+		return;
+	}
+	// Wirtz and Gravenberch exchanged, Gravenberch by an ID the side does not have: the player no
+	// one names, Gravenberch under his own ID, takes his place.
+	uint32_t people[22];
+	for (unsigned place = 0; place < 22; ++place) {
+		people[place] = fixtureSamples_lineupId(0, place);
+	}
+	people[10] = fixtureSamples_lineupId(0, 19);
+	people[19] = 2000040347;
+	uint8_t from[FIXTURE_VIEW_BLOCKS];
+	uint8_t expected[FIXTURE_VIEW_BLOCKS];
+	bool found[22];
+	int places[22];
+	exchanged(expected, 10, 19);
+	for (int pending = 0; pending < 2; ++pending) {
+		ASSERT_BOOL_EQ(fixtureView_orderByPeople(view, 0, people, 22, from, found, places), true);
+		ASSERT_INT_EQ(memcmp(from, expected, sizeof from), 0);
+		ASSERT_BOOL_EQ(found[0] && found[10] && !found[19] && found[21], true);
+		ASSERT_BOOL_EQ(places[0] == 0 && places[10] == 10 && places[19] == 19, true);
+		// The people name players, not places: a pending order changes nothing.
+		ASSERT_BOOL_EQ(fixtureView_setOrder(view, 0, from), true);
+		ASSERT_INT_EQ(fixtureView_rowBlock(view, 0, 10), 19);
+	}
+	// None for a side whose order cannot change, or for more people than blocks.
+	ASSERT_BOOL_EQ(fixtureView_orderByPeople(view, 1, people, 13, from, found, places), false);
+	ASSERT_BOOL_EQ(fixtureView_orderByPeople(view, 2, people, 1, from, found, places), false);
+	static uint32_t many[FIXTURE_VIEW_BLOCKS + 1];
+	static bool manyFound[FIXTURE_VIEW_BLOCKS + 1];
+	static int manyPlaces[FIXTURE_VIEW_BLOCKS + 1];
+	ASSERT_BOOL_EQ(
+		fixtureView_orderByPeople(
+			view, 0, many, FIXTURE_VIEW_BLOCKS + 1, from, manyFound, manyPlaces
+		),
+		false
+	);
+	fixtureView_close(view);
+}
+
 // What a background thread does with a view, on a stack smaller than a worker thread's.
 static void useView(void) {
 	FixtureView *view = openSample(FIXTURE_SAMPLE_FAMILIARITY);
@@ -1382,7 +2132,16 @@ static void useView(void) {
 		size_t length = 0;
 		ASSERT_BOOL_EQ(
 			fixtureView_write(
-				buffer_string(&json), json.length, flags, NULL, true, &bytes, &length, text, sizeof text
+				buffer_string(&json),
+				json.length,
+				flags,
+				NULL,
+				NULL,
+				true,
+				&bytes,
+				&length,
+				text,
+				sizeof text
 			),
 			true
 		);
@@ -1456,6 +2215,17 @@ void registerFixtureViewTests(void) {
 		"fixture view names swapped players and replaced teams",
 		test_names_swapped_players_and_replaced_teams
 	);
+	test_run(
+		"fixture view shows a new order in the squad lists", test_shows_a_new_order_in_the_squad_lists
+	);
+	test_run("fixture view writes and commits a new order", test_writes_and_commits_a_new_order);
+	test_run("fixture view writes and commits an away order", test_writes_and_commits_an_away_order);
+	test_run(
+		"fixture view refuses blocks moved without renaming", test_refuses_blocks_moved_without_renaming
+	);
+	test_run("fixture view rates players for slots", test_rates_players_for_slots);
+	test_run("fixture view warns about a new order", test_warns_about_a_new_order);
+	test_run("fixture view orders a side by people", test_orders_a_side_by_people);
 	test_run(
 		"fixture view opens and writes on a small stack", test_opens_and_writes_on_a_small_stack
 	);

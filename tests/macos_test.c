@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // macOS: text and path conversions, the frame translation tables, the memory scan, the job socket
-// between the runner and the dylib, recognising the game's build, and finding and starting
-// Football Manager 2024 from Steam.
+// between the runner and the dylib, recognising the game's build, finding, starting and quitting
+// Football Manager 2024, and batch run's host against a stand-in harness.
 
 #include "../src/dll/memory.h"
 #include "../src/dll/sites.h"
@@ -14,6 +14,7 @@
 #include "tests.h"
 
 #include <fcntl.h>
+#include <libproc.h>
 #include <limits.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -45,6 +46,17 @@ static int recordSpawn(
 	char *const *environment
 );
 static bool submitRecorded(const char *job, unsigned timeoutMs, char *result, size_t size);
+static int fakeKill(pid_t pid, int signal);
+static int fakePidPath(int pid, void *buffer, uint32_t size);
+static int batchSpawn(
+	pid_t *pid,
+	const char *path,
+	const posix_spawn_file_actions_t *actions,
+	const posix_spawnattr_t *attributes,
+	char *const *arguments,
+	char *const *environment
+);
+static bool standInExecutes(const char *text);
 
 // log_message, job_writeResult and job_takeResult come from job_test.c and job.c, and
 // inject_harness from runner_test.c; dll_test.c's game API stubs and inject_macos.c's and
@@ -73,12 +85,22 @@ unsigned long macosTest_findGame(void);
 #include "../src/dll/main_macos.c" // NOLINT(bugprone-suspicious-include): serve over a test socket.
 #undef sendAll
 #define client_submit macosTest_submit
+#define client_submitWatched macosTest_submitWatched
 #define client_succeeded macosTest_succeeded
 #include "../src/runner/client_posix.c" // NOLINT(bugprone-suspicious-include): talk to it.
 #undef client_submit
+#undef client_submitWatched
 #undef client_succeeded
 
+static ClientOutcome submitWatchedRecorded(
+	const char *job,
+	unsigned timeoutMs,
+	ClientWatch *watch,
+	char *result,
+	size_t size
+);
 #define client_submit submitRecorded
+#define client_submitWatched submitWatchedRecorded
 #define client_succeeded macosTest_succeeded
 #define session_query macosTest_query
 #define session_plan macosTest_plan
@@ -88,11 +110,16 @@ unsigned long macosTest_findGame(void);
 #define session_waitReady macosTest_waitReady
 #include "../src/runner/session.c" // NOLINT(bugprone-suspicious-include): ask the test harness.
 #undef client_submit
+#undef client_submitWatched
 #undef client_succeeded
 
 #define posix_spawn recordSpawn
 #define embedded_extract macosTest_extract
+#define kill fakeKill
+#define proc_pidpath fakePidPath
 #include "../src/runner/macos_game.c" // NOLINT(bugprone-suspicious-include): fake Steam and open.
+#undef proc_pidpath
+#undef kill
 #undef embedded_extract
 #undef posix_spawn
 #undef session_query
@@ -110,6 +137,12 @@ unsigned long macosTest_findGame(void);
 #undef PATH_LENGTH
 #undef channel_socketPath
 
+#define posix_spawn batchSpawn
+#define client_submitWatched macosTest_submitWatched
+#include "../src/runner/batch_host_macos.c" // NOLINT(bugprone-suspicious-include): its programs.
+#undef client_submitWatched
+#undef posix_spawn
+
 
 static char executedJob[HARNESS_JOB_LENGTH + 1];
 static const char *const *statusReplies; // what status jobs answer, in turn; the last one repeats
@@ -122,6 +155,9 @@ void log_open(const wchar_t *path) {
 
 void job_execute(char *text) {
 	(void)snprintf(executedJob, sizeof executedJob, "%s", text);
+	if (standInExecutes(text)) {
+		return;
+	}
 	if (statusReplyCount && strcmp(text, "command=status\n") == 0) {
 		size_t given = atomic_fetch_add(&statusRepliesGiven, 1);
 		job_writeResult("%s", statusReplies[given < statusReplyCount ? given : statusReplyCount - 1]);
@@ -143,6 +179,18 @@ static bool submitRecorded(const char *job, unsigned timeoutMs, char *result, si
 	return macosTest_submit(job, 5000, result, size);
 }
 
+// client_submitWatched for session.c, a batch's status queries: the same, with the watch.
+static ClientOutcome submitWatchedRecorded(
+	const char *job,
+	unsigned timeoutMs,
+	ClientWatch *watch,
+	char *result,
+	size_t size
+) {
+	queryTimeoutMs = timeoutMs;
+	return macosTest_submitWatched(job, 5000, watch, result, size);
+}
+
 // embedded_extract for macos_game.c, as fm24_tests carries no harness dylib: a stand-in for it.
 bool macosTest_extract(const wchar_t *path) {
 	static const char standIn[] = "stand-in harness";
@@ -152,6 +200,22 @@ bool macosTest_extract(const wchar_t *path) {
 static char spawned[4096];                   // what macos_game.c started, each part followed by '|'
 static char *spawnInstead = "/usr/bin/true"; // what recordSpawn runs in its place
 static int spawnError;                       // recordSpawn fails with this instead, if set
+static bool spawnedApart; // the last in a process group of its own, SIGTTIN and SIGTTOU blocked
+
+// Whether posix_spawn's attributes start the child in a process group of its own, which the
+// terminal's Ctrl-C does not reach, with SIGTTOU (and SIGTTIN) blocked and SIGINT not.
+static bool ownGroup(const posix_spawnattr_t *attributes) {
+	short flags = 0;
+	pid_t group = -1;
+	sigset_t blocked;
+	(void)sigemptyset(&blocked);
+	return attributes && posix_spawnattr_getflags(attributes, &flags) == 0 &&
+				 (flags & POSIX_SPAWN_SETPGROUP) && posix_spawnattr_getpgroup(attributes, &group) == 0 &&
+				 group == 0 && (flags & POSIX_SPAWN_SETSIGMASK) &&
+				 posix_spawnattr_getsigmask(attributes, &blocked) == 0 &&
+				 sigismember(&blocked, SIGTTOU) == 1 && sigismember(&blocked, SIGTTIN) == 1 &&
+				 sigismember(&blocked, SIGINT) == 0;
+}
 
 // posix_spawn for macos_game.c: records the program and its arguments, and runs another program.
 static int recordSpawn(
@@ -167,6 +231,7 @@ static int recordSpawn(
 		int added = snprintf(spawned + written, sizeof spawned - (size_t)written, "%s|", arguments[i]);
 		written = added < 0 ? -1 : written + added;
 	}
+	spawnedApart = ownGroup(attributes);
 	if (spawnError) {
 		return spawnError;
 	}
@@ -568,6 +633,17 @@ static bool leaveStaleSocket(const char *path) {
 		close(stale);
 	}
 	return bound;
+}
+
+// The report's slice and Rosetta flag: the slice this code was built for, and on Apple silicon
+// whether it is translated.
+TEST(names_the_slice_the_harness_runs_in) {
+#if defined(__aarch64__) || defined(__arm64__)
+	ASSERT_INT_EQ(strcmp(game_architecture(), "arm64"), 0);
+	ASSERT_BOOL_EQ(game_translated(), false);
+#else
+	ASSERT_INT_EQ(strcmp(game_architecture(), "x86_64"), 0);
+#endif
 }
 
 TEST(serves_one_job_per_connection) {
@@ -1242,6 +1318,43 @@ TEST(opens_the_game_with_the_harness_inserted) {
 	ASSERT_BOOL_EQ(removeTree(home), true);
 }
 
+static volatile sig_atomic_t alarms;
+
+static void onAlarm(int number) {
+	(void)number;
+	++alarms;
+}
+
+// open runs in a process group of its own, which batch run's Ctrl-C (a stop at the next chunk
+// boundary) does not reach, and a signal fm24ctl handles while it waits does not fail the start.
+TEST(starts_the_game_through_open_apart_from_signals) {
+	char directory[] = "/tmp/fm24 open-XXXXXX";
+	ASSERT_BOOL_EQ(mkdtemp(directory) != NULL, true);
+	char script[1100];
+	(void)snprintf(script, sizeof script, "%s/open.sh", directory);
+	ASSERT_BOOL_EQ(writeText(script, "#!/bin/sh\nsleep 0.3\n") && chmod(script, 0755) == 0, true);
+	struct sigaction handler = {.sa_handler = onAlarm};
+	struct sigaction defaults = {.sa_handler = SIG_DFL};
+	(void)sigemptyset(&handler.sa_mask);
+	(void)sigemptyset(&defaults.sa_mask);
+	ASSERT_INT_EQ(sigaction(SIGALRM, &handler, NULL), 0);
+	struct itimerval soon = {.it_value = {.tv_usec = 50000}};
+	struct itimerval never = {0};
+	alarms = 0;
+	spawnInstead = script;
+	spawned[0] = 0;
+	spawnedApart = false;
+	ASSERT_INT_EQ(setitimer(ITIMER_REAL, &soon, NULL), 0);
+	ASSERT_BOOL_EQ(startThroughSteam(false), true);
+	(void)setitimer(ITIMER_REAL, &never, NULL);
+	(void)sigaction(SIGALRM, &defaults, NULL);
+	spawnInstead = "/usr/bin/true";
+	ASSERT_INT_EQ((int)alarms, 1);
+	ASSERT_BOOL_EQ(spawnedApart, true);
+	ASSERT_INT_EQ(strcmp(spawned, "/usr/bin/open|/usr/bin/open|steam://rungameid/2252570|"), 0);
+	ASSERT_BOOL_EQ(removeTree(directory), true);
+}
+
 TEST(waits_until_the_started_game_keeps_serving) {
 	enum { START = 1000 }; // a clock time: never 0, like a real one
 	// No game process.
@@ -1910,13 +2023,13 @@ TEST(checks_that_the_game_runs_the_slice_rosetta_asks_for) {
 	}
 	// This process (under Rosetta as `arch -x86_64 fm24_tests`), one that has exited, and one in
 	// each slice (the x86_64 one only with Rosetta on Apple silicon).
-	ASSERT_BOOL_EQ(underRosetta(getpid()), translated == 1);
-	ASSERT_BOOL_EQ(underRosetta(exitedProcess()), false);
+	ASSERT_BOOL_EQ(macosGame_underRosetta(getpid()), translated == 1);
+	ASSERT_BOOL_EQ(macosGame_underRosetta(exitedProcess()), false);
 	bool rosettaInstalled = appleSilicon && runsIntelCode();
 	pid_t native = startSleeper(appleSilicon ? CPU_TYPE_ARM64 : CPU_TYPE_X86_64);
 	pid_t intel = rosettaInstalled ? startSleeper(CPU_TYPE_X86_64) : 0;
-	ASSERT_BOOL_EQ(native > 0 && !underRosetta(native), true);
-	ASSERT_BOOL_EQ(rosettaInstalled ? intel > 0 && underRosetta(intel) : intel == 0, true);
+	ASSERT_BOOL_EQ(native > 0 && !macosGame_underRosetta(native), true);
+	ASSERT_BOOL_EQ(rosettaInstalled ? intel > 0 && macosGame_underRosetta(intel) : intel == 0, true);
 	// --rosetta takes only a game under Rosetta, running or just started; without it either will do.
 	LaunchOptions rosetta = {.rosetta = true, .timeoutS = 30};
 	LaunchOptions plain = {.timeoutS = 30};
@@ -1973,6 +2086,242 @@ TEST(checks_that_the_game_runs_the_slice_rosetta_asks_for) {
 	stopSleeper(intel);
 }
 
+// How a scripted harness answers the one connection it takes (serveScript).
+typedef enum Script {
+	SCRIPT_REPLY,  // takes the job and replies
+	SCRIPT_GARBLE, // replies with two lines
+	SCRIPT_LOSE,   // takes the job, then closes the connection without a reply
+	SCRIPT_STALL,  // takes the job and never replies
+	SCRIPT_REFUSE, // sends something other than HARNESS_SOCKET_ACCEPTED
+	SCRIPT_DROP,   // closes the connection before taking the job, as a game that quits
+	SCRIPT_IGNORE, // never takes the connection, as while another job runs
+} Script;
+
+typedef struct ScriptedHarness {
+	int listener;
+	Script script;
+	atomic_bool over; // the runner has returned
+} ScriptedHarness;
+
+// Waits until the runner has returned, at most ten seconds.
+static void waitUntilOver(ScriptedHarness *harness) {
+	for (int i = 0; i < 1000 && !atomic_load(&harness->over); ++i) {
+		platform_sleep(10);
+	}
+}
+
+static void *serveScript(void *parameter) {
+	ScriptedHarness *harness = parameter;
+	if (harness->script == SCRIPT_IGNORE) {
+		waitUntilOver(harness);
+		return NULL;
+	}
+	struct pollfd entry = {.fd = harness->listener, .events = POLLIN};
+	int connection = poll(&entry, 1, 5000) == 1 ? accept(harness->listener, NULL, NULL) : -1;
+	if (connection < 0) {
+		return NULL;
+	}
+	if (harness->script != SCRIPT_DROP) {
+		char accepted = harness->script == SCRIPT_REFUSE ? '?' : HARNESS_SOCKET_ACCEPTED;
+		(void)write(connection, &accepted, 1);
+		char job[256];
+		struct pollfd reading = {.fd = connection, .events = POLLIN};
+		while (harness->script != SCRIPT_REFUSE && poll(&reading, 1, 5000) == 1 &&
+					 read(connection, job, sizeof job) > 0) {
+		}
+		if (harness->script == SCRIPT_REPLY || harness->script == SCRIPT_GARBLE) {
+			const char *reply = harness->script == SCRIPT_REPLY ? "ok: done\n" : "ok: done\nmore\n";
+			(void)write(connection, reply, strlen(reply));
+		} else if (harness->script == SCRIPT_STALL) {
+			waitUntilOver(harness);
+		}
+	}
+	close(connection);
+	return NULL;
+}
+
+// The ticks a watched job gave in each phase; it stops the wait at the `stopAt`th in `stopIn`.
+typedef struct TickLog {
+	unsigned ticks[3];
+	unsigned stopAt; // 0: never
+	ClientPhase stopIn;
+} TickLog;
+
+static bool recordTick(void *context, ClientPhase phase) {
+	TickLog *log = context;
+	++log->ticks[phase];
+	return !log->stopAt || phase != log->stopIn || log->ticks[phase] < log->stopAt;
+}
+
+// One watched job against a harness following `script`; its outcome, with how long it took.
+static ClientOutcome submitScripted(
+	Script script,
+	unsigned timeoutMs,
+	ClientWatch *watch,
+	char *result,
+	size_t size,
+	uint64_t *took
+) {
+	int listener = openSocket();
+	ASSERT_BOOL_EQ(listener >= 0, true);
+	if (listener < 0) {
+		return CLIENT_FAILED;
+	}
+	ScriptedHarness harness = {.listener = listener, .script = script};
+	atomic_init(&harness.over, false);
+	pthread_t server;
+	bool started = pthread_create(&server, NULL, serveScript, &harness) == 0;
+	ASSERT_BOOL_EQ(started, true);
+	uint64_t before = nowMs();
+	ClientOutcome outcome = macosTest_submitWatched("command=run\n", timeoutMs, watch, result, size);
+	*took = nowMs() - before;
+	atomic_store(&harness.over, true);
+	if (started) {
+		pthread_join(server, NULL);
+	}
+	close(listener);
+	stopServing();
+	char lockPath[sizeof testSocket + 8];
+	if (channel_lockPath(testSocket, lockPath, sizeof lockPath)) {
+		(void)unlink(lockPath);
+	}
+	return outcome;
+}
+
+// client_submitWatched tells how a job ended, over the socket a harness serves, ticking in the
+// phase it waits in; the times it gives add up to the call.
+TEST(tells_how_a_watched_job_ended) {
+	(void)snprintf(testSocket, sizeof testSocket, "/tmp/fm24-watched-test-%d.sock", (int)getpid());
+	(void)unlink(testSocket);
+	char result[HARNESS_RESULT_LENGTH];
+	TickLog log = {0};
+	ClientWatch watch = {.tickMs = 20, .tick = recordTick, .context = &log};
+	ASSERT_INT_EQ(
+		macosTest_submitWatched("command=run\n", 2000, &watch, result, sizeof result), CLIENT_NO_HARNESS
+	);
+	ASSERT_BOOL_EQ(!watch.accepted && !watch.runMs && !result[0], true);
+	static const struct {
+		Script script;
+		unsigned timeoutMs;
+		ClientOutcome outcome;
+		bool accepted;
+		const char *result;
+	} cases[] = {
+		{SCRIPT_REPLY, 5000, CLIENT_REPLIED, true, "ok: done\n"},
+		{SCRIPT_GARBLE, 5000, CLIENT_FAILED, true, ""},
+		{SCRIPT_LOSE, 5000, CLIENT_LOST, true, ""},
+		{SCRIPT_STALL, 600, CLIENT_RUN_TIMEOUT, true, ""},
+		{SCRIPT_REFUSE, 5000, CLIENT_FAILED, false, ""},
+		{SCRIPT_DROP, 5000, CLIENT_NO_HARNESS, false, ""},
+		{SCRIPT_IGNORE, 600, CLIENT_QUEUE_TIMEOUT, false, ""},
+	};
+	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+		log = (TickLog){0};
+		uint64_t took = 0;
+		ClientOutcome outcome =
+			submitScripted(cases[i].script, cases[i].timeoutMs, &watch, result, sizeof result, &took);
+		ASSERT_INT_EQ(outcome, cases[i].outcome);
+		ASSERT_BOOL_EQ(watch.accepted, cases[i].accepted);
+		ASSERT_INT_EQ(strcmp(result, cases[i].result), 0);
+		uint64_t timed = watch.queuedMs + watch.runMs;
+		ASSERT_BOOL_EQ(timed <= took && took - timed < 100, true);
+		ASSERT_BOOL_EQ(cases[i].accepted || !watch.runMs, true);
+		if (outcome != cases[i].outcome) {
+			fprintf(stderr, "script %d ended %d\n", (int)cases[i].script, (int)outcome);
+		}
+	}
+	// Waiting behind another job ticks as queued; waiting for a result, as running.
+	log = (TickLog){0};
+	uint64_t took = 0;
+	ASSERT_INT_EQ(
+		submitScripted(SCRIPT_IGNORE, 600, &watch, result, sizeof result, &took), CLIENT_QUEUE_TIMEOUT
+	);
+	ASSERT_BOOL_EQ(log.ticks[CLIENT_QUEUED] >= 10 && !log.ticks[CLIENT_RUNNING], true);
+	ASSERT_BOOL_EQ(watch.queuedMs >= 600 && took < 1500, true);
+	// Waiting over half a second, the client says so, unless the watch is quiet (batch run's status
+	// queries, which wait for a job that may still run).
+	static const bool quiet[] = {false, true};
+	for (size_t i = 0; i < sizeof quiet / sizeof quiet[0]; ++i) {
+		char printed[4096];
+		Capture capture;
+		watch.quiet = quiet[i];
+		bool capturing = startCapture(&capture);
+		ClientOutcome outcome = submitScripted(SCRIPT_IGNORE, 800, &watch, result, sizeof result, &took);
+		endCapture(&capture, printed, sizeof printed);
+		ASSERT_BOOL_EQ(capturing && outcome == CLIENT_QUEUE_TIMEOUT, true);
+		ASSERT_BOOL_EQ(strstr(printed, "the harness is running another job") == NULL, quiet[i]);
+	}
+	watch.quiet = false;
+	log = (TickLog){0};
+	ASSERT_INT_EQ(
+		submitScripted(SCRIPT_STALL, 600, &watch, result, sizeof result, &took), CLIENT_RUN_TIMEOUT
+	);
+	ASSERT_BOOL_EQ(log.ticks[CLIENT_RUNNING] >= 10 && watch.runMs >= 500, true);
+	// The tick stops the wait, whichever phase it is in; a job the harness took keeps running.
+	log = (TickLog){.stopAt = 3, .stopIn = CLIENT_QUEUED};
+	ASSERT_INT_EQ(
+		submitScripted(SCRIPT_IGNORE, 5000, &watch, result, sizeof result, &took), CLIENT_ABANDONED
+	);
+	ASSERT_BOOL_EQ(log.ticks[CLIENT_QUEUED] == 3 && !watch.accepted && took < 1000, true);
+	log = (TickLog){.stopAt = 3, .stopIn = CLIENT_RUNNING};
+	ASSERT_INT_EQ(
+		submitScripted(SCRIPT_STALL, 5000, &watch, result, sizeof result, &took), CLIENT_ABANDONED
+	);
+	ASSERT_BOOL_EQ(log.ticks[CLIENT_RUNNING] == 3 && watch.accepted && took < 1000, true);
+	// Without a tick there are only the times, and client_submit is as it was.
+	watch.tick = NULL;
+	ASSERT_INT_EQ(
+		submitScripted(SCRIPT_REPLY, 5000, &watch, result, sizeof result, &took), CLIENT_REPLIED
+	);
+	ASSERT_BOOL_EQ(watch.accepted && strcmp(result, "ok: done\n") == 0, true);
+	// A harness whose backlog stays full: the runner retries until its time runs out, connecting.
+	char lockPath[sizeof testSocket + 8];
+	ASSERT_BOOL_EQ(channel_lockPath(testSocket, lockPath, sizeof lockPath), true);
+	ASSERT_BOOL_EQ(leaveStaleSocket(testSocket), true);
+	int lock = holdSocketLock(testSocket);
+	ASSERT_BOOL_EQ(lock >= 0, true);
+	watch.tick = recordTick;
+	log = (TickLog){0};
+	ASSERT_INT_EQ(
+		macosTest_submitWatched("command=run\n", 600, &watch, result, sizeof result),
+		CLIENT_QUEUE_TIMEOUT
+	);
+	ASSERT_BOOL_EQ(log.ticks[CLIENT_CONNECTING] >= 2 && !watch.accepted, true);
+	log = (TickLog){.stopAt = 2, .stopIn = CLIENT_CONNECTING};
+	ASSERT_INT_EQ(
+		macosTest_submitWatched("command=run\n", 5000, &watch, result, sizeof result), CLIENT_ABANDONED
+	);
+	ASSERT_BOOL_EQ(log.ticks[CLIENT_CONNECTING] == 2, true);
+	if (lock >= 0) {
+		close(lock);
+	}
+	(void)unlink(testSocket);
+	(void)unlink(lockPath);
+}
+
+// What a manifest records of the game's memory.
+TEST(reads_how_much_memory_a_process_uses) {
+	uint64_t own = macosGame_residentBytes(getpid());
+	ASSERT_BOOL_EQ(own > (1U << 20), true);
+	ASSERT_BOOL_EQ(macosGame_residentBytes(exitedProcess()) == 0, true);
+	ASSERT_BOOL_EQ(macosGame_residentBytes(0) == 0 && macosGame_residentBytes(-1) == 0, true);
+	pid_t sleeper = startSleeper(appleSiliconMac() ? CPU_TYPE_ARM64 : CPU_TYPE_X86_64);
+	ASSERT_BOOL_EQ(sleeper > 0 && macosGame_residentBytes(sleeper) > 0, true);
+	stopSleeper(sleeper);
+	// Memory this process touches counts.
+	enum { GROWTH = 64 << 20, PAGE = 4096 };
+	uint8_t *grown = mmap(NULL, GROWTH, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+	ASSERT_BOOL_EQ(grown != MAP_FAILED, true);
+	if (grown != MAP_FAILED) {
+		volatile uint8_t *pages = grown;
+		for (size_t at = 0; at < GROWTH; at += PAGE) {
+			pages[at] = (uint8_t)(at / PAGE);
+		}
+		ASSERT_BOOL_EQ(macosGame_residentBytes(getpid()) >= own + GROWTH / 2, true);
+		(void)munmap(grown, GROWTH);
+	}
+}
+
 TEST(checks_the_running_game_before_a_job) {
 	(void)snprintf(testSocket, sizeof testSocket, "/tmp/fm24-job-check-test-%d.sock", (int)getpid());
 	(void)unlink(testSocket);
@@ -1982,10 +2331,10 @@ TEST(checks_the_running_game_before_a_job) {
 	atomic_store(&statusRepliesGiven, 0);
 	// A game without this harness gets the job as before, which explains; so does no game with
 	// --no-launch.
-	ASSERT_INT_EQ(ensureSave(&need, self, date, sizeof date), 0);
+	ASSERT_INT_EQ(ensureSave(&need, self, date, sizeof date, NULL), 0);
 	ASSERT_INT_EQ(date[0], 0);
 	need.launch = false;
-	ASSERT_INT_EQ(ensureSave(&need, 0, date, sizeof date), 0);
+	ASSERT_INT_EQ(ensureSave(&need, 0, date, sizeof date, NULL), 0);
 	need.launch = true;
 	// With no game running, a save that cannot be found starts nothing.
 	char home[] = "/tmp/fm24 job check-XXXXXX";
@@ -1993,7 +2342,7 @@ TEST(checks_the_running_game_before_a_job) {
 	char *previous = getenv("HOME") ? strdup(getenv("HOME")) : NULL;
 	setenv("HOME", home, 1);
 	spawned[0] = 0;
-	ASSERT_INT_EQ(ensureSave(&need, 0, date, sizeof date), 1);
+	ASSERT_INT_EQ(ensureSave(&need, 0, date, sizeof date, NULL), 1);
 	ASSERT_INT_EQ(spawned[0], 0);
 	if (previous) {
 		setenv("HOME", previous, 1);
@@ -2032,7 +2381,7 @@ TEST(checks_the_running_game_before_a_job) {
 		answerStatus(cases[i].replies, cases[i].count);
 		need.anySave = cases[i].anySave;
 		(void)snprintf(date, sizeof date, "stale");
-		ASSERT_INT_EQ(ensureSave(&need, self, date, sizeof date), cases[i].status);
+		ASSERT_INT_EQ(ensureSave(&need, self, date, sizeof date, NULL), cases[i].status);
 		ASSERT_INT_EQ((int)atomic_load(&statusRepliesGiven), (int)cases[i].asked);
 		ASSERT_INT_EQ(strcmp(date, cases[i].date), 0);
 		ASSERT_BOOL_EQ(queryTimeoutMs == need.timeoutMs, true);
@@ -2040,7 +2389,7 @@ TEST(checks_the_running_game_before_a_job) {
 	// A job without a save asks nothing.
 	need.save = NULL;
 	answerStatus(sameSave, 1);
-	ASSERT_INT_EQ(ensureSave(&need, self, NULL, 0), 0);
+	ASSERT_INT_EQ(ensureSave(&need, self, NULL, 0, NULL), 0);
 	ASSERT_INT_EQ((int)atomic_load(&statusRepliesGiven), 0);
 	stopHarness(server, listener);
 }
@@ -2131,7 +2480,7 @@ TEST(starts_the_game_for_a_job_and_removes_its_auto_play_files) {
 	// Without Steam's launch option the game is opened with the file named after fm24ctl, which goes
 	// once the start has failed.
 	spawned[0] = 0;
-	ASSERT_INT_EQ(ensureSave(&need, 0, date, sizeof date), 1);
+	ASSERT_INT_EQ(ensureSave(&need, 0, date, sizeof date, NULL), 1);
 	char expected[1600];
 	(void)snprintf(
 		expected,
@@ -2152,7 +2501,7 @@ TEST(starts_the_game_for_a_job_and_removes_its_auto_play_files) {
 	(void)snprintf(option, sizeof option, "/bin/sh \"%s\" %%command%%", launcher);
 	ASSERT_BOOL_EQ(setLaunchOption(home, option) && unlink(seenPath) == 0, true);
 	spawned[0] = 0;
-	ASSERT_INT_EQ(ensureSave(&need, 0, date, sizeof date), 1);
+	ASSERT_INT_EQ(ensureSave(&need, 0, date, sizeof date, NULL), 1);
 	ASSERT_INT_EQ(strcmp(spawned, "/usr/bin/open|/usr/bin/open|steam://rungameid/2252570|"), 0);
 	(void)snprintf(name, sizeof name, "autoplay-request-%d.json\n", self);
 	ASSERT_BOOL_EQ(readText(seenPath, seen, sizeof seen) && strstr(seen, name) != NULL, true);
@@ -2537,6 +2886,1024 @@ TEST(lists_the_saves_launch_finds_for_the_viewer) {
 	saveList_free(list);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Quitting the game for a batch (kill_game=1), with kill and proc_pidpath standing in for a game
+// process
+
+// The game process macosGame_stop sees: an ID no process has, its executable, whether it runs and
+// quits on SIGTERM, and the signals sent to it ("15|9|").
+static const pid_t fakeGamePid = 999999;
+static char fakeGamePath[1100];
+static bool fakeGameRuns;
+static bool fakeGameIgnoresTerm;
+static unsigned fakeGameExitsAfter; // probes (kill with 0) until it has gone, as it exits; 0: never
+static char fakeGameSignals[64];
+static unsigned refusedSignals; // signals for any other process, which are never sent
+
+// kill for macos_game.c: signals act on the fake game; any other process is only probed.
+static int fakeKill(pid_t pid, int number) {
+	if (pid == fakeGamePid) {
+		if (number) {
+			size_t length = strlen(fakeGameSignals);
+			(void)snprintf(fakeGameSignals + length, sizeof fakeGameSignals - length, "%d|", number);
+		}
+		if (!number && fakeGameRuns && fakeGameExitsAfter && --fakeGameExitsAfter == 0) {
+			fakeGameRuns = false;
+		}
+		if (!fakeGameRuns) {
+			errno = ESRCH;
+			return -1;
+		}
+		if (number == SIGKILL || (number == SIGTERM && !fakeGameIgnoresTerm)) {
+			fakeGameRuns = false;
+		}
+		return 0;
+	}
+	if (number) {
+		++refusedSignals;
+		errno = EPERM;
+		return -1;
+	}
+	return kill(pid, 0);
+}
+
+// proc_pidpath for macos_game.c: the fake game's executable, or any other process's own.
+static int fakePidPath(int pid, void *buffer, uint32_t size) {
+	if (pid == fakeGamePid) {
+		int written = snprintf(buffer, size, "%s", fakeGamePath);
+		return written > 0 && (uint32_t)written < size ? written : 0;
+	}
+	return proc_pidpath(pid, buffer, size);
+}
+
+// The game is asked to quit, then killed once its grace has passed; any other process is left
+// alone.
+TEST(quits_only_the_game_it_is_asked_to) {
+	char directory[] = "/tmp/fm24 stop-XXXXXX";
+	ASSERT_BOOL_EQ(mkdtemp(directory) != NULL, true);
+	char path[1100];
+	(void)snprintf(path, sizeof path, "%s/fm.app/Contents/MacOS", directory);
+	ASSERT_BOOL_EQ(makeDirectories(path), true);
+	(void)snprintf(path, sizeof path, "%s/fm.app/Contents/Info.plist", directory);
+	ASSERT_BOOL_EQ(writeText(path, "<string>com.sigames.eur.FootballManager2024</string>"), true);
+	(void)snprintf(fakeGamePath, sizeof fakeGamePath, "%s/fm.app/Contents/MacOS/fm", directory);
+	(void)snprintf(testSocket, sizeof testSocket, "/tmp/fm24-stop-test-%d.sock", (int)getpid());
+	refusedSignals = 0;
+	// This process is not the game.
+	ASSERT_BOOL_EQ(macosGame_stop(getpid(), 1), false);
+	// A game that quits when asked.
+	fakeGameRuns = true;
+	fakeGameIgnoresTerm = false;
+	fakeGameSignals[0] = 0;
+	ASSERT_BOOL_EQ(macosGame_stop(fakeGamePid, 60), true);
+	ASSERT_INT_EQ(strcmp(fakeGameSignals, "15|"), 0);
+	// One that ignores SIGTERM is killed once its grace has passed.
+	fakeGameRuns = true;
+	fakeGameIgnoresTerm = true;
+	fakeGameSignals[0] = 0;
+	uint64_t started = platform_ticks();
+	ASSERT_BOOL_EQ(macosGame_stop(fakeGamePid, 1), true);
+	uint64_t waitedMs = (platform_ticks() - started) / (platform_tickFrequency() / 1000);
+	ASSERT_INT_EQ(strcmp(fakeGameSignals, "15|9|"), 0);
+	ASSERT_BOOL_EQ(waitedMs >= 1000 && waitedMs < 5000, true);
+	// One that has gone needs nothing.
+	fakeGameSignals[0] = 0;
+	ASSERT_BOOL_EQ(macosGame_stop(fakeGamePid, 1) && !macosGame_running(fakeGamePid), true);
+	ASSERT_INT_EQ(fakeGameSignals[0], 0);
+	// One that is exiting has no path any more: it is given a moment to go, and not signalled; one
+	// that stays without a path is left alone.
+	char gamePath[sizeof fakeGamePath];
+	(void)snprintf(gamePath, sizeof gamePath, "%s", fakeGamePath);
+	fakeGamePath[0] = 0;
+	fakeGameRuns = true;
+	fakeGameIgnoresTerm = false;
+	fakeGameExitsAfter = 4;
+	ASSERT_BOOL_EQ(macosGame_stop(fakeGamePid, 1) && !macosGame_running(fakeGamePid), true);
+	ASSERT_INT_EQ(fakeGameSignals[0], 0);
+	fakeGameRuns = true;
+	fakeGameExitsAfter = 0;
+	ASSERT_BOOL_EQ(macosGame_stop(fakeGamePid, 1), false);
+	ASSERT_INT_EQ(fakeGameSignals[0], 0);
+	fakeGameRuns = false;
+	(void)snprintf(fakeGamePath, sizeof fakeGamePath, "%s", gamePath);
+	ASSERT_INT_EQ((int)refusedSignals, 0);
+	ASSERT_BOOL_EQ(removeTree(directory), true);
+}
+
+// A process that has exited but that its parent has not reaped yet, a zombie, no longer runs,
+// although kill still finds it: the game's process as it exits.
+TEST(does_not_count_an_exited_process_as_running) {
+	pid_t child = fork();
+	if (child == 0) {
+		_exit(0);
+	}
+	ASSERT_BOOL_EQ(child > 0, true);
+	if (child <= 0) {
+		return;
+	}
+	siginfo_t info;
+	ASSERT_BOOL_EQ(waitid(P_PID, (id_t)child, &info, WEXITED | WNOWAIT) == 0, true);
+	ASSERT_BOOL_EQ(kill(child, 0) == 0, true);
+	ASSERT_BOOL_EQ(macosGame_running(child), false);
+	ASSERT_BOOL_EQ(macosGame_running(getpid()), true);
+	ASSERT_BOOL_EQ(waitpid(child, NULL, 0) == child, true);
+	ASSERT_BOOL_EQ(macosGame_running(child), false);
+}
+
+// ---------------------------------------------------------------------------------------------
+// batch run's host: gzip runs; pmset, caffeinate and osascript are only recorded
+
+// What batch_host_macos.c started: each program and its arguments, each followed by '|', a line
+// each.
+static char hostSpawned[8192];
+static const char *pmsetSays = "Now drawing from 'AC Power'\n"; // what "pmset -g ps" prints
+static pid_t awake[16]; // the stand-ins for caffeinate, which the host leaves running
+static size_t awakeCount;
+static bool gzipGotGzip;           // gzip was started with GZIP in its environment
+static unsigned sharedGroupSpawns; // programs started in this process's group, which Ctrl-C reaches
+static unsigned inheritingSpawns;  // programs given this process's descriptors besides 0, 1 and 2
+
+// posix_spawn for batch_host_macos.c: gzip runs; pmset is /bin/echo printing `pmsetSays`; and
+// caffeinate and osascript are recorded, with /usr/bin/true run in their place.
+static int batchSpawn(
+	pid_t *pid,
+	const char *path,
+	const posix_spawn_file_actions_t *actions,
+	const posix_spawnattr_t *attributes,
+	char *const *arguments,
+	char *const *environment
+) {
+	size_t length = strlen(hostSpawned);
+	(void)snprintf(hostSpawned + length, sizeof hostSpawned - length, "%s|", path);
+	for (size_t i = 0; arguments[i]; ++i) {
+		length = strlen(hostSpawned);
+		(void)snprintf(hostSpawned + length, sizeof hostSpawned - length, "%s|", arguments[i]);
+	}
+	length = strlen(hostSpawned);
+	(void)snprintf(hostSpawned + length, sizeof hostSpawned - length, "\n");
+	short flags = 0;
+	sharedGroupSpawns += !ownGroup(attributes);
+	inheritingSpawns += !attributes || posix_spawnattr_getflags(attributes, &flags) != 0 ||
+											!(flags & POSIX_SPAWN_CLOEXEC_DEFAULT);
+	if (strcmp(path, hostGzipPath) == 0) {
+		for (char *const *variable = environment; variable && *variable; ++variable) {
+			gzipGotGzip = gzipGotGzip || strncmp(*variable, "GZIP=", 5) == 0;
+		}
+		return posix_spawn(pid, path, actions, attributes, arguments, environment);
+	}
+	char echo[] = "echo";
+	char program[] = "true";
+	char *const says[] = {echo, (char *)pmsetSays, NULL};
+	char *const instead[] = {program, NULL};
+	if (strcmp(path, hostPmsetPath) == 0) {
+		return posix_spawn(pid, "/bin/echo", actions, attributes, says, environment);
+	}
+	int error = posix_spawn(pid, "/usr/bin/true", actions, attributes, instead, environment);
+	if (error == 0 && strcmp(path, hostCaffeinatePath) == 0 && awakeCount < 16) {
+		awake[awakeCount++] = *pid;
+	}
+	return error;
+}
+
+static void reapAwake(void) {
+	while (awakeCount) {
+		(void)waitpid(awake[--awakeCount], NULL, 0);
+	}
+}
+
+static bool widePath(const char *path, wchar_t *out) {
+	return platform_fromUtf8(path, out, HARNESS_PATH_LENGTH);
+}
+
+// The power, keeping the computer awake, notifications, gzip and the signals that stop a batch.
+TEST(runs_and_asks_the_programs_a_batch_needs) {
+	char directory[] = "/tmp/fm24 batch host-XXXXXX";
+	ASSERT_BOOL_EQ(mkdtemp(directory) != NULL, true);
+	BatchHost host;
+	batchHost_real(&host);
+	static const struct {
+		const char *says;
+		BatchPower power;
+	} powers[] = {
+		{"Now drawing from 'Battery Power'\n -InternalBattery-0 (id=4653155)\t81%; discharging; "
+		 "4:12 remaining present: true\n",
+			BATCH_POWER_BATTERY},
+		{"Now drawing from 'AC Power'\n -InternalBattery-0 (id=4653155)\t100%; charged; 0:00 "
+		 "remaining present: true\n",
+			BATCH_POWER_AC},
+		{"Now drawing from 'UPS Power'\n", BATCH_POWER_AC},
+		{"pmset: no power source\n", BATCH_POWER_UNKNOWN},
+	};
+	for (size_t i = 0; i < sizeof powers / sizeof powers[0]; ++i) {
+		pmsetSays = powers[i].says;
+		hostSpawned[0] = 0;
+		ASSERT_BOOL_EQ(host.powerSource(host.context) == powers[i].power, true);
+		ASSERT_INT_EQ(strcmp(hostSpawned, "/usr/bin/pmset|pmset|-g|ps|\n"), 0);
+	}
+	pmsetSays = powers[1].says;
+	// caffeinate keeps the computer awake until this process exits: on AC power (-s), and with
+	// onBattery on battery power too (-i).
+	char expected[2400];
+	for (int onBattery = 0; onBattery < 2; ++onBattery) {
+		hostSpawned[0] = 0;
+		ASSERT_BOOL_EQ(host.keepAwake(host.context, onBattery), true);
+		reapAwake();
+		(void)snprintf(
+			expected,
+			sizeof expected,
+			"/usr/bin/caffeinate|caffeinate|%s-m|-s|-w|%d|\n",
+			onBattery ? "-i|" : "",
+			(int)getpid()
+		);
+		ASSERT_INT_EQ(strcmp(hostSpawned, expected), 0);
+	}
+	// Notifications, escaped for AppleScript, without control characters; one too long is left out.
+	hostSpawned[0] = 0;
+	host.notify(host.context, "batch \"liv\" stopped: a\\b\n");
+	ASSERT_INT_EQ(
+		strcmp(
+			hostSpawned,
+			"/usr/bin/osascript|osascript|-e|display notification \"batch \\\"liv\\\" stopped: "
+			"a\\\\b\" with title \"fm24ctl\"|\n"
+		),
+		0
+	);
+	char longText[600];
+	memset(longText, 'x', sizeof longText - 1);
+	longText[sizeof longText - 1] = 0;
+	hostSpawned[0] = 0;
+	host.notify(host.context, longText);
+	ASSERT_INT_EQ(hostSpawned[0], 0);
+	// gzip compresses and checks a file in place, and decompresses it again, without the options
+	// GZIP would add (here -k, keeping the file, and -S, another suffix).
+	ASSERT_INT_EQ(setenv("GZIP", "-k -S .z", 1), 0);
+	gzipGotGzip = false;
+	static const char rows[] = "index,seed\n100,4210832071\n";
+	char path[1100];
+	char compressed[1100];
+	wchar_t wide[HARNESS_PATH_LENGTH];
+	(void)snprintf(path, sizeof path, "%s/results.csv", directory);
+	(void)snprintf(compressed, sizeof compressed, "%s.gz", path);
+	ASSERT_BOOL_EQ(writeText(path, rows) && widePath(path, wide), true);
+	hostSpawned[0] = 0;
+	ASSERT_BOOL_EQ(host.compress(host.context, wide), true);
+	ASSERT_BOOL_EQ(access(path, F_OK) != 0 && access(compressed, F_OK) == 0, true);
+	(void)snprintf(
+		expected,
+		sizeof expected,
+		"/usr/bin/gzip|gzip|-n|-6|%s|\n/usr/bin/gzip|gzip|-t|%s|\n",
+		path,
+		compressed
+	);
+	ASSERT_INT_EQ(strcmp(hostSpawned, expected), 0);
+	void *handle = NULL;
+	ASSERT_BOOL_EQ(widePath(compressed, wide), true);
+	FILE *file = host.openDecompressed(host.context, wide, &handle);
+	ASSERT_BOOL_EQ(file != NULL, true);
+	if (file) {
+		char read[64] = "";
+		size_t got = fread(read, 1, sizeof read, file);
+		ASSERT_BOOL_EQ(got == sizeof rows - 1 && memcmp(read, rows, got) == 0, true);
+		ASSERT_BOOL_EQ(host.closeDecompressed(host.context, file, handle), true);
+	}
+	// A file that is not gzip's fails to decompress, and a missing one to compress.
+	(void)snprintf(path, sizeof path, "%s/torn.csv.gz", directory);
+	ASSERT_BOOL_EQ(writeText(path, "not gzip\n") && widePath(path, wide), true);
+	file = host.openDecompressed(host.context, wide, &handle);
+	ASSERT_BOOL_EQ(file != NULL, true);
+	if (file) {
+		char read[64];
+		while (fread(read, 1, sizeof read, file) > 0) {
+		}
+		ASSERT_BOOL_EQ(host.closeDecompressed(host.context, file, handle), false);
+	}
+	(void)snprintf(path, sizeof path, "%s/missing.csv", directory);
+	ASSERT_BOOL_EQ(widePath(path, wide) && !host.compress(host.context, wide), true);
+	ASSERT_BOOL_EQ(gzipGotGzip, false);
+	ASSERT_INT_EQ(unsetenv("GZIP"), 0);
+	// Each program runs in a process group of its own, which the terminal's Ctrl-C does not reach,
+	// with only this process's standard input, output and error.
+	ASSERT_INT_EQ((int)sharedGroupSpawns, 0);
+	ASSERT_INT_EQ((int)inheritingSpawns, 0);
+	// The first SIGINT or SIGTERM asks for control/stop, the second for control/stop-now.
+	char stop[1100];
+	char stopNow[1100];
+	wchar_t stopWide[HARNESS_PATH_LENGTH];
+	wchar_t stopNowWide[HARNESS_PATH_LENGTH];
+	(void)snprintf(stop, sizeof stop, "%s/stop", directory);
+	(void)snprintf(stopNow, sizeof stopNow, "%s/stop-now", directory);
+	ASSERT_BOOL_EQ(widePath(stop, stopWide) && widePath(stopNow, stopNowWide), true);
+	ASSERT_BOOL_EQ(host.watchSignals(host.context, stopWide, stopNowWide), true);
+	ASSERT_BOOL_EQ(host.signals(host.context) == 0 && raise(SIGINT) == 0, true);
+	ASSERT_BOOL_EQ(access(stop, F_OK) == 0 && access(stopNow, F_OK) != 0, true);
+	ASSERT_BOOL_EQ(host.signals(host.context) == 1 && raise(SIGTERM) == 0, true);
+	ASSERT_BOOL_EQ(access(stopNow, F_OK) == 0 && host.signals(host.context) == 2, true);
+	struct sigaction defaults = {.sa_handler = SIG_DFL};
+	(void)sigemptyset(&defaults.sa_mask);
+	ASSERT_BOOL_EQ(
+		sigaction(SIGINT, &defaults, NULL) == 0 && sigaction(SIGTERM, &defaults, NULL) == 0, true
+	);
+	hostSignalCount = 0;
+	ASSERT_BOOL_EQ(removeTree(directory), true);
+}
+
+// Quits a gzip that may keep another from ending, if `done` has not come within 20 seconds.
+typedef struct GzipWatch {
+	atomic_bool done;
+	atomic_bool fired;
+	pid_t gzip;
+} GzipWatch;
+
+static void *watchGzip(void *context) {
+	GzipWatch *watch = context;
+	for (unsigned waited = 0; !atomic_load(&watch->done); waited += 50) {
+		if (waited >= 20000) {
+			atomic_store(&watch->fired, true);
+			(void)kill(watch->gzip, SIGKILL);
+			return NULL;
+		}
+		platform_sleep(50);
+	}
+	return NULL;
+}
+
+// A decompression closed before its end while another is open, as verify --deep does when it
+// cannot open a chunk's next file: its gzip ends (SIGPIPE), as the other holds none of its pipe.
+TEST(closes_a_decompression_before_its_end_while_another_is_open) {
+	char directory[] = "/tmp/fm24 batch gzip-XXXXXX";
+	ASSERT_BOOL_EQ(mkdtemp(directory) != NULL, true);
+	BatchHost host;
+	batchHost_real(&host);
+	char path[1100];
+	char compressed[1100];
+	wchar_t wide[HARNESS_PATH_LENGTH];
+	(void)snprintf(path, sizeof path, "%s/results.csv", directory);
+	(void)snprintf(compressed, sizeof compressed, "%s.gz", path);
+	FILE *rows = fopen(path, "wb");
+	ASSERT_BOOL_EQ(rows != NULL, true);
+	if (!rows) {
+		return;
+	}
+	// Far more than a pipe holds, so that a gzip nobody reads waits to write.
+	(void)fputs("index,seed\n", rows);
+	for (unsigned i = 0; i < 200000; ++i) {
+		(void)fprintf(rows, "%u,%u\n", i, i * 2654435761U);
+	}
+	ASSERT_BOOL_EQ(fclose(rows) == 0 && widePath(path, wide), true);
+	ASSERT_BOOL_EQ(host.compress(host.context, wide), true);
+	ASSERT_BOOL_EQ(widePath(compressed, wide), true);
+	void *handles[2] = {NULL, NULL};
+	FILE *files[2] = {NULL, NULL};
+	for (size_t i = 0; i < 2; ++i) {
+		files[i] = host.openDecompressed(host.context, wide, &handles[i]);
+		ASSERT_BOOL_EQ(files[i] != NULL, true);
+	}
+	if (files[0] && files[1]) {
+		char some[64];
+		ASSERT_BOOL_EQ(fread(some, 1, sizeof some, files[0]) == sizeof some, true);
+		GzipWatch watch = {.gzip = ((HostDecompression *)handles[1])->child};
+		pthread_t watcher;
+		ASSERT_INT_EQ(pthread_create(&watcher, NULL, watchGzip, &watch), 0);
+		// gzip ended by SIGPIPE: not all of it decompressed.
+		ASSERT_BOOL_EQ(host.closeDecompressed(host.context, files[0], handles[0]), false);
+		atomic_store(&watch.done, true);
+		(void)pthread_join(watcher, NULL);
+		ASSERT_BOOL_EQ(atomic_load(&watch.fired), false);
+		files[0] = NULL;
+	}
+	for (size_t i = 0; i < 2; ++i) {
+		if (files[i]) {
+			(void)host.closeDecompressed(host.context, files[i], handles[i]);
+		}
+	}
+	ASSERT_BOOL_EQ(removeTree(directory), true);
+}
+
+// ---------------------------------------------------------------------------------------------
+// batch run against the stand-in harness: the real host's client and socket, save check, gzip and
+// syncs, with this process standing in for the game, which a crash or a quit ends
+
+// The game a batch plays in: while it is alive, its harness serves testSocket on a thread and
+// plays run jobs as batch_test.c's fake game does. Its faults are each at an index, for the first
+// job that reaches it (UINT64_MAX: none): the game exits, closing the connection without a reply;
+// the job stalls until `stallMs` pass or the game is quit; and control/stop-now appears.
+typedef struct StandIn {
+	atomic_bool playing; // job_execute plays the game's jobs
+	atomic_bool alive;
+	atomic_uint pid;
+	atomic_llong loaded;
+	atomic_ullong jobs; // since it started, status jobs aside, as the harness counts them
+	atomic_uint launches;
+	atomic_int connection; // the one the harness serves, or -1
+	atomic_ullong crashAt;
+	atomic_ullong stallAt;
+	atomic_ullong stalledAt; // when the stall began, in ms of the monotonic clock (0: not yet)
+	atomic_ullong stopNowAt;
+	atomic_uint busyJobs; // run jobs it refuses next as busy
+	unsigned stallMs;
+	char stopNow[1100];
+	pthread_t server;
+	int listener;
+	bool serving;
+} StandIn;
+
+static StandIn standIn = {.connection = -1};
+static const char *const standInReady[] = {"ok: ready " TEST_IDLE_FLAGS " save=LIV_COPY"};
+static const char *const standInOtherSave[] = {"ok: ready " TEST_IDLE_FLAGS " save=LIV_OTHER"};
+
+static unsigned long long standInNowMs(void) {
+	return platform_ticks() / (platform_tickFrequency() / 1000);
+}
+
+// BatchTestGame.atSeed: meets the stand-in's faults.
+static bool standInAtSeed(void *context, uint64_t index) {
+	(void)context;
+	unsigned long long at = index;
+	unsigned long long stopNowAt = at;
+	if (atomic_compare_exchange_strong(&standIn.stopNowAt, &stopNowAt, UINT64_MAX)) {
+		FILE *file = fopen(standIn.stopNow, "wb");
+		if (file) {
+			(void)fclose(file);
+		}
+	}
+	unsigned long long crashAt = at;
+	if (atomic_compare_exchange_strong(&standIn.crashAt, &crashAt, UINT64_MAX)) {
+		return false;
+	}
+	unsigned long long stallAt = at;
+	if (atomic_compare_exchange_strong(&standIn.stallAt, &stallAt, UINT64_MAX)) {
+		atomic_store(&standIn.stalledAt, standInNowMs());
+		for (unsigned waited = 0; waited < standIn.stallMs && atomic_load(&standIn.alive);
+			waited += 10) {
+			platform_sleep(10);
+		}
+		return atomic_load(&standIn.alive);
+	}
+	return true;
+}
+
+// job_execute's part while the stand-in plays: run and replacement jobs, and list_teams and
+// list_players.
+static bool standInExecutes(const char *text) {
+	if (!atomic_load(&standIn.playing) || strcmp(text, "command=status\n") == 0) {
+		return false;
+	}
+	unsigned long long jobs = atomic_fetch_add(&standIn.jobs, 1) + 1;
+	if (strncmp(text, "command=run\n", 12) != 0 && strncmp(text, "command=replace_", 16) != 0) {
+		const char *output = strstr(text, "output=");
+		char path[1100];
+		size_t length = output ? strcspn(output + 7, "\n") : 0;
+		bool ok = output && length < sizeof path;
+		if (ok) {
+			memcpy(path, output + 7, length);
+			path[length] = 0;
+			ok = writeText(path, "1\tLiverpool\n677\tArsenal\n");
+		}
+		job_writeResult("%s", ok ? "ok: 2 written" : "error: cannot write; see harness.log");
+		return true;
+	}
+	unsigned busy = atomic_load(&standIn.busyJobs);
+	if (busy && atomic_compare_exchange_strong(&standIn.busyJobs, &busy, busy - 1)) {
+		job_writeResult("error: FM24 is busy (processing); wait until it is idle");
+		return true;
+	}
+	BatchTestGame game = {
+		.pid = atomic_load(&standIn.pid),
+		.loaded = atomic_load(&standIn.loaded),
+		.jobs = jobs,
+		.atSeed = standInAtSeed,
+	};
+	char result[HARNESS_RESULT_LENGTH];
+	if (batchTest_playJob(text, &game, result, sizeof result)) {
+		job_writeResult("%s", result);
+		return true;
+	}
+	// The game exits mid-job, closing the connection without a reply: /dev/null takes the socket's
+	// place, for serve() to write its reply to. (macOS refuses shutdown() once the runner has
+	// closed its side.)
+	atomic_store(&standIn.alive, false);
+	int connection = atomic_load(&standIn.connection);
+	int nowhere = open("/dev/null", O_WRONLY | O_CLOEXEC);
+	if (connection >= 0 && nowhere >= 0) {
+		(void)dup2(nowhere, connection);
+	}
+	if (nowhere >= 0) {
+		close(nowhere);
+	}
+	return true;
+}
+
+// The stand-in's job thread: serves testSocket until the game exits, which takes its socket and
+// lock with it.
+static void *serveStandIn(void *parameter) {
+	(void)parameter;
+	while (atomic_load(&standIn.alive)) {
+		struct pollfd entry = {.fd = standIn.listener, .events = POLLIN};
+		int connection = poll(&entry, 1, 20) == 1 ? accept(standIn.listener, NULL, NULL) : -1;
+		if (connection >= 0) {
+			atomic_store(&standIn.connection, connection);
+			serve(connection);
+			atomic_store(&standIn.connection, -1);
+			close(connection);
+		}
+	}
+	stopServing();
+	close(standIn.listener);
+	return NULL;
+}
+
+// The game exits (or has), and its job thread with it.
+static void quitStandIn(void) {
+	atomic_store(&standIn.alive, false);
+	if (standIn.serving) {
+		pthread_join(standIn.server, NULL);
+		standIn.serving = false;
+	}
+}
+
+// Starts the game: a new process, loaded now, whose harness serves testSocket.
+static bool launchStandIn(void) {
+	quitStandIn();
+	unsigned launches = atomic_fetch_add(&standIn.launches, 1) + 1;
+	atomic_store(&standIn.pid, 990000 + launches);
+	atomic_store(&standIn.loaded, (long long)time(NULL) + launches);
+	atomic_store(&standIn.jobs, 0);
+	supported = true;
+	standIn.listener = openSocket();
+	atomic_store(&standIn.alive, standIn.listener >= 0);
+	standIn.serving =
+		standIn.listener >= 0 && pthread_create(&standIn.server, NULL, serveStandIn, NULL) == 0;
+	return standIn.serving;
+}
+
+static uint32_t standInFindGame(void *context) {
+	(void)context;
+	return atomic_load(&standIn.alive) ? atomic_load(&standIn.pid) : 0;
+}
+
+static bool standInRunning(void *context, uint32_t pid) {
+	(void)context;
+	return atomic_load(&standIn.alive) && pid == atomic_load(&standIn.pid);
+}
+
+static uint32_t standInSlice(void *context, uint32_t pid) {
+	(void)context;
+	(void)pid;
+	return BATCH_SLICE_ARM64;
+}
+
+static bool standInStop(void *context, uint32_t pid, unsigned graceS) {
+	(void)graceS;
+	if (standInRunning(context, pid)) {
+		quitStandIn();
+	}
+	return true;
+}
+
+static uint64_t standInMemory(void *context, uint32_t pid) {
+	(void)context;
+	return pid ? 6ULL << 30 : 0;
+}
+
+// The save check: a game that is not running starts (launch=1), then the real check asks its
+// harness.
+static int standInEnsureSave(
+	void *context,
+	const SessionNeed *need,
+	char *date,
+	size_t size,
+	SessionOutcome *outcome
+) {
+	(void)context;
+	if (!atomic_load(&standIn.alive) && need->launch && !launchStandIn()) {
+		*outcome = SESSION_EXITED;
+		return 1;
+	}
+	return ensureSave(need, atomic_load(&standIn.alive) ? getpid() : 0, date, size, outcome);
+}
+
+static bool standInWatchSignals(void *context, const wchar_t *stop, const wchar_t *stopNow) {
+	(void)context;
+	(void)stop;
+	(void)stopNow;
+	return true;
+}
+
+static unsigned standInSignals(void *context) {
+	(void)context;
+	return 0;
+}
+
+// The real host, but for the game, which is the stand-in, the signals, which the host test
+// covers, and FM24's logs, which a test trims in a home folder of its own.
+static BatchHost standInHost(void) {
+	BatchHost host;
+	batchHost_real(&host);
+	host.trimGameLogs = NULL;
+	host.ensureSave = standInEnsureSave;
+	host.findGame = standInFindGame;
+	host.gameRunning = standInRunning;
+	host.gameSlice = standInSlice;
+	host.stopGame = standInStop;
+	host.residentBytes = standInMemory;
+	host.watchSignals = standInWatchSignals;
+	host.signals = standInSignals;
+	return host;
+}
+
+// A game not yet running whose harness answers status jobs with the batch's save; no faults.
+static void prepareStandIn(void) {
+	(void)snprintf(testSocket, sizeof testSocket, "/tmp/fm24-batch-test-%d.sock", (int)getpid());
+	(void)unlink(testSocket);
+	atomic_store(&standIn.crashAt, UINT64_MAX);
+	atomic_store(&standIn.stallAt, UINT64_MAX);
+	atomic_store(&standIn.stalledAt, 0);
+	atomic_store(&standIn.stopNowAt, UINT64_MAX);
+	atomic_store(&standIn.busyJobs, 0);
+	atomic_store(&standIn.launches, 0);
+	atomic_store(&standIn.playing, true);
+	answerStatus(standInReady, 1);
+	hostSpawned[0] = 0;
+}
+
+// A new batch of the standard settings and `settings`, for that game.
+static bool startStandIn(const char *settings, wchar_t *folder, wchar_t *directory) {
+	prepareStandIn();
+	char text[256];
+	(void)snprintf(text, sizeof text, "min_free_gb=0\n%s", settings);
+	return batchTest_createBatch(text, folder, directory);
+}
+
+// The same for a season batch (batchTest_createSeasonBatch).
+static bool startStandInSeason(const char *settings, wchar_t *folder, wchar_t *directory) {
+	prepareStandIn();
+	char text[256];
+	(void)snprintf(text, sizeof text, "min_free_gb=0\n%s", settings);
+	return batchTest_createSeasonBatch(text, folder, directory);
+}
+
+// batch run with a second of 5 ms: a tick is 25 ms, and hang_minutes=1 300 ms.
+static int runStandIn(const wchar_t *directory) {
+	BatchHost host = standInHost();
+	BatchRunOptions options = {.secondMs = 5};
+	int code = batchRun_run(directory, &options, &host);
+	reapAwake();
+	return code;
+}
+
+// Every index once, and verify --deep passes, decompressing with gzip.
+static bool standInFinished(const wchar_t *directory) {
+	BatchHost host = standInHost();
+	return batchTest_checkFinished(directory, &host) && batchTest_verify(directory, &host) == 0;
+}
+
+static bool standInFileHas(const wchar_t *directory, const char *name, const char *needle) {
+	char path[2400];
+	char text[65536];
+	char folder[1100];
+	return platform_toUtf8(directory, folder, sizeof folder) &&
+				 snprintf(path, sizeof path, "%s/%s", folder, name) > 0 &&
+				 readText(path, text, sizeof text) && strstr(text, needle) != NULL;
+}
+
+static void finishStandIn(const wchar_t *folder) {
+	quitStandIn();
+	atomic_store(&standIn.playing, false);
+	statusReplyCount = 0;
+	char lockPath[sizeof testSocket + 8];
+	if (channel_lockPath(testSocket, lockPath, sizeof lockPath)) {
+		(void)unlink(lockPath);
+	}
+	ASSERT_BOOL_EQ(batch_removeFolder(folder), true);
+}
+
+// A batch from start to end over the socket: started, warmed up, checked, every chunk compressed
+// with gzip, and every index once.
+TEST(runs_a_batch_against_the_stand_in_harness) {
+	wchar_t folder[HARNESS_PATH_LENGTH];
+	wchar_t directory[HARNESS_PATH_LENGTH];
+	ASSERT_BOOL_EQ(startStandIn("", folder, directory), true);
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(standInFinished(directory), true);
+	ASSERT_INT_EQ((int)atomic_load(&standIn.launches), 1);
+	ASSERT_BOOL_EQ(strstr(hostSpawned, "/usr/bin/caffeinate|caffeinate|-m|-s|-w|") != NULL, true);
+	ASSERT_BOOL_EQ(strstr(hostSpawned, "/usr/bin/pmset|pmset|-g|ps|") != NULL, true);
+	ASSERT_BOOL_EQ(strstr(hostSpawned, "/usr/bin/gzip|gzip|-n|-6|") != NULL, true);
+	ASSERT_BOOL_EQ(
+		strstr(hostSpawned, "display notification \"batch test-batch is complete\"") != NULL, true
+	);
+	ASSERT_BOOL_EQ(
+		standInFileHas(directory, "sessions/s0001/session.json", "\"canary\":\"reference\""), true
+	);
+	ASSERT_BOOL_EQ(standInFileHas(directory, "lookups/teams.txt", "Liverpool"), true);
+	ASSERT_BOOL_EQ(
+		standInFileHas(
+			directory, "chunks/arm=press/chunk=0000000130/chunk.json", "\"client_outcome\":\"replied\""
+		),
+		true
+	);
+	// A finished batch has nothing more to play.
+	unsigned long long jobs = atomic_load(&standIn.jobs);
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(atomic_load(&standIn.jobs) == jobs, true);
+	finishStandIn(folder);
+}
+
+// A season over the socket: its fixtures built by replacement jobs, compressed with gzip, frozen,
+// then played; verify --deep decompresses them and checks every row's teams.
+TEST(runs_a_season_against_the_stand_in_harness) {
+	wchar_t folder[HARNESS_PATH_LENGTH];
+	wchar_t directory[HARNESS_PATH_LENGTH];
+	ASSERT_BOOL_EQ(startStandInSeason("", folder, directory), true);
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(standInFinished(directory), true);
+	ASSERT_INT_EQ((int)atomic_load(&standIn.launches), 1);
+	ASSERT_BOOL_EQ(
+		standInFileHas(directory, "events.log", " fixtures_frozen fixtures=6 jobs=9 "), true
+	);
+	ASSERT_BOOL_EQ(
+		standInFileHas(directory, "inputs/fixtures.txt", " home_team=22 away_team=11\n"), true
+	);
+	ASSERT_BOOL_EQ(
+		standInFileHas(
+			directory,
+			"chunks/arm=f0006/chunk=0000000002/chunk.json",
+			"\"home_team_uid\":33,\"away_team_uid\":22"
+		),
+		true
+	);
+	finishStandIn(folder);
+}
+
+// A crash closing the connection, a busy game, a stalled job (watched, or quit with kill_game=1),
+// another save and stop-now, each over the socket.
+TEST(recovers_a_batch_against_the_stand_in_harness) {
+	wchar_t folder[HARNESS_PATH_LENGTH];
+	wchar_t directory[HARNESS_PATH_LENGTH];
+	const char *chunk = "chunks/arm=baseline/chunk=0000000110/chunk.json";
+	// The game exits mid-job: the batch starts it again and goes on from the part it kept.
+	ASSERT_BOOL_EQ(startStandIn("", folder, directory), true);
+	atomic_store(&standIn.crashAt, 113);
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(standInFinished(directory), true);
+	ASSERT_INT_EQ((int)atomic_load(&standIn.launches), 2);
+	ASSERT_BOOL_EQ(standInFileHas(directory, chunk, "\"verified\":3,\"outcome\":\"crashed\""), true);
+	ASSERT_BOOL_EQ(standInFileHas(directory, chunk, "\"client_outcome\":\"lost\""), true);
+	finishStandIn(folder);
+	// A busy game: a wait, then a new session.
+	ASSERT_BOOL_EQ(startStandIn("", folder, directory), true);
+	atomic_store(&standIn.busyJobs, 1);
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(standInFinished(directory), true);
+	ASSERT_BOOL_EQ(standInFileHas(directory, "sessions/s0002/session.json", "\"warmup\":true"), true);
+	finishStandIn(folder);
+	// A stalled job is watched until it ends, and kept; the status queries that waited behind it
+	// leave no jobs of their own.
+	ASSERT_BOOL_EQ(startStandIn("hang_minutes=1\n", folder, directory), true);
+	atomic_store(&standIn.stallAt, 113);
+	standIn.stallMs = 1500;
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(standInFinished(directory), true);
+	ASSERT_INT_EQ((int)atomic_load(&standIn.launches), 1);
+	ASSERT_BOOL_EQ(standInFileHas(directory, chunk, "\"verified\":10,\"outcome\":\"adopted\""), true);
+	ASSERT_BOOL_EQ(standInFileHas(directory, "events.log", " hang pid="), true);
+	ASSERT_BOOL_EQ(!standInFileHas(directory, "events.log", " foreign_jobs "), true);
+	finishStandIn(folder);
+	// With kill_game=1 the game is quit, and started again.
+	ASSERT_BOOL_EQ(startStandIn("hang_minutes=1\nkill_game=1\n", folder, directory), true);
+	atomic_store(&standIn.stallAt, 113);
+	standIn.stallMs = 20000;
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(standInFinished(directory), true);
+	ASSERT_INT_EQ((int)atomic_load(&standIn.launches), 2);
+	ASSERT_BOOL_EQ(standInFileHas(directory, chunk, "\"outcome\":\"abandoned\""), true);
+	ASSERT_BOOL_EQ(standInFileHas(directory, "events.log", " game_killed "), true);
+	finishStandIn(folder);
+	// Another save stops the batch with 3 and keeps its state; with the save back, it goes on.
+	ASSERT_BOOL_EQ(startStandIn("", folder, directory), true);
+	answerStatus(standInOtherSave, 1);
+	ASSERT_INT_EQ(runStandIn(directory), 3);
+	ASSERT_BOOL_EQ(standInFileHas(directory, "batch.json", "\"exit_code\":3"), true);
+	answerStatus(standInReady, 1);
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(standInFinished(directory), true);
+	finishStandIn(folder);
+	// stop-now: the job stops starting seeds, keeps what it played, and the batch goes on later.
+	ASSERT_BOOL_EQ(startStandIn("", folder, directory), true);
+	char batchFolder[1100];
+	ASSERT_BOOL_EQ(platform_toUtf8(directory, batchFolder, sizeof batchFolder), true);
+	(void)snprintf(standIn.stopNow, sizeof standIn.stopNow, "%s/control/stop-now", batchFolder);
+	atomic_store(&standIn.stopNowAt, 113);
+	ASSERT_INT_EQ(runStandIn(directory), 4);
+	ASSERT_BOOL_EQ(
+		standInFileHas(
+			directory, "attempts/baseline/0000000110/a1/part.json", "\"outcome\":\"stopped\""
+		),
+		true
+	);
+	ASSERT_INT_EQ(runStandIn(directory), 0);
+	ASSERT_BOOL_EQ(standInFinished(directory), true);
+	finishStandIn(folder);
+}
+
+// What a person does while a batch runs against the stand-in, `afterMs` after its job stalled:
+// batch stop, batch stop --now, Ctrl-C (SIGINT to batch run's thread, as to fm24ctl's) or
+// quitting the game.
+typedef enum PersonAction {
+	PERSON_STOP = 1,
+	PERSON_STOP_NOW,
+	PERSON_SIGINT,
+	PERSON_QUIT,
+} PersonAction;
+
+typedef struct Person {
+	const wchar_t *directory;
+	pthread_t runner;
+	struct {
+		PersonAction action;
+		unsigned afterMs;
+	} steps[2];
+	size_t count;
+	atomic_ullong lastAt; // when the last step was done, in ms of the monotonic clock (0: not yet)
+	atomic_bool done;     // batch run has returned
+} Person;
+
+static void *actAsPerson(void *context) {
+	Person *person = context;
+	while (!atomic_load(&standIn.stalledAt) && !atomic_load(&person->done)) {
+		platform_sleep(2);
+	}
+	unsigned long long stalled = atomic_load(&standIn.stalledAt);
+	for (size_t i = 0; i < person->count && !atomic_load(&person->done); ++i) {
+		while (standInNowMs() < stalled + person->steps[i].afterMs && !atomic_load(&person->done)) {
+			platform_sleep(2);
+		}
+		if (atomic_load(&person->done)) {
+			break;
+		}
+		switch (person->steps[i].action) {
+			case PERSON_STOP: (void)batchTest_stop(person->directory, false); break;
+			case PERSON_STOP_NOW: (void)batchTest_stop(person->directory, true); break;
+			case PERSON_SIGINT: (void)pthread_kill(person->runner, SIGINT); break;
+			case PERSON_QUIT: atomic_store(&standIn.alive, false); break; // its thread then ends
+		}
+		atomic_store(&person->lastAt, standInNowMs());
+	}
+	return NULL;
+}
+
+// batch run against the stand-in with the real host's signal handler and `person` acting on it,
+// printing into `printed`; how long it went on after the person's last step, in ms.
+static int runStandInWith(Person *person, char *printed, size_t size, unsigned long long *afterMs) {
+	BatchHost host = standInHost();
+	host.watchSignals = hostWatchSignals;
+	host.signals = hostSignals;
+	BatchRunOptions options = {.secondMs = 5};
+	person->runner = pthread_self();
+	atomic_store(&person->lastAt, 0);
+	atomic_store(&person->done, false);
+	pthread_t thread;
+	bool acting = pthread_create(&thread, NULL, actAsPerson, person) == 0;
+	Capture capture;
+	bool capturing = startCapture(&capture);
+	int code = batchRun_run(person->directory, &options, &host);
+	unsigned long long ended = standInNowMs();
+	atomic_store(&person->done, true);
+	endCapture(&capture, printed, size);
+	(void)fputs(printed, stderr);
+	if (acting) {
+		pthread_join(thread, NULL);
+	}
+	reapAwake();
+	struct sigaction defaults = {.sa_handler = SIG_DFL};
+	(void)sigemptyset(&defaults.sa_mask);
+	(void)sigaction(SIGINT, &defaults, NULL);
+	(void)sigaction(SIGTERM, &defaults, NULL);
+	hostSignalCount = 0;
+	unsigned long long last = atomic_load(&person->lastAt);
+	*afterMs = last ? ended - last : ULLONG_MAX;
+	ASSERT_BOOL_EQ(acting && capturing, true);
+	return code;
+}
+
+// A batch whose job stalls at 113 is stopped over the socket, with the real signal handler: once
+// the hang is noted, batch stop, batch stop --now and two Ctrl-Cs each end batch run with 4 at
+// once, rather than after queue_wait_minutes, leaving the job running in the game, which the next
+// run waits for and keeps; the status queries meanwhile print no notice. A Ctrl-C and then a quit
+// does not start the game again, and with kill_game=1 a stop-now left unanswered quits it.
+TEST(stops_a_hung_batch_against_the_stand_in_harness) {
+	static const struct {
+		const char *settings;
+		PersonAction actions[2];
+		unsigned afterMs[2];
+		const char *reason;
+		bool left; // the job is left running in the game; else its attempt is kept, the game gone
+	} cases[] = {
+		{"hang_minutes=1\n", {PERSON_STOP}, {600}, "still runs in FM24 (pid 990001)", true},
+		{"hang_minutes=1\n", {PERSON_STOP_NOW}, {600}, "still runs in FM24 (pid 990001)", true},
+		{"hang_minutes=1\n",
+			{PERSON_SIGINT, PERSON_SIGINT},
+			{600, 650},
+			"still runs in FM24 (pid 990001)",
+			true},
+		{"hang_minutes=1\n", {PERSON_SIGINT, PERSON_QUIT}, {100, 200}, "after the game exited", false},
+		// Left unanswered for 150 ms, well before hang_minutes (3 s) pass.
+		{"hang_minutes=10\nkill_game=1\n", {PERSON_STOP_NOW}, {100}, "after the game exited", false},
+	};
+	const char *attempt = "attempts/baseline/0000000110/a1/part.json";
+	static char printed[1 << 18];
+	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+		wchar_t folder[HARNESS_PATH_LENGTH];
+		wchar_t directory[HARNESS_PATH_LENGTH];
+		char settings[256];
+		(void)snprintf(settings, sizeof settings, "queue_wait_minutes=60\n%s", cases[i].settings);
+		ASSERT_BOOL_EQ(startStandIn(settings, folder, directory), true);
+		atomic_store(&standIn.stallAt, 113);
+		standIn.stallMs = 5000;
+		Person person = {.directory = directory};
+		for (size_t k = 0; k < 2 && cases[i].actions[k]; ++k) {
+			person.steps[k].action = cases[i].actions[k];
+			person.steps[k].afterMs = cases[i].afterMs[k];
+			++person.count;
+		}
+		unsigned long long afterMs = 0;
+		ASSERT_INT_EQ(runStandInWith(&person, printed, sizeof printed, &afterMs), 4);
+		ASSERT_BOOL_EQ(standInFileHas(directory, "batch.json", cases[i].reason), true);
+		ASSERT_INT_EQ((int)atomic_load(&standIn.launches), 1);
+		ASSERT_BOOL_EQ(!strstr(printed, "the harness is running another job"), true);
+		// A tick is 25 ms here, a minute 300 ms, queue_wait_minutes 18 s and the stall 5 s.
+		ASSERT_BOOL_EQ(afterMs < 1000, true);
+		if (cases[i].left) {
+			ASSERT_BOOL_EQ(atomic_load(&standIn.alive) && !standInFileHas(directory, attempt, "{"), true);
+			ASSERT_BOOL_EQ(
+				strstr(printed, "FM24 (pid 990001) still runs the job writing attempts/") != NULL, true
+			);
+			ASSERT_BOOL_EQ(strstr(hostSpawned, "still runs in FM24 (pid 990001)") != NULL, true);
+		} else {
+			ASSERT_BOOL_EQ(!atomic_load(&standIn.alive), true);
+			ASSERT_BOOL_EQ(standInFileHas(directory, attempt, "\"verified\":3,\"outcome\":\""), true);
+		}
+		ASSERT_BOOL_EQ(!standInFileHas(directory, "events.log", "session_started id=s0002"), true);
+		// The next run keeps the job's rows, once it has ended or with the game started again.
+		ASSERT_INT_EQ(runStandIn(directory), 0);
+		ASSERT_BOOL_EQ(standInFinished(directory), true);
+		ASSERT_INT_EQ((int)atomic_load(&standIn.launches), cases[i].left ? 1 : 2);
+		finishStandIn(folder);
+	}
+}
+
+// The save check before a chunk waits behind a job left running in the game, here the warm-up a
+// stopped run left, which stalls: batch stop, batch stop --now and a Ctrl-C each end that wait and
+// batch run with 4 at once, over the socket, rather than once the job ends or queue_wait_minutes
+// pass. The stopped run said that the warm-up keeps nothing; once it has ended, the batch goes on.
+TEST(stops_a_save_check_waiting_behind_a_left_job_against_the_stand_in_harness) {
+	static const struct {
+		PersonAction action;
+		const char *reason;
+	} cases[] = {
+		{PERSON_STOP, "\"reason\":\"stopped as asked\""},
+		{PERSON_STOP_NOW, "\"reason\":\"stopped as asked (stop-now)\""},
+		{PERSON_SIGINT, "\"reason\":\"stopped as asked\""},
+	};
+	static char printed[1 << 18];
+	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+		wchar_t folder[HARNESS_PATH_LENGTH];
+		wchar_t directory[HARNESS_PATH_LENGTH];
+		ASSERT_BOOL_EQ(
+			startStandIn("queue_wait_minutes=60\nhang_minutes=1\n", folder, directory), true
+		);
+		atomic_store(&standIn.stallAt, 100); // the first warm-up's seed
+		standIn.stallMs = 5000;
+		Person first = {.directory = directory, .steps = {{PERSON_STOP, 600}}, .count = 1};
+		unsigned long long afterMs = 0;
+		ASSERT_INT_EQ(runStandInWith(&first, printed, sizeof printed, &afterMs), 4);
+		ASSERT_BOOL_EQ(
+			strstr(
+				printed,
+				"FM24 (pid 990001) still runs the job writing sessions/s0001/warmup-baseline.csv, whose "
+				"rows are not kept"
+			) != NULL,
+			true
+		);
+		// The next run's save check, from about 50 ms after this one stopped, waits behind it.
+		Person next = {.directory = directory, .steps = {{cases[i].action, 2000}}, .count = 1};
+		ASSERT_INT_EQ(runStandInWith(&next, printed, sizeof printed, &afterMs), 4);
+		unsigned long long stalledUntil = atomic_load(&standIn.stalledAt) + standIn.stallMs;
+		ASSERT_BOOL_EQ(afterMs < 1000 && standInNowMs() < stalledUntil, true);
+		ASSERT_BOOL_EQ(strstr(printed, "the harness is running another job") != NULL, true);
+		ASSERT_BOOL_EQ(standInFileHas(directory, "batch.json", cases[i].reason), true);
+		ASSERT_BOOL_EQ(!standInFileHas(directory, "events.log", "session_started id=s0002"), true);
+		ASSERT_INT_EQ((int)atomic_load(&standIn.launches), 1);
+		while (standInNowMs() < stalledUntil + 200) {
+			platform_sleep(20);
+		}
+		ASSERT_INT_EQ(runStandIn(directory), 0);
+		ASSERT_BOOL_EQ(standInFinished(directory), true);
+		ASSERT_INT_EQ((int)atomic_load(&standIn.launches), 1);
+		finishStandIn(folder);
+	}
+}
+
 // Steam's settings for one account that gives FM24 launch option `option`.
 static bool writeLaunchOption(const char *home, const char *option) {
 	char escaped[2048];
@@ -2751,7 +4118,7 @@ TEST(says_how_to_load_the_save_no_launch_does_not_start) {
 	// Without Steam's launch option, Steam's route only: `launch` would start the game directly.
 	SessionNeed need = {.save = "Rob's Career", .launch = false, .timeoutMs = 1000};
 	ASSERT_BOOL_EQ(startCapture(&capture), true);
-	int status = ensureSave(&need, 0, NULL, 0);
+	int status = ensureSave(&need, 0, NULL, 0, NULL);
 	endCapture(&capture, printed, sizeof printed);
 	ASSERT_INT_EQ(status, 0);
 	ASSERT_INT_EQ(
@@ -2780,7 +4147,7 @@ TEST(says_how_to_load_the_save_no_launch_does_not_start) {
 	for (size_t i = 0; i < sizeof saves / sizeof saves[0]; ++i) {
 		need.save = saves[i].save;
 		ASSERT_BOOL_EQ(startCapture(&capture), true);
-		status = ensureSave(&need, 0, NULL, 0);
+		status = ensureSave(&need, 0, NULL, 0, NULL);
 		endCapture(&capture, printed, sizeof printed);
 		ASSERT_INT_EQ(status, 0);
 		(void)snprintf(
@@ -2797,7 +4164,7 @@ TEST(says_how_to_load_the_save_no_launch_does_not_start) {
 	// A job for whatever save is loaded, and one that may start the game, get no note.
 	need.save = NULL;
 	ASSERT_BOOL_EQ(startCapture(&capture), true);
-	status = ensureSave(&need, 0, NULL, 0);
+	status = ensureSave(&need, 0, NULL, 0, NULL);
 	endCapture(&capture, printed, sizeof printed);
 	ASSERT_BOOL_EQ(status == 0 && printed[0] == 0, true);
 	// Quoting: an empty word, and one that does not fit.
@@ -2809,6 +4176,213 @@ TEST(says_how_to_load_the_save_no_launch_does_not_start) {
 	ASSERT_BOOL_EQ(shellWord("a'b", word, sizeof word), false); // 'a'\''b' and its NUL: 9 bytes
 	char longer[9];
 	ASSERT_BOOL_EQ(shellWord("a'b", longer, sizeof longer) && strcmp(longer, "'a'\\''b'") == 0, true);
+	if (previous) {
+		setenv("HOME", previous, 1);
+		free(previous);
+	}
+	ASSERT_BOOL_EQ(removeTree(home), true);
+}
+
+// A batch's save check speaks of its plan, not of a command's options: no note about --no-launch
+// with launch=0 (the batch's own stop says why), none as it starts the game, and no --any-save to
+// suggest when another save is loaded, as its frozen plan cannot take any_save=1 later.
+TEST(words_a_batchs_save_check_by_its_plan) {
+	char home[] = "/tmp/fm24 batch texts-XXXXXX";
+	ASSERT_BOOL_EQ(mkdtemp(home) != NULL, true);
+	char *previous = getenv("HOME") ? strdup(getenv("HOME")) : NULL;
+	setenv("HOME", home, 1);
+	char copy[1200];
+	(void)snprintf(copy, sizeof copy, "%s/LIV_COPY.fm", home);
+	ASSERT_BOOL_EQ(writeText(copy, "a copy"), true);
+	char printed[8192];
+	Capture capture;
+	SessionNeed batch = {.save = "LIV_COPY", .timeoutMs = 1000, .batch = true, .savePath = copy};
+	SessionNeed command = batch;
+	command.batch = false;
+	// launch=0 with no game, with and without Steam's launch option.
+	char option[1500];
+	launcherOption(home, "", option, sizeof option);
+	for (int set = 0; set < 2; ++set) {
+		ASSERT_BOOL_EQ(!set || writeLaunchOption(home, option), true);
+		ASSERT_BOOL_EQ(startCapture(&capture), true);
+		int status = ensureSave(&batch, 0, NULL, 0, NULL);
+		endCapture(&capture, printed, sizeof printed);
+		ASSERT_BOOL_EQ(status == 0 && printed[0] == 0, true);
+		ASSERT_BOOL_EQ(startCapture(&capture), true);
+		status = ensureSave(&command, 0, NULL, 0, NULL);
+		endCapture(&capture, printed, sizeof printed);
+		ASSERT_BOOL_EQ(status == 0 && strstr(printed, "--no-launch keeps fm24ctl") != NULL, true);
+	}
+	// launch=1 with no game, and without the launch option: the direct start finds no game in this
+	// home, so nothing is spawned.
+	char config[1200];
+	(void)snprintf(config, sizeof config, "%s/Library/Application Support/Steam/userdata", home);
+	ASSERT_BOOL_EQ(removeTree(config), true);
+	batch.launch = true;
+	command.launch = true;
+	spawnError = ENOENT;
+	spawned[0] = 0;
+	static const char starting[] =
+		"Football Manager 2024 is not running; starting it to load LIV_COPY\n";
+	static const char startingForCommand[] =
+		"Football Manager 2024 is not running; starting it to load LIV_COPY (--no-launch turns this "
+		"off)\n";
+	ASSERT_BOOL_EQ(startCapture(&capture), true);
+	int status = ensureSave(&batch, 0, NULL, 0, NULL);
+	endCapture(&capture, printed, sizeof printed);
+	ASSERT_BOOL_EQ(status != 0 && strstr(printed, starting) != NULL, true);
+	ASSERT_BOOL_EQ(strstr(printed, "--no-launch") == NULL, true);
+	ASSERT_BOOL_EQ(startCapture(&capture), true);
+	status = ensureSave(&command, 0, NULL, 0, NULL);
+	endCapture(&capture, printed, sizeof printed);
+	ASSERT_BOOL_EQ(status != 0 && strstr(printed, startingForCommand) != NULL, true);
+	ASSERT_INT_EQ(spawned[0], 0);
+	spawnError = 0;
+	// Another save loaded.
+	GameStatus loaded = {.phase = STATUS_READY};
+	(void)snprintf(loaded.save, sizeof loaded.save, "LIV_OTHER");
+	SaveTarget target = {0};
+	(void)snprintf(target.name, sizeof target.name, "LIV_COPY");
+	static const char other[] =
+		"FM24 has 'LIV_OTHER' loaded, not 'LIV_COPY'; fm24ctl will not switch saves in a running game "
+		"(unsaved progress). Quit FM24 (saving first only if you loaded that save yourself and have "
+		"done no harness work since), then run this again";
+	static const struct {
+		bool batch;
+		bool anySave;
+		const char *rest; // after `other`, or the whole text if it starts with "FM24 has"
+	} cases[] = {
+		{false, false, ", or pass --any-save to use the loaded save.\n"},
+		{true, false, ".\n"},
+		{false, true, "FM24 has 'LIV_OTHER' loaded, not 'LIV_COPY'; using it, as --any-save asks\n"},
+		{true, true, "FM24 has 'LIV_OTHER' loaded, not 'LIV_COPY'; using it, as any_save=1 asks\n"},
+	};
+	char expected[1024];
+	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+		SessionNeed need = {.save = "LIV_COPY", .batch = cases[i].batch, .anySave = cases[i].anySave};
+		bool whole = strncmp(cases[i].rest, "FM24 has", 8) == 0;
+		(void)snprintf(expected, sizeof expected, "%s%s", whole ? "" : other, cases[i].rest);
+		ASSERT_BOOL_EQ(startCapture(&capture), true);
+		reportOtherSave(&loaded, &target, &need);
+		endCapture(&capture, printed, sizeof printed);
+		ASSERT_INT_EQ(strcmp(printed, expected), 0);
+	}
+	if (previous) {
+		setenv("HOME", previous, 1);
+		free(previous);
+	}
+	ASSERT_BOOL_EQ(removeTree(home), true);
+}
+
+// Two logs in `folder`, an hour and two days old.
+static bool writeGameLogs(const char *folder) {
+	static const char *const names[] = {
+		"file llist errors_2026.10.24_09.00.00.txt", "file llist errors_2026.10.26_09.00.00.txt"};
+	static const time_t ages[] = {2 * 86400, 3600};
+	for (size_t i = 0; i < 2; ++i) {
+		char path[1500];
+		(void)snprintf(path, sizeof path, "%s/%s", folder, names[i]);
+		time_t at = time(NULL) - ages[i];
+		struct timespec times[2] = {{.tv_sec = at}, {.tv_sec = at}};
+		if (!writeText(path, "get_list outside of main thread\n") ||
+				utimensat(AT_FDCWD, path, times, 0) != 0) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Whether `folder` has the two logs writeGameLogs wrote, untrimmed.
+static bool untrimmed(const char *folder) {
+	char path[1500];
+	char text[64];
+	(void)snprintf(path, sizeof path, "%s/file llist errors_2026.10.24_09.00.00.txt", folder);
+	bool older =
+		readText(path, text, sizeof text) && strcmp(text, "get_list outside of main thread\n") == 0;
+	(void)snprintf(path, sizeof path, "%s/file llist errors_2026.10.26_09.00.00.txt", folder);
+	return older && readText(path, text, sizeof text) &&
+				 strcmp(text, "get_list outside of main thread\n") == 0;
+}
+
+// The real host trims FM24's logs in the Logs folder of the data folder a batch looks its save up
+// in: the usual one, or the one Steam's launch option gives the game when the option runs the
+// launcher. A launch option fm24ctl does not follow trims nothing, and says why.
+TEST(trims_fm24s_logs_where_a_batchs_game_writes_them) {
+	char home[] = "/tmp/fm24 game logs-XXXXXX";
+	ASSERT_BOOL_EQ(mkdtemp(home) != NULL, true);
+	char *previous = getenv("HOME") ? strdup(getenv("HOME")) : NULL;
+	setenv("HOME", home, 1);
+	BatchHost host;
+	batchHost_real(&host);
+	char usual[1300];
+	char moved[1300];
+	char launcher[1300];
+	char option[3000];
+	(void)snprintf(
+		usual,
+		sizeof usual,
+		"%s/Library/Application Support/Sports Interactive/Football Manager 2024/Logs",
+		home
+	);
+	(void)snprintf(moved, sizeof moved, "%s/FM Data/Logs", home);
+	(void)snprintf(
+		launcher,
+		sizeof launcher,
+		"%s/Library/Application Support/fm24-harness/%s",
+		home,
+		MACOS_GAME_LAUNCHER
+	);
+	// No Logs folder yet: nothing to do, and nothing failed.
+	GameLogsTrim trim = {0};
+	host.trimGameLogs(host.context, &trim);
+	ASSERT_BOOL_EQ(strcmp(trim.folder, usual) == 0 && !trim.emptied && !trim.deleted, true);
+	for (size_t kind = 0; kind < GAME_LOGS_PROBLEMS; ++kind) {
+		ASSERT_BOOL_EQ(trim.failed[kind][0] == 0, true);
+	}
+	// The usual folder, without a launch option.
+	ASSERT_BOOL_EQ(makeDirectories(usual) && makeDirectories(moved), true);
+	ASSERT_BOOL_EQ(writeGameLogs(usual) && writeGameLogs(moved), true);
+	trim = (GameLogsTrim){0};
+	host.trimGameLogs(host.context, &trim);
+	ASSERT_BOOL_EQ(strcmp(trim.folder, usual) == 0 && trim.emptied == 1 && trim.deleted == 1, true);
+	ASSERT_BOOL_EQ(!untrimmed(usual) && untrimmed(moved), true);
+	// The folder Steam's launch option gives the game, as the option runs the launcher.
+	ASSERT_BOOL_EQ(writeGameLogs(usual), true);
+	(void)snprintf(
+		option,
+		sizeof option,
+		"/bin/sh \"%s\" %%command%% --user_data_location=\"%s/FM Data\"",
+		launcher,
+		home
+	);
+	ASSERT_BOOL_EQ(setLaunchOption(home, option), true);
+	trim = (GameLogsTrim){0};
+	host.trimGameLogs(host.context, &trim);
+	ASSERT_BOOL_EQ(strcmp(trim.folder, moved) == 0 && trim.emptied == 1 && trim.deleted == 1, true);
+	ASSERT_BOOL_EQ(untrimmed(usual) && !untrimmed(moved), true);
+	// An option without the launcher: fm24ctl starts the game directly, with the usual folder.
+	ASSERT_BOOL_EQ(writeGameLogs(moved), true);
+	(void)snprintf(option, sizeof option, "%%command%% --user_data_location=\"%s/FM Data\"", home);
+	ASSERT_BOOL_EQ(setLaunchOption(home, option), true);
+	trim = (GameLogsTrim){0};
+	host.trimGameLogs(host.context, &trim);
+	ASSERT_BOOL_EQ(strcmp(trim.folder, usual) == 0 && trim.emptied == 1, true);
+	ASSERT_BOOL_EQ(!untrimmed(usual) && untrimmed(moved), true);
+	// One fm24ctl does not follow: neither folder is touched.
+	ASSERT_BOOL_EQ(writeGameLogs(usual), true);
+	(void)snprintf(
+		option,
+		sizeof option,
+		"/bin/sh \"%s\" %%command%% --user_data_location \"%s/FM Data\"",
+		launcher,
+		home
+	);
+	ASSERT_BOOL_EQ(setLaunchOption(home, option), true);
+	trim = (GameLogsTrim){0};
+	host.trimGameLogs(host.context, &trim);
+	ASSERT_BOOL_EQ(!trim.folder[0] && !trim.emptied && !trim.deleted, true);
+	ASSERT_BOOL_EQ(strstr(trim.failed[GAME_LOGS_FOLDER], "user_data_location") != NULL, true);
+	ASSERT_BOOL_EQ(untrimmed(usual) && untrimmed(moved), true);
 	if (previous) {
 		setenv("HOME", previous, 1);
 		free(previous);
@@ -2828,6 +4402,7 @@ void registerMacosTests(void) {
 		"macos scans malloc memory whatever its share mode",
 		test_scans_malloc_memory_whatever_its_share_mode
 	);
+	test_run("macos names the slice the harness runs in", test_names_the_slice_the_harness_runs_in);
 	test_run("macos serves one job per connection", test_serves_one_job_per_connection);
 	test_run("macos drops a runner that gave up", test_drops_a_runner_that_gave_up);
 	test_run(
@@ -2849,6 +4424,10 @@ void registerMacosTests(void) {
 	test_run("macos starts the game through the launcher", test_starts_the_game_through_the_launcher);
 	test_run(
 		"macos opens the game with the harness inserted", test_opens_the_game_with_the_harness_inserted
+	);
+	test_run(
+		"macos starts the game through open apart from signals",
+		test_starts_the_game_through_open_apart_from_signals
 	);
 	test_run(
 		"macos waits until the started game keeps serving",
@@ -2878,6 +4457,8 @@ void registerMacosTests(void) {
 	test_run(
 		"macos checks the running game before a job", test_checks_the_running_game_before_a_job
 	);
+	test_run("macos tells how a watched job ended", test_tells_how_a_watched_job_ended);
+	test_run("macos reads how much memory a process uses", test_reads_how_much_memory_a_process_uses);
 	test_run(
 		"macos starts the game for a job and removes its auto-play files",
 		test_starts_the_game_for_a_job_and_removes_its_auto_play_files
@@ -2894,6 +4475,38 @@ void registerMacosTests(void) {
 		"macos looks saves up in the data folder Steam gives the game",
 		test_looks_saves_up_in_the_data_folder_steam_gives_the_game
 	);
+	test_run("macos quits only the game it is asked to", test_quits_only_the_game_it_is_asked_to);
+	test_run(
+		"macos does not count an exited process as running",
+		test_does_not_count_an_exited_process_as_running
+	);
+	test_run(
+		"macos runs and asks the programs a batch needs", test_runs_and_asks_the_programs_a_batch_needs
+	);
+	test_run(
+		"macos closes a decompression before its end while another is open",
+		test_closes_a_decompression_before_its_end_while_another_is_open
+	);
+	test_run(
+		"macos runs a batch against the stand-in harness",
+		test_runs_a_batch_against_the_stand_in_harness
+	);
+	test_run(
+		"macos runs a season against the stand-in harness",
+		test_runs_a_season_against_the_stand_in_harness
+	);
+	test_run(
+		"macos recovers a batch against the stand-in harness",
+		test_recovers_a_batch_against_the_stand_in_harness
+	);
+	test_run(
+		"macos stops a hung batch against the stand-in harness",
+		test_stops_a_hung_batch_against_the_stand_in_harness
+	);
+	test_run(
+		"macos stops a save check waiting behind a left job against the stand-in harness",
+		test_stops_a_save_check_waiting_behind_a_left_job_against_the_stand_in_harness
+	);
 	test_run(
 		"macos lists the saves launch finds for the viewer",
 		test_lists_the_saves_launch_finds_for_the_viewer
@@ -2909,5 +4522,10 @@ void registerMacosTests(void) {
 	test_run(
 		"macos says how to load the save --no-launch does not start",
 		test_says_how_to_load_the_save_no_launch_does_not_start
+	);
+	test_run("macos words a batch's save check by its plan", test_words_a_batchs_save_check_by_its_plan);
+	test_run(
+		"macos trims FM24's logs where a batch's game writes them",
+		test_trims_fm24s_logs_where_a_batchs_game_writes_them
 	);
 }

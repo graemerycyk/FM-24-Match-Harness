@@ -29,5 +29,8 @@ int commands_getPlayer(int argc, wchar_t **argv);
 int commands_injectPlayer(int argc, wchar_t **argv);
 // As above, also returning the outcome line for the viewer.
 int commands_injectPlayerWithResult(int argc, wchar_t **argv, char *result, size_t resultSize);
+int commands_lineup(int argc, wchar_t **argv);
 int commands_status(int argc, wchar_t **argv);
+int commands_version(int argc, wchar_t **argv);
 int commands_probe(int argc, wchar_t **argv); // probe.c
+int commands_batch(int argc, wchar_t **argv); // batch.c

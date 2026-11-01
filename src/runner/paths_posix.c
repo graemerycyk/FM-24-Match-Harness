@@ -129,6 +129,17 @@ PathsFolder paths_parentFolder(const wchar_t *path) {
 	}
 }
 
+bool paths_folderAppendOnly(const wchar_t *path) {
+	char folder[UTF8_PATH_LENGTH];
+	char *slash = paths_toUtf8(path, folder, sizeof folder) ? strrchr(folder, '/') : NULL;
+	if (!slash) {
+		return false;
+	}
+	slash[slash == folder ? 1 : 0] = 0; // "/name" is in "/"
+	struct stat status;
+	return stat(folder, &status) == 0 && (status.st_flags & (UF_APPEND | SF_APPEND)) != 0;
+}
+
 bool paths_toUtf8(const wchar_t *text, char *out, size_t size) {
 	return platform_toUtf8(text, out, size);
 }

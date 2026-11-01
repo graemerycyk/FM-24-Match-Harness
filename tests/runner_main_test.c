@@ -242,6 +242,12 @@ int commands_injectPlayer(int argc, wchar_t **argv) {
 	return 15;
 }
 
+int commands_lineup(int argc, wchar_t **argv) {
+	(void)argc;
+	(void)argv;
+	return 23;
+}
+
 int commands_probe(int argc, wchar_t **argv) {
 	(void)argc;
 	(void)argv;
@@ -252,6 +258,18 @@ int commands_status(int argc, wchar_t **argv) {
 	(void)argc;
 	(void)argv;
 	return 20;
+}
+
+int commands_version(int argc, wchar_t **argv) {
+	(void)argc;
+	(void)argv;
+	return 21;
+}
+
+int commands_batch(int argc, wchar_t **argv) {
+	(void)argc;
+	(void)argv;
+	return 22;
 }
 
 #ifdef _WIN32
@@ -301,8 +319,14 @@ TEST(exports_next_fixture_and_dispatches_commands) {
 	ASSERT_INT_EQ(runnerMain(2, arguments), 14);
 	arguments[1] = L"inject-player";
 	ASSERT_INT_EQ(runnerMain(2, arguments), 15);
+	arguments[1] = L"lineup";
+	ASSERT_INT_EQ(runnerMain(2, arguments), 23);
 	arguments[1] = L"status";
 	ASSERT_INT_EQ(runnerMain(2, arguments), 20);
+	arguments[1] = L"version";
+	ASSERT_INT_EQ(runnerMain(2, arguments), 21);
+	arguments[1] = L"batch";
+	ASSERT_INT_EQ(runnerMain(2, arguments), 22);
 	arguments[1] = exportedPath;
 	expectTemporary = false;
 	ASSERT_INT_EQ(runnerMain(2, arguments), 9);
@@ -379,8 +403,11 @@ TEST(converts_arguments_and_dispatches_commands) {
 		{"list-players", 16},
 		{"get-player", 14},
 		{"inject-player", 15},
+		{"lineup", 23},
 		{"probe", 12},
 		{"status", 20},
+		{"version", 21},
+		{"batch", 22},
 		{"install", 18},
 		{"launch", 19},
 		{"unknown", 2},
@@ -394,7 +421,30 @@ TEST(converts_arguments_and_dispatches_commands) {
 	ASSERT_BOOL_EQ(strstr(errors, "usage:\n") == errors, true);
 	ASSERT_BOOL_EQ(strstr(errors, "fm24ctl launch [--save <name|path.fm>]") != NULL, true);
 	ASSERT_BOOL_EQ(strstr(errors, "fm24ctl status") != NULL, true);
+	ASSERT_BOOL_EQ(strstr(errors, "\n  fm24ctl version  (") != NULL, true);
+	ASSERT_BOOL_EQ(
+		strstr(errors, "\n  fm24ctl batch create <plan.txt> <dir> | status <dir>") != NULL, true
+	);
+	ASSERT_BOOL_EQ(
+		strstr(
+			errors,
+			"\n  fm24ctl batch run <dir> [--threads N] [--until HH:MM] [--max-chunks N]\n"
+			"      [--allow-harness-change]  ("
+		) != NULL,
+		true
+	);
 	ASSERT_BOOL_EQ(strstr(errors, "  fm24ctl  (export and view the next fixture)\n") != NULL, true);
+	ASSERT_BOOL_EQ(
+		strstr(
+			errors,
+			"\n  fm24ctl lineup <input.json> <home|away>  (show a side's line-up)\n"
+			"  fm24ctl lineup <input.json> <home|away> <player> <player> <output.json>\n"
+			"      [--allow-ai-side]  (exchange two players)\n"
+			"  fm24ctl lineup <input.json> <home|away> <player,player,...> <output.json>\n"
+			"      [--allow-ai-side]  (a new XI, then any substitutes)\n"
+		) != NULL,
+		true
+	);
 	// The save options under the commands that take them.
 	ASSERT_BOOL_EQ(
 		strstr(errors, "  fm24ctl list-teams <output.txt>\n      [--save <name>] [--no-launch] [--any-save]\n") !=
@@ -402,8 +452,10 @@ TEST(converts_arguments_and_dispatches_commands) {
 		true
 	);
 	ASSERT_BOOL_EQ(
-		strstr(errors, "[--keep-build]\n      [--no-launch] [--any-save]\n  fm24ctl get-next-fixture") !=
-			NULL,
+		strstr(
+			errors,
+			"[--keep-going] [--manifest]\n      [--no-launch] [--any-save]\n  fm24ctl get-next-fixture"
+		) != NULL,
 		true
 	);
 	if (locale) {

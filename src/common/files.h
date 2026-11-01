@@ -16,5 +16,10 @@ bool files_read(const wchar_t *path, ByteBuffer *out);
 
 bool files_write(const wchar_t *path, const void *bytes, size_t size);
 
+// Writes a file in one step, for manifests: into a temporary file beside `path`, written through to
+// the disk (platform_syncFile), then renamed over `path` (platform_replaceFile), whose folder is
+// written through too. Prints why and returns false on failure, leaving any earlier file as it was.
+bool files_replace(const wchar_t *path, const void *bytes, size_t size);
+
 // True if `path` ends with `suffix`, ignoring case (e.g. L".json").
 bool files_hasExtension(const wchar_t *path, const wchar_t *suffix);

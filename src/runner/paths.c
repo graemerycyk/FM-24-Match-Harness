@@ -74,6 +74,11 @@ PathsFolder paths_parentFolder(const wchar_t *path) {
 	return found;
 }
 
+bool paths_folderAppendOnly(const wchar_t *path) {
+	(void)path;
+	return false;
+}
+
 bool paths_toUtf8(const wchar_t *text, char *out, size_t size) {
 	return size > 0 && size <= INT_MAX &&
 				 WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, -1, out, (int)size, NULL, NULL) >

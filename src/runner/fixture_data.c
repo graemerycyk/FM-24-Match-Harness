@@ -60,8 +60,19 @@ typedef struct Reader {
 	FixtureNumber previousU8; // the previous field's value, if it was a u8
 	char firstName[FIXTURE_TEXT];
 	bool noted; // the player block's "player" note named it, so its strings don't
+	// The formation template whose position the next field holds (k + 1 for formation[k], or 0), its
+	// side, and the templates read and the non-zero ones, by side as bit masks.
+	unsigned formation;
+	int formationSide;
+	uint32_t formationsRead[2];
+	uint32_t formationsUsed[2];
 	char error[192];
 } Reader;
+
+enum {
+	FORMATION_TEMPLATES = 26,     // formation[0..25]: the 11 slots, then the substitutes
+	BENCH_TEMPLATES = 0x3FFF800U, // formation[11..25]
+};
 
 static const struct {
 	const char *name;
@@ -138,6 +149,39 @@ static void setSection(Reader *reader, Section section) {
 	reader->noted = false;
 }
 
+// Counts a player block, noting the first whose number is not its place.
+static void countBlock(FixtureTeam *team, unsigned index) {
+	if (team->blocksInOrder && index != team->blockCount) {
+		team->blocksInOrder = false;
+		team->misplacedBlock = index;
+		team->misplacedPlace = team->blockCount;
+	}
+	++team->blockCount;
+}
+
+// The u32 after a field named "<side>.manager.tactic.formation[k]" is template k's position.
+static void formationName(Reader *reader, const char *name) {
+	unsigned index = 0;
+	const char *suffix = NULL;
+	if (indexed(name, "manager.tactic.formation[", &index, &suffix) && !*suffix &&
+			index < FORMATION_TEMPLATES) {
+		reader->formation = index + 1;
+		reader->formationSide = reader->side;
+	}
+}
+
+static void formationValue(Reader *reader, const ConfigField *field) {
+	unsigned k = reader->formation - 1;
+	reader->formation = 0;
+	FixtureNumber position;
+	if (!field->name[0] && scalar(field, CONFIG_U32, &position)) {
+		reader->formationsRead[reader->formationSide] |= 1U << k;
+		if (position.value) {
+			reader->formationsUsed[reader->formationSide] |= 1U << k;
+		}
+	}
+}
+
 static void teamField(Reader *reader, const ConfigField *field, const char *name) {
 	static const char planPrefix[] = "manager.tactic.plan[0].";
 	const size_t prefixLength = sizeof planPrefix - 1;
@@ -149,9 +193,11 @@ static void teamField(Reader *reader, const ConfigField *field, const char *name
 			setSection(reader, SECTION_PLAYER);
 			reader->player = index;
 			team->players[index].present = true;
+			countBlock(team, index);
 		}
 		return;
 	}
+	formationName(reader, name);
 	if (strcmp(name, "team") == 0) {
 		setSection(reader, SECTION_TEAM);
 	} else if (strcmp(name, "manager.tactic.plan[0]") == 0) {
@@ -546,9 +592,16 @@ static void playerValue(Reader *reader, const ConfigField *field) {
 			}
 		}
 	}
+	if (strcmp(suffix, ".person_uid") == 0) {
+		(void)scalar(field, CONFIG_U32, &player->personUid);
+	}
 	if (field->kind == CONFIG_RATINGS) {
 		reader->fitnessIndex = 0;
 		reader->fitnessValid = field->length == 69;
+		if (reader->fitnessValid && strcmp(suffix, ".ratings") == 0) {
+			memcpy(player->positionRatings, field->bytes, FIXTURE_POSITIONS);
+			player->positionRatingsKnown = true;
+		}
 		return;
 	}
 	// Older exports lack wellbeing labels. Accept only the complete, typed sequence following
@@ -652,6 +705,9 @@ static void visitField(void *context, const ConfigField *field) {
 	if (reader->error[0]) {
 		return;
 	}
+	if (reader->formation) {
+		formationValue(reader, field);
+	}
 	if (field->name[0]) {
 		namedField(reader, field);
 	}
@@ -721,6 +777,23 @@ static void describeFormation(FixtureTeam *team) {
 	}
 }
 
+// The line-up's shape: the substitutes' places and the goalkeeper's slot.
+static void describeLineup(FixtureTeam *team, uint32_t formationsRead, uint32_t formationsUsed) {
+	unsigned extra = (unsigned)team->playerCount.value - FIXTURE_SLOTS;
+	unsigned bench = 0;
+	for (uint32_t used = formationsUsed & BENCH_TEMPLATES; used; used &= used - 1) {
+		++bench;
+	}
+	bool known = (formationsRead & BENCH_TEMPLATES) == BENCH_TEMPLATES;
+	team->benchSize = known && bench < extra ? bench : extra;
+	team->goalkeeperSlot = -1;
+	for (unsigned i = 0; i < FIXTURE_SLOTS && team->goalkeeperSlot < 0; ++i) {
+		if (team->slots[i].position.known && (team->slots[i].position.value & 1)) {
+			team->goalkeeperSlot = (int)i;
+		}
+	}
+}
+
 static bool dateNumber(const char **text, unsigned width, unsigned *value) {
 	unsigned digits = 0;
 	*value = 0;
@@ -783,6 +856,8 @@ static bool readData(
 	// Not a compound literal, which unoptimised builds put on the stack: FixtureData is too big for
 	// the macOS viewer's worker threads.
 	memset(out, 0, sizeof *out);
+	out->teams[0].blocksInOrder = true;
+	out->teams[1].blocksInOrder = true;
 	Reader reader = {.out = out, .playerSpans = spans};
 	ConfigVisitor visitor = {.context = &reader, .field = visitField, .source = visitSource};
 	if (!matchConfig_visit(json, length, &visitor, error, errorSize)) {
@@ -806,6 +881,7 @@ static bool readData(
 		}
 		team->lineupKnown = team->managerFlags.known && !(team->managerFlags.value & 0x14000);
 		describeFormation(team);
+		describeLineup(team, reader.formationsRead[side], reader.formationsUsed[side]);
 	}
 	if (strcmp(out->competition, "Friendly") == 0) {
 		(void)snprintf(out->matchType, sizeof out->matchType, "Friendly");

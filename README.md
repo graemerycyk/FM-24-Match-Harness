@@ -29,9 +29,18 @@ statistics. Written in C17, with the viewer in Swift.
 - Maximise selected players' morale, condition and sharpness, and clear
   their fatigue, in the viewer.
 - Replace players or teams, in the viewer or from the command line.
+- Change a side's line-up offline, with FM24 Viewer's **Edit line-up** or
+  from the command line: exchange players or give a new XI
+  ([`lineup`](docs/CLI.md#change-a-sides-line-up-lineup)).
 - Edit pitch, stadium and attendance values in the viewer.
 - Run a single seed, a range or repeated seeds, with parallel simulation.
 - Check whether the game is ready with `fm24ctl status`.
+- Run batches of thousands to millions of matches unattended, resumable
+  after any stop, with every match's player and team statistics
+  ([batches](docs/BATCH.md)), or a league's whole season many times, with
+  each season's final table and players' totals
+  ([season runs](docs/BATCH.md#season-runs)). Batches have not run with the
+  game yet, only against stand-ins.
 - Automate experiments through the CLI and annotated fixture JSON.
 
 ## Requirements

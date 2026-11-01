@@ -81,10 +81,12 @@ int main(const int argc, const char *argv[]) {
 #if defined(_WIN32) || defined(FM24_DLL_TESTS)
 		{"job", registerJobTests},
 		{"dll", registerDllTests},
+		{"job_run", registerJobRunTests},
 #endif
 #if defined(_WIN32) || defined(FM24_RUNNER_TESTS)
 		{"runner", registerRunnerTests},
 		{"runner_main", registerRunnerMainTests},
+		{"batch", registerBatchTests},
 #endif
 #ifdef _WIN32
 		{"fixture_window", registerFixtureWindowTests},
@@ -93,10 +95,12 @@ int main(const int argc, const char *argv[]) {
 #ifdef FM24_MACOS_TESTS
 		{"macos", registerMacosTests},
 #endif
+		{"common", registerCommonTests},
 		{"fixture_data", registerFixtureDataTests},
 		{"fixture_export", registerFixtureExportTests},
 		{"fixture_view", registerFixtureViewTests},
 		{"player_inject", registerPlayerInjectTests},
+		{"fixture_lineup", registerFixtureLineupTests},
 	};
 	for (size_t i = 0; i < sizeof tests / sizeof tests[0]; ++i) {
 		if (argc > 1 && strcmp(argv[1], tests[i].name) != 0) {

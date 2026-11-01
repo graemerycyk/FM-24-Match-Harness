@@ -47,12 +47,16 @@ endif()
 
 set(warnings -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wconversion -Wno-sign-conversion)
 
+include(cmake/build_info.cmake)
 add_library(common STATIC
 	src/common/buffer.c
 	src/common/files.c
+	src/common/sha256.c
 	src/common/tactic_names.c
 	src/ui/constants.h
+	"${BUILD_INFO_SOURCE}"
 )
+add_dependencies(common build_info)
 if(WIN32)
 	target_sources(common PRIVATE src/common/platform_windows.c)
 else()
@@ -125,12 +129,23 @@ else()
 endif()
 
 set(runner_sources
+	src/runner/batch.c
+	src/runner/batch_plan.c
+	src/runner/batch_policy.c
+	src/runner/batch_run.c
+	src/runner/batch_season.c
+	src/runner/batch_store.c
+	src/runner/batch_verify.c
 	src/runner/commands.c
 	src/runner/fixture_data.c
+	src/runner/fixture_lineup.c
 	src/runner/json_reader.c
+	src/runner/json_writer.c
 	src/runner/main.c
+	src/runner/manifest.c
 	src/runner/match_config.c
 	src/runner/player_inject.c
+	src/runner/run_job.c
 	src/runner/saves.c
 	src/runner/session.c
 	src/ui/fixture_export.c
@@ -138,9 +153,11 @@ set(runner_sources
 if(WIN32)
 	add_executable(fm24ctl
 		${runner_sources}
+		src/runner/batch_host_windows.c
 		src/runner/client.c
 		src/runner/embedded.c
 		src/runner/fixture_load.c
+		src/runner/host_info_windows.c
 		src/runner/inject.c
 		src/runner/paths.c
 		src/runner/probe.c
@@ -170,8 +187,11 @@ if(WIN32)
 else()
 	add_executable(fm24ctl
 		${runner_sources}
+		src/runner/batch_host_macos.c
 		src/runner/client_posix.c
 		src/runner/embedded_macos.c
+		src/runner/game_logs_macos.c
+		src/runner/host_info_macos.c
 		src/runner/inject_macos.c
 		src/runner/macos_game.c
 		src/runner/macos_viewer.c
@@ -203,26 +223,41 @@ option(FM24_BUILD_TESTS "Build regression checks" OFF)
 if(FM24_BUILD_TESTS)
 	enable_testing()
 	if(WIN32)
-		set(test_suites job dll fixture_data runner runner_main fixture_export fixture_view fixture_window fixture_load player_inject)
+		set(test_suites job dll job_run common fixture_data runner runner_main batch fixture_export fixture_view fixture_window fixture_load player_inject fixture_lineup)
 		add_executable(fm24_tests
 			tests/test.c
+			tests/common_test.c
 			tests/job_test.c
 			tests/dll_test.c
+			tests/job_run_test.c
 			tests/fixture_data_test.c
 			tests/runner_main_test.c
 			tests/runner_test.c
+			tests/batch_test.c
+			tests/batch_season_test.c
 			tests/fixture_export_test.c
 			tests/fixture_samples.c
 			tests/fixture_view_test.c
 			tests/fixture_window_test.c
 			tests/fixture_load_test.c
+			tests/fixture_lineup_test.c
 			tests/player_inject_test.c
 			src/ui/fixture_export.c
 			src/ui/fixture_view.c
+			src/runner/batch_plan.c
+			src/runner/batch_policy.c
+			src/runner/batch_run.c
+			src/runner/batch_season.c
+			src/runner/batch_store.c
+			src/runner/batch_verify.c
 			src/runner/embedded.c
 			src/runner/fixture_data.c
 			src/runner/fixture_edit.c
+			src/runner/fixture_lineup.c
+			src/runner/host_info_windows.c
 			src/runner/json_reader.c
+			src/runner/json_writer.c
+			src/runner/manifest.c
 			src/runner/match_config.c
 			src/runner/paths.c
 			src/runner/player_inject.c
@@ -238,27 +273,43 @@ if(FM24_BUILD_TESTS)
 		target_compile_definitions(fm24_tests PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
 		target_link_options(fm24_tests PRIVATE -static -static-libgcc)
 	else()
-		set(test_suites job dll fixture_data runner runner_main fixture_export fixture_view player_inject macos)
+		set(test_suites job dll job_run common fixture_data runner runner_main batch fixture_export fixture_view player_inject fixture_lineup macos)
 		add_executable(fm24_tests
 			tests/test.c
+			tests/common_test.c
 			tests/job_test.c
 			tests/dll_test.c
+			tests/job_run_test.c
 			tests/fixture_data_test.c
 			tests/runner_main_test.c
 			tests/runner_test.c
+			tests/batch_test.c
+			tests/batch_season_test.c
 			tests/fixture_export_test.c
 			tests/fixture_samples.c
 			tests/fixture_view_test.c
+			tests/fixture_lineup_test.c
 			tests/player_inject_test.c
 			tests/macos_test.c
 			tests/save_samples.c
 			src/ui/fixture_export.c
 			src/ui/fixture_view.c
 			src/ui/save_list.c
+			src/runner/batch_plan.c
+			src/runner/batch_policy.c
+			src/runner/batch_run.c
+			src/runner/batch_season.c
+			src/runner/batch_store.c
+			src/runner/batch_verify.c
 			src/runner/embedded_macos.c
 			src/runner/fixture_data.c
 			src/runner/fixture_edit.c
+			src/runner/fixture_lineup.c
+			src/runner/game_logs_macos.c
+			src/runner/host_info_macos.c
 			src/runner/json_reader.c
+			src/runner/json_writer.c
+			src/runner/manifest.c
 			src/runner/match_config.c
 			src/runner/paths_posix.c
 			src/runner/player_inject.c
@@ -296,6 +347,29 @@ if(FM24_BUILD_TESTS)
 		add_test(NAME ${test} COMMAND fm24_tests ${test})
 		set_tests_properties(${test} PROPERTIES TIMEOUT 300)
 	endforeach()
+	# The commit the build is from, as the generator reads it and as fm24ctl prints it.
+	if(GIT_FOUND)
+		add_test(NAME build_info
+			COMMAND "${CMAKE_COMMAND}" "-DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake"
+				"-DGIT=${GIT_EXECUTABLE}" "-DWORK=${CMAKE_BINARY_DIR}/build-info-test"
+				-P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_info_test.cmake"
+		)
+	endif()
+	# The batch tools' own tests, with a Python 3.9 or newer; not on Windows, where batch run is not
+	# available yet, nor in a cross build.
+	if(NOT WIN32 AND NOT CMAKE_CROSSCOMPILING)
+		find_package(Python3 3.9 COMPONENTS Interpreter QUIET)
+		if(Python3_Interpreter_FOUND)
+			add_test(NAME batch_tools
+				COMMAND "${Python3_EXECUTABLE}" -I -B -m unittest discover
+					-s "${CMAKE_CURRENT_SOURCE_DIR}/tools/batch"
+			)
+		endif()
+	endif()
+	add_test(NAME version COMMAND fm24ctl version)
+	set_tests_properties(version PROPERTIES PASS_REGULAR_EXPRESSION
+		"^fm24ctl ${HARNESS_PROTOCOL} ([0-9a-f]+ (clean|dirty)|unknown unknown) (arm64|x86_64)\r?\n$"
+	)
 	# On Apple silicon, also check the x86_64 slice (and its build tables, and the viewer's) under
 	# Rosetta, if it runs an x86_64 program within ten seconds. FM24_ROSETTA_TESTS=OFF skips the
 	# check, and the macos suite then runs nothing under Rosetta either.

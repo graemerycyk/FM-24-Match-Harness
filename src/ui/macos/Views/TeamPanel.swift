@@ -4,9 +4,11 @@
 import SwiftUI
 
 /// One side on the Squads tab: its heading (team, tactic and formation) with the pencil that
-/// replaces the team, the Max buttons and Swap player for the selected players, the stored
-/// formation on a pitch, and the squad list.
+/// replaces the team, the Max buttons for the selected players, Edit line-up, Swap player for the
+/// selected player, the stored formation on a pitch, and the squad list.
 struct TeamPanel: View {
+	static let lineupHelp = "Move players between the XI, the substitutes and the reserves"
+
 	@ObservedObject var model: ViewerModel
 	let fixture: FixtureHandle
 	let side: Int
@@ -32,6 +34,11 @@ struct TeamPanel: View {
 						.fixedSize()
 						.accessibilityLabel("\(edit.title), \(side == 0 ? "home" : "away") team")
 				}
+				Button("Edit line-up") { model.editLineup(side: side) }
+					.disabled(!model.canEditLineup(side: side))
+					.fixedSize()
+					.help(model.lineupHelp(side: side) ?? TeamPanel.lineupHelp)
+					.accessibilityLabel("Edit line-up, \(side == 0 ? "home" : "away") team")
 				Button("Swap player") { model.requestSwap(side: side) }
 					.disabled(!model.canSwap(side: side))
 					.fixedSize()

@@ -17,43 +17,81 @@ enum {
 };
 
 static bool validResult(char *result, size_t length);
-static HANDLE connectHarness(unsigned timeoutMs);
-static bool
-transfer(HANDLE pipe, bool write, void *data, DWORD size, unsigned timeoutMs, DWORD *done);
+static HANDLE connectHarness(unsigned timeoutMs, bool quiet);
+static bool transfer(
+	HANDLE pipe,
+	bool write,
+	void *data,
+	DWORD size,
+	unsigned timeoutMs,
+	DWORD *done,
+	bool *timedOut
+);
 
 bool client_submit(const char *job, unsigned timeoutMs, char *result, size_t resultSize) {
+	return client_submitWatched(job, timeoutMs, NULL, result, resultSize) == CLIENT_REPLIED;
+}
+
+ClientOutcome client_submitWatched(
+	const char *job,
+	unsigned timeoutMs,
+	ClientWatch *watch,
+	char *result,
+	size_t resultSize
+) {
 	char reply[HARNESS_RESULT_LENGTH];
 	if (!result) {
 		result = reply;
 		resultSize = sizeof reply;
 	}
+	if (watch) {
+		watch->accepted = false;
+		watch->queuedMs = 0;
+		watch->runMs = 0;
+	}
 	if (resultSize < 2) {
 		fprintf(stderr, "result buffer is too small\n");
-		return false;
+		return CLIENT_FAILED;
 	}
 	result[0] = 0;
 	size_t length = strlen(job);
 	if (length > HARNESS_JOB_LENGTH) {
 		fprintf(stderr, "the job is too long\n");
-		return false;
+		return CLIENT_FAILED;
 	}
 	ULONGLONG started = GetTickCount64();
-	HANDLE pipe = connectHarness(timeoutMs);
-	if (!pipe) {
-		return false;
+	HANDLE pipe = connectHarness(timeoutMs, watch && watch->quiet);
+	ULONGLONG connected = GetTickCount64();
+	if (watch) {
+		watch->queuedMs = connected - started;
 	}
-	ULONGLONG waited = GetTickCount64() - started;
+	if (!pipe) {
+		return CLIENT_FAILED;
+	}
+	ULONGLONG waited = connected - started;
 	unsigned remaining = waited < timeoutMs ? timeoutMs - (unsigned)waited : 0;
 	DWORD mode = PIPE_READMODE_MESSAGE;
 	DWORD count = 0;
+	bool timedOut = false;
 	bool ok = SetNamedPipeHandleState(pipe, &mode, NULL, NULL);
 	if (!ok) {
 		fprintf(stderr, "cannot set up the harness pipe (%lu)\n", GetLastError());
 	}
-	ok = ok && transfer(pipe, true, (void *)job, (DWORD)length, remaining, &count) &&
-			 transfer(pipe, false, result, (DWORD)(resultSize - 1), remaining, &count);
+	ok = ok && transfer(pipe, true, (void *)job, (DWORD)length, remaining, &count, &timedOut) &&
+			 transfer(pipe, false, result, (DWORD)(resultSize - 1), remaining, &count, &timedOut);
 	CloseHandle(pipe);
-	return ok && validResult(result, count);
+	if (watch) {
+		// The harness serves one connection at a time, so the pipe connects once it takes the job.
+		watch->accepted = true;
+		watch->runMs = GetTickCount64() - connected;
+	}
+	if (ok && validResult(result, count)) {
+		return CLIENT_REPLIED;
+	}
+	if (!ok) {
+		result[0] = 0;
+	}
+	return timedOut ? CLIENT_RUN_TIMEOUT : CLIENT_FAILED;
 }
 
 bool client_succeeded(const char *result) {
@@ -77,12 +115,12 @@ static bool validResult(char *result, size_t length) {
 }
 
 // Connects to the harness pipe, injecting the DLL first if this protocol's harness is not loaded
-// yet, and waiting while another runner's job holds the pipe. Prints why and returns NULL on
-// failure.
-static HANDLE connectHarness(unsigned timeoutMs) {
+// yet, and waiting while another runner's job holds the pipe (saying so unless `quiet`). Prints
+// why and returns NULL on failure.
+static HANDLE connectHarness(unsigned timeoutMs, bool quiet) {
 	ULONGLONG started = GetTickCount64();
 	ULONGLONG injected = 0;
-	bool announced = false;
+	bool announced = quiet;
 	for (;;) {
 		HANDLE pipe = CreateFileW(
 			HARNESS_PIPE_NAME,
@@ -128,9 +166,16 @@ static HANDLE connectHarness(unsigned timeoutMs) {
 }
 
 // Writes or reads one message on the overlapped pipe, waiting at most `timeoutMs`. A timeout
-// cancels only the transfer: the DLL keeps running the job.
-static bool
-transfer(HANDLE pipe, bool write, void *data, DWORD size, unsigned timeoutMs, DWORD *done) {
+// cancels only the transfer (and sets `timedOut`): the DLL keeps running the job.
+static bool transfer(
+	HANDLE pipe,
+	bool write,
+	void *data,
+	DWORD size,
+	unsigned timeoutMs,
+	DWORD *done,
+	bool *timedOut
+) {
 	OVERLAPPED overlapped = {.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL)};
 	if (!overlapped.hEvent) {
 		fprintf(stderr, "cannot create an event (%lu)\n", GetLastError());
@@ -145,6 +190,7 @@ transfer(HANDLE pipe, bool write, void *data, DWORD size, unsigned timeoutMs, DW
 		(void)GetOverlappedResult(pipe, &overlapped, done, TRUE);
 		fprintf(stderr, "timed out; the harness may still be running\n");
 		CloseHandle(overlapped.hEvent);
+		*timedOut = true;
 		return false;
 	}
 	ok = ok && GetOverlappedResult(pipe, &overlapped, done, FALSE);

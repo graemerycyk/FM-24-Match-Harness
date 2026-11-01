@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 
 enum { MAX_SEED_RANGE = 10000000 };
@@ -23,8 +24,11 @@ static bool parseRange(const char *part, unsigned long long *first, unsigned lon
 static bool parseSeeds(Job *job, char *spec);
 static bool parseCommand(Job *job, const char *value);
 static bool copyText(const char *value, char *out, size_t size);
+static bool parseFlag(const char *value, bool *out);
 static bool parseLine(Job *job, char *key, char *value);
+static bool parseRunLine(Job *job, const char *key, const char *value, bool *ok);
 static bool isComplete(const Job *job);
+static bool indicesFit(const Job *job);
 
 bool job_parse(char *text, Job *job) {
 	*job = (Job){.threads = 1};
@@ -48,6 +52,10 @@ bool job_parse(char *text, Job *job) {
 		log_message("job is missing required keys");
 		ok = false;
 	}
+	if (ok && !indicesFit(job)) {
+		log_message("index_base plus the number of seeds is too large");
+		ok = false;
+	}
 	if (!ok) {
 		job_free(job);
 	}
@@ -60,6 +68,15 @@ void job_free(Job *job) {
 }
 
 static char result[HARNESS_RESULT_LENGTH]; // the current job's outcome (jobs run one at a time)
+static int64_t loadedAt;
+
+void job_markLoaded(void) {
+	loadedAt = (int64_t)time(NULL);
+}
+
+int64_t job_loadedAt(void) {
+	return loadedAt;
+}
 
 void job_writeResult(const char *format, ...) {
 	va_list args;
@@ -187,6 +204,15 @@ static bool copyText(const char *value, char *out, size_t size) {
 	return true;
 }
 
+// "0" or "1".
+static bool parseFlag(const char *value, bool *out) {
+	if (strcmp(value, "0") != 0 && strcmp(value, "1") != 0) {
+		return false;
+	}
+	*out = value[0] == '1';
+	return true;
+}
+
 static bool parseSeed(Job *job, const char *value) {
 	if (strcmp(value, "random") == 0) {
 		job->hasSeed = false;
@@ -277,7 +303,33 @@ static bool parseLine(Job *job, char *key, char *value) {
 		job->progressWindow = (uintptr_t)window;
 		return true;
 	}
+	bool ok = true;
+	if (parseRunLine(job, key, value, &ok)) {
+		return ok;
+	}
 	return true; // unknown keys are ignored
+}
+
+// The run keys of protocol 1.4.0: true if `key` is one, with `ok` false if its value is malformed.
+static bool parseRunLine(Job *job, const char *key, const char *value, bool *ok) {
+	if (strcmp(key, "per_match") == 0) {
+		*ok = parseFlag(value, &job->perMatch);
+	} else if (strcmp(key, "report") == 0) {
+		*ok = parseFlag(value, &job->report);
+	} else if (strcmp(key, "seed_errors") == 0) {
+		*ok = strcmp(value, "stop") == 0 || strcmp(value, "skip") == 0;
+		job->skipSeedErrors = *ok && strcmp(value, "skip") == 0;
+	} else if (strcmp(key, "index_base") == 0) {
+		char *end = NULL;
+		unsigned long long base = 0;
+		*ok = parseNumber(value, &end, &base) && *end == 0;
+		job->indexBase = (uint64_t)base;
+	} else if (strcmp(key, "stop_file") == 0) {
+		*ok = widen(value, job->stopFile, HARNESS_PATH_LENGTH);
+	} else {
+		return false;
+	}
+	return true;
 }
 
 static bool isComplete(const Job *job) {
@@ -296,4 +348,10 @@ static bool isComplete(const Job *job) {
 		case JOB_STATUS: return true;
 	}
 	return false;
+}
+
+// Every seed's index (index_base plus its place in the list) fits in 64 bits, and so does the end.
+static bool indicesFit(const Job *job) {
+	size_t count = job->keepSeed ? 1 : job->seedCount;
+	return job->indexBase <= UINT64_MAX - count;
 }

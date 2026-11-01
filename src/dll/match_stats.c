@@ -211,41 +211,101 @@ _Static_assert(
 
 static const char *const sideNames[] = {"home", "away"};
 
+enum { ROW_LENGTH = 2048 }; // longer than any row: 62 fields of at most 20 characters
+
+// One CSV row being formatted.
+typedef struct Row {
+	char text[ROW_LENGTH];
+	size_t length;
+} Row;
+
+const char matchStats_playerRowsHeader[] =
+	"index,seed,side,team_uid,slot,person_uid,in_squad,started,appeared,minutes,on_minute,"
+	"off_minute,injured_minute,sent_off_minute,stats_flags,rating,goals,assists,shots,"
+	"shots_on_target,blocked_shots,long_shots,xg,xa,key_passes,clear_cut_chances,half_chances,"
+	"passes_attempted,passes_completed,progressive_passes,crosses_attempted,crosses_completed,"
+	"dribbles,tackles_attempted,tackles_won,key_tackles,interceptions,clearances,blocks,"
+	"shots_blocked,pressures_attempted,pressures_completed,headers_attempted,headers_won,"
+	"key_headers,fouls,fouled,offsides,yellow_cards,red_cards,corners,throw_ins,"
+	"defensive_free_kicks,attacking_free_kicks,saves_held,saves_parried,saves_tipped,"
+	"goals_conceded,possession_won,possession_lost,high_intensity_sprints,distance_km\n";
+
+const char matchStats_teamRowsHeader[] =
+	"index,seed,side,team_uid,squad,used,goals,possession,average_rating,xg,shots,shots_on_target,"
+	"blocked_shots,long_shots,clear_cut_chances,half_chances,corners,fouls,fouled,offsides,"
+	"passes_attempted,passes_completed,progressive_passes,crosses_attempted,crosses_completed,"
+	"tackles_attempted,tackles_won,headers_attempted,headers_won,interceptions,clearances,blocks,"
+	"shots_blocked,pressures_attempted,pressures_completed,yellow_cards,red_cards,saves,distance_km,"
+	"key_passes,dribbles,possession_won,possession_lost,high_intensity_sprints\n";
+
 static double exactValue(double value);
-static double playerValue(const uint8_t *stats, const PlayerValue *value);
+static double rowValue(float raw, ValueKind kind);
+static double summedValue(float raw, ValueKind kind);
 static bool appeared(const uint8_t *stats, int minutes);
 static int minutesPlayed(const uint8_t *stats, int matchLength);
-static const uint8_t *playerStats(const uint8_t *team, int index);
 static int squadSize(const uint8_t *team);
-static unsigned completedPasses(const uint8_t *team);
+static unsigned completedPasses(const MatchTeamStats *team);
 static double possession(unsigned own, unsigned other);
+static void readTeam(const uint8_t *team, int matchLength, MatchTeamStats *out);
+static void
+readPlayer(const uint8_t *matchPlayer, int slot, int matchLength, MatchPlayerStats *out);
+static void computeTeamValues(const MatchTeamStats *team, bool rounded, double *out);
 static PlayerTotals *findPlayer(TeamTotals *team, uint32_t uniqueId);
-static bool addTeam(
-	TeamTotals *totals,
-	const uint8_t *team,
-	int matchLength,
-	double possessionPercent,
-	bool first
+static bool addTeam(TeamTotals *totals, const MatchTeamStats *team, bool first);
+static void putText(Row *row, const char *text);
+static void putUnsigned(Row *row, uint64_t value);
+static void putFloat(Row *row, double value);
+static void putRating(Row *row, long long hundredths);
+static void putIdentity(Row *row, uint64_t index, uint32_t seed, int side, uint32_t teamUid);
+static bool endRow(Row *row, ByteBuffer *out);
+static bool formatPlayerRow(
+	const MatchPlayerStats *player,
+	uint64_t index,
+	uint32_t seed,
+	int side,
+	uint32_t teamUid,
+	ByteBuffer *out
 );
-static bool siblingPath(const wchar_t *runOutput, const wchar_t *suffix, wchar_t *out, size_t size);
+static bool
+formatTeamRow(const MatchTeamStats *team, uint64_t index, uint32_t seed, int side, ByteBuffer *out);
 static void writeQuoted(FILE *file, const char *text);
 static void writePlayers(FILE *file, const MatchStatsTotals *totals, const PeopleIndex *people);
 static void writeTeams(FILE *file, const MatchStatsTotals *totals);
 
-bool matchStats_add(MatchStatsTotals *totals, const uint8_t *match) {
-	const uint8_t *home = *(const uint8_t *const *)(match + MATCH_TEAM_HOME);
-	const uint8_t *away = *(const uint8_t *const *)(match + MATCH_TEAM_AWAY);
+void matchStats_read(const uint8_t *match, MatchStats *out) {
+	const uint8_t *teams[2] = {
+		*(const uint8_t *const *)(match + MATCH_TEAM_HOME),
+		*(const uint8_t *const *)(match + MATCH_TEAM_AWAY),
+	};
 	const uint8_t *result = *(const uint8_t *const *)(match + MATCH_RESULT);
-	int matchLength = memory_loadU16(result + RESULT_MATCH_LENGTH);
+	out->matchLength = memory_loadU16(result + RESULT_MATCH_LENGTH);
+	for (int side = 0; side < 2; ++side) {
+		readTeam(teams[side], out->matchLength, &out->teams[side]);
+	}
+	unsigned passes[2] = {completedPasses(&out->teams[0]), completedPasses(&out->teams[1])};
+	out->teams[0].possession = possession(passes[0], passes[1]);
+	out->teams[1].possession = possession(passes[1], passes[0]);
+}
+
+bool matchStats_accumulate(MatchStatsTotals *totals, const MatchStats *match) {
 	bool first = totals->matches == 0;
-	unsigned homePasses = completedPasses(home);
-	unsigned awayPasses = completedPasses(away);
-	if (!addTeam(&totals->teams[0], home, matchLength, possession(homePasses, awayPasses), first) ||
-			!addTeam(&totals->teams[1], away, matchLength, possession(awayPasses, homePasses), first)) {
+	if (!addTeam(&totals->teams[0], &match->teams[0], first) ||
+			!addTeam(&totals->teams[1], &match->teams[1], first)) {
 		return false;
 	}
 	++totals->matches;
 	return true;
+}
+
+bool matchStats_add(MatchStatsTotals *totals, const uint8_t *match) {
+	MatchStats *stats = malloc(sizeof *stats);
+	if (!stats) {
+		return false;
+	}
+	matchStats_read(match, stats);
+	bool ok = matchStats_accumulate(totals, stats);
+	free(stats);
+	return ok;
 }
 
 void matchStats_free(MatchStatsTotals *totals) {
@@ -257,8 +317,8 @@ void matchStats_free(MatchStatsTotals *totals) {
 bool matchStats_write(const MatchStatsTotals *totals, const wchar_t *runOutput) {
 	wchar_t playersPath[HARNESS_PATH_LENGTH];
 	wchar_t teamsPath[HARNESS_PATH_LENGTH];
-	if (!siblingPath(runOutput, L"-players.csv", playersPath, HARNESS_PATH_LENGTH) ||
-			!siblingPath(runOutput, L"-teams.csv", teamsPath, HARNESS_PATH_LENGTH)) {
+	if (!matchStats_siblingPath(runOutput, L"-players.csv", playersPath, HARNESS_PATH_LENGTH) ||
+			!matchStats_siblingPath(runOutput, L"-teams.csv", teamsPath, HARNESS_PATH_LENGTH)) {
 		return false;
 	}
 	FILE *players = platform_openFile(playersPath, "wb");
@@ -281,19 +341,50 @@ bool matchStats_write(const MatchStatsTotals *totals, const wchar_t *runOutput) 
 	return ok;
 }
 
-static double playerValue(const uint8_t *stats, const PlayerValue *value) {
-	switch (value->kind) {
-		case VALUE_U8: return stats[value->offset];
-		case VALUE_F32: {
-			float number = 0;
-			memcpy(&number, stats + value->offset, sizeof number);
-			return exactValue(number);
+bool matchStats_formatRows(
+	const MatchStats *match,
+	uint64_t index,
+	uint32_t seed,
+	ByteBuffer *players,
+	ByteBuffer *teams
+) {
+	for (int side = 0; side < 2; ++side) {
+		const MatchTeamStats *team = &match->teams[side];
+		for (int i = 0; i < team->squad; ++i) {
+			if (!formatPlayerRow(&team->players[i], index, seed, side, team->teamUid, players)) {
+				return false;
+			}
 		}
-		case VALUE_F32_THOUSANDTHS: {
-			float number = 0;
-			memcpy(&number, stats + value->offset, sizeof number);
-			return exactValue(number / 1000.0);
-		}
+	}
+	return formatTeamRow(&match->teams[0], index, seed, 0, teams) &&
+				 formatTeamRow(&match->teams[1], index, seed, 1, teams);
+}
+
+bool matchStats_siblingPath(
+	const wchar_t *runOutput,
+	const wchar_t *suffix,
+	wchar_t *out,
+	size_t size
+) {
+	size_t length = wcslen(runOutput);
+	size_t stem = length > 4 && platform_compareWideIgnoringCase(runOutput + length - 4, L".csv") == 0
+									? length - 4
+									: length;
+	int written = swprintf(out, size, L"%.*ls%ls", (int)stem, runOutput, suffix);
+	return written >= 0 && (size_t)written < size;
+}
+
+// A value as a per-match row has it: the count, xG or xA, or the distance in km.
+static double rowValue(float raw, ValueKind kind) {
+	return kind == VALUE_F32_THOUSANDTHS ? (double)raw / 1000.0 : (double)raw;
+}
+
+// The same, rounded to be summed exactly (see exactValue): what --detailed averages.
+static double summedValue(float raw, ValueKind kind) {
+	switch (kind) {
+		case VALUE_U8: return raw;
+		case VALUE_F32: return exactValue(raw);
+		case VALUE_F32_THOUSANDTHS: return exactValue(raw / 1000.0);
 		default: return 0;
 	}
 }
@@ -321,11 +412,6 @@ static int minutesPlayed(const uint8_t *stats, int matchLength) {
 	return minutes > 0 ? minutes : 0;
 }
 
-static const uint8_t *playerStats(const uint8_t *team, int index) {
-	const uint8_t *player = *(const uint8_t *const *)(team + TEAM_PLAYERS + 8 * (size_t)index);
-	return *(const uint8_t *const *)(player + PLAYER_STATS);
-}
-
 static int squadSize(const uint8_t *team) {
 	int count = team[TEAM_PLAYER_COUNT];
 	if (count > INT8_MAX) {
@@ -334,10 +420,11 @@ static int squadSize(const uint8_t *team) {
 	return count < MATCH_STATS_MAX_PLAYERS ? count : MATCH_STATS_MAX_PLAYERS;
 }
 
-static unsigned completedPasses(const uint8_t *team) {
+// Every listed player's completed passes, whether or not the player appeared.
+static unsigned completedPasses(const MatchTeamStats *team) {
 	unsigned total = 0;
-	for (int i = 0; i < squadSize(team); ++i) {
-		total += playerStats(team, i)[playerValues[V_PASSES_COMPLETED].offset];
+	for (int i = 0; i < team->squad; ++i) {
+		total += (unsigned)team->players[i].values[V_PASSES_COMPLETED];
 	}
 	return total;
 }
@@ -349,6 +436,80 @@ static double possession(unsigned own, unsigned other) {
 		return 50;
 	}
 	return floor(100.0 * own / (own + other) + 0.5);
+}
+
+static void readTeam(const uint8_t *team, int matchLength, MatchTeamStats *out) {
+	out->databaseTeam = *(const uint8_t *const *)(team + TEAM_DATABASE_TEAM);
+	out->teamUid = out->databaseTeam ? database_teamUniqueId(out->databaseTeam) : 0;
+	out->goals = team[MATCH_TEAM_GOALS];
+	out->squad = squadSize(team);
+	out->used = 0;
+	for (int i = 0; i < out->squad; ++i) {
+		const uint8_t *matchPlayer = *(const uint8_t *const *)(team + TEAM_PLAYERS + 8 * (size_t)i);
+		readPlayer(matchPlayer, i, matchLength, &out->players[i]);
+		out->used += out->players[i].appeared;
+	}
+}
+
+static void
+readPlayer(const uint8_t *matchPlayer, int slot, int matchLength, MatchPlayerStats *out) {
+	const uint8_t *stats = *(const uint8_t *const *)(matchPlayer + PLAYER_STATS);
+	out->uniqueId = memory_loadU32(matchPlayer + PLAYER_UNIQUE_ID);
+	out->flags = memory_loadU32(stats + STATS_FLAGS);
+	out->slot = (uint8_t)slot;
+	out->onMinute = stats[STATS_ON_MINUTE];
+	out->offMinute = stats[STATS_OFF_MINUTE];
+	out->injuredMinute = stats[STATS_OUT_MINUTE];
+	out->sentOffMinute = stats[STATS_SENT_OFF_MINUTE];
+	out->inSquad = (int32_t)memory_loadU32(stats + STATS_PERSON) != NO_PERSON;
+	out->started = out->inSquad && !(out->flags & FLAG_SUBSTITUTE);
+	out->minutes = minutesPlayed(stats, matchLength);
+	out->appeared = appeared(stats, out->minutes);
+	out->rating = (int16_t)memory_loadU16(stats + STATS_RATING);
+	for (size_t v = 0; v < MATCH_STATS_PLAYER_VALUES; ++v) {
+		const PlayerValue *value = &playerValues[v];
+		if (value->kind == VALUE_U8) {
+			out->values[v] = stats[value->offset];
+		} else {
+			memcpy(&out->values[v], stats + value->offset, sizeof out->values[v]);
+		}
+	}
+}
+
+// A team's values (teamValues) from its players who appeared: rounded as --detailed sums them, or
+// as the per-match rows have them.
+static void computeTeamValues(const MatchTeamStats *team, bool rounded, double *out) {
+	double sums[MATCH_STATS_PLAYER_VALUES] = {0};
+	long long ratingMinutes = 0; // rating x 100 x minutes
+	long long teamMinutes = 0;
+	for (int i = 0; i < team->squad; ++i) {
+		const MatchPlayerStats *player = &team->players[i];
+		if (!player->appeared) {
+			continue;
+		}
+		ratingMinutes += (long long)player->rating * player->minutes;
+		teamMinutes += player->minutes;
+		for (size_t v = 0; v < MATCH_STATS_PLAYER_VALUES; ++v) {
+			ValueKind kind = playerValues[v].kind;
+			sums[v] += rounded ? summedValue(player->values[v], kind) : rowValue(player->values[v], kind);
+		}
+	}
+	for (size_t v = 0; v < MATCH_STATS_TEAM_VALUES; ++v) {
+		int source = teamValues[v].source;
+		if (source == TEAM_GOALS) {
+			out[v] = team->goals;
+		} else if (source == TEAM_POSSESSION) {
+			out[v] = team->possession;
+		} else if (source == TEAM_RATING) {
+			// Minutes-weighted, truncated to hundredths as the match statistics screen shows it.
+			long long hundredths = teamMinutes ? ratingMinutes / teamMinutes : 0;
+			out[v] = rounded ? exactValue((double)hundredths / 100.0) : (double)hundredths / 100.0;
+		} else if (source == TEAM_SAVES) {
+			out[v] = sums[V_SAVES_HELD] + sums[V_SAVES_PARRIED] + sums[V_SAVES_TIPPED];
+		} else {
+			out[v] = sums[source];
+		}
+	}
 }
 
 static PlayerTotals *findPlayer(TeamTotals *team, uint32_t uniqueId) {
@@ -386,73 +547,166 @@ static PlayerTotals *findPlayer(TeamTotals *team, uint32_t uniqueId) {
 	return player;
 }
 
-static bool addTeam(
-	TeamTotals *totals,
-	const uint8_t *team,
-	int matchLength,
-	double possessionPercent,
-	bool first
-) {
+// Every listed player gets totals, so one who never appears is still reported.
+static bool addTeam(TeamTotals *totals, const MatchTeamStats *team, bool first) {
 	if (first) {
-		const uint8_t *databaseTeam = *(const uint8_t *const *)(team + TEAM_DATABASE_TEAM);
-		database_clubShortName(databaseTeam, totals->name, sizeof totals->name);
+		database_clubShortName(team->databaseTeam, totals->name, sizeof totals->name);
 	}
-	double sums[MATCH_STATS_PLAYER_VALUES] = {0};
-	long long ratingMinutes = 0; // rating x 100 x minutes
-	long long teamMinutes = 0;
-	int count = squadSize(team);
-	for (int i = 0; i < count; ++i) {
-		const uint8_t *matchPlayer = *(const uint8_t *const *)(team + TEAM_PLAYERS + 8 * (size_t)i);
-		const uint8_t *stats = *(const uint8_t *const *)(matchPlayer + PLAYER_STATS);
-		PlayerTotals *player = findPlayer(totals, memory_loadU32(matchPlayer + PLAYER_UNIQUE_ID));
+	for (int i = 0; i < team->squad; ++i) {
+		const MatchPlayerStats *stats = &team->players[i];
+		PlayerTotals *player = findPlayer(totals, stats->uniqueId);
 		if (!player) {
 			return false;
 		}
-		int minutes = minutesPlayed(stats, matchLength);
-		if (!appeared(stats, minutes)) {
+		if (!stats->appeared) {
 			continue;
 		}
 		++player->appearances;
-		player->starts += !(memory_loadU32(stats + STATS_FLAGS) & FLAG_SUBSTITUTE);
-		player->minutes += minutes;
-		int rating = (int16_t)memory_loadU16(stats + STATS_RATING);
-		player->ratingSum += rating;
-		ratingMinutes += (long long)rating * minutes;
-		teamMinutes += minutes;
+		player->starts += stats->started;
+		player->minutes += stats->minutes;
+		player->ratingSum += stats->rating;
 		for (size_t v = 0; v < MATCH_STATS_PLAYER_VALUES; ++v) {
-			double value = playerValue(stats, &playerValues[v]);
-			player->values[v] += value;
-			sums[v] += value;
+			player->values[v] += summedValue(stats->values[v], playerValues[v].kind);
 		}
 	}
+	double values[MATCH_STATS_TEAM_VALUES];
+	computeTeamValues(team, true, values);
 	for (size_t v = 0; v < MATCH_STATS_TEAM_VALUES; ++v) {
-		int source = teamValues[v].source;
-		if (source == TEAM_GOALS) {
-			totals->values[v] += team[MATCH_TEAM_GOALS];
-		} else if (source == TEAM_POSSESSION) {
-			totals->values[v] += possessionPercent;
-		} else if (source == TEAM_RATING) {
-			// Minutes-weighted, truncated to hundredths as the match statistics screen shows it.
-			long long hundredths = teamMinutes ? ratingMinutes / teamMinutes : 0;
-			totals->values[v] += exactValue((double)hundredths / 100.0);
-		} else if (source == TEAM_SAVES) {
-			totals->values[v] += sums[V_SAVES_HELD] + sums[V_SAVES_PARRIED] + sums[V_SAVES_TIPPED];
-		} else {
-			totals->values[v] += sums[source];
-		}
+		totals->values[v] += values[v];
 	}
 	return true;
 }
 
-// The run output's path without ".csv", plus `suffix`.
-static bool
-siblingPath(const wchar_t *runOutput, const wchar_t *suffix, wchar_t *out, size_t size) {
-	size_t length = wcslen(runOutput);
-	size_t stem = length > 4 && platform_compareWideIgnoringCase(runOutput + length - 4, L".csv") == 0
-									? length - 4
-									: length;
-	int written = swprintf(out, size, L"%.*ls%ls", (int)stem, runOutput, suffix);
-	return written >= 0 && (size_t)written < size;
+static void putText(Row *row, const char *text) {
+	size_t length = strlen(text);
+	if (length < ROW_LENGTH - row->length) {
+		memcpy(row->text + row->length, text, length);
+		row->length += length;
+	} else {
+		row->length = ROW_LENGTH; // too long: endRow refuses it
+	}
+}
+
+static void putUnsigned(Row *row, uint64_t value) {
+	char digits[24];
+	size_t at = sizeof digits;
+	digits[--at] = 0;
+	do {
+		digits[--at] = (char)('0' + value % 10);
+		value /= 10;
+	} while (value);
+	putText(row, digits + at);
+}
+
+// Nine significant digits, which tell every f32 apart; 0 for either zero.
+static void putFloat(Row *row, double value) {
+	char text[32];
+	(void)snprintf(text, sizeof text, "%.9g", value == 0 ? 0.0 : value);
+	putText(row, text);
+}
+
+// A rating in hundredths as a decimal: 7.12, -0.05.
+static void putRating(Row *row, long long hundredths) {
+	unsigned long long magnitude =
+		hundredths < 0 ? 0ULL - (unsigned long long)hundredths : (unsigned long long)hundredths;
+	if (hundredths < 0) {
+		putText(row, "-");
+	}
+	putUnsigned(row, magnitude / 100);
+	char fraction[4] = {'.', (char)('0' + magnitude % 100 / 10), (char)('0' + magnitude % 10), 0};
+	putText(row, fraction);
+}
+
+static void putIdentity(Row *row, uint64_t index, uint32_t seed, int side, uint32_t teamUid) {
+	putUnsigned(row, index);
+	putText(row, ",");
+	putUnsigned(row, seed);
+	putText(row, side ? ",away," : ",home,");
+	putUnsigned(row, teamUid);
+}
+
+static bool endRow(Row *row, ByteBuffer *out) {
+	putText(row, "\n");
+	return row->length < ROW_LENGTH && buffer_append(out, row->text, row->length);
+}
+
+// One squad slot; a player who did not appear has no rating or values, as the averages leave such
+// players out.
+static bool formatPlayerRow(
+	const MatchPlayerStats *player,
+	uint64_t index,
+	uint32_t seed,
+	int side,
+	uint32_t teamUid,
+	ByteBuffer *out
+) {
+	Row row;
+	row.length = 0;
+	putIdentity(&row, index, seed, side, teamUid);
+	const uint64_t fields[] = {
+		player->slot,
+		player->uniqueId,
+		player->inSquad,
+		player->started,
+		player->appeared,
+		(uint64_t)player->minutes,
+		player->onMinute,
+		player->offMinute,
+		player->injuredMinute,
+		player->sentOffMinute,
+		player->flags,
+	};
+	for (size_t i = 0; i < sizeof fields / sizeof fields[0]; ++i) {
+		putText(&row, ",");
+		putUnsigned(&row, fields[i]);
+	}
+	putText(&row, ",");
+	if (player->appeared) {
+		putRating(&row, player->rating);
+	}
+	for (size_t v = 0; v < MATCH_STATS_PLAYER_VALUES; ++v) {
+		putText(&row, ",");
+		if (!player->appeared) {
+			continue;
+		}
+		ValueKind kind = playerValues[v].kind;
+		if (kind == VALUE_U8) {
+			putUnsigned(&row, (uint64_t)player->values[v]);
+		} else {
+			putFloat(&row, rowValue(player->values[v], kind));
+		}
+	}
+	return endRow(&row, out);
+}
+
+static bool formatTeamRow(
+	const MatchTeamStats *team,
+	uint64_t index,
+	uint32_t seed,
+	int side,
+	ByteBuffer *out
+) {
+	double values[MATCH_STATS_TEAM_VALUES];
+	computeTeamValues(team, false, values);
+	Row row;
+	row.length = 0;
+	putIdentity(&row, index, seed, side, team->teamUid);
+	putText(&row, ",");
+	putUnsigned(&row, (uint64_t)team->squad);
+	putText(&row, ",");
+	putUnsigned(&row, (uint64_t)team->used);
+	for (size_t v = 0; v < MATCH_STATS_TEAM_VALUES; ++v) {
+		int source = teamValues[v].source;
+		putText(&row, ",");
+		if (source == TEAM_RATING) {
+			putRating(&row, llround(values[v] * 100));
+		} else if (source == V_XG || source == V_DISTANCE_KM) {
+			putFloat(&row, values[v]);
+		} else {
+			putUnsigned(&row, (uint64_t)values[v]);
+		}
+	}
+	return endRow(&row, out);
 }
 
 static void writeQuoted(FILE *file, const char *text) {
@@ -465,7 +719,6 @@ static void writeQuoted(FILE *file, const char *text) {
 	}
 	fputc('"', file);
 }
-
 static void writePlayers(FILE *file, const MatchStatsTotals *totals, const PeopleIndex *people) {
 	fprintf(file, "side,team,player,person_uid,matches,appearances,starts,minutes,rating");
 	for (size_t v = 0; v < MATCH_STATS_PLAYER_VALUES; ++v) {

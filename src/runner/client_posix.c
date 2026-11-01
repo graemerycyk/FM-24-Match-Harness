@@ -24,52 +24,112 @@ enum {
 	SOCKET_GRACE_MS = 2000, // how long a harness holding its lock may have no socket (starting up)
 };
 
+// What waitFor saw.
+typedef enum Wait {
+	WAIT_READY,
+	WAIT_TIMED_OUT,
+	WAIT_ERROR,
+	WAIT_ABANDONED, // the tick stopped the wait
+} Wait;
+
+// One job's exchange with the harness: what it waits for, when it ticks, and why a step failed.
+typedef struct Exchange {
+	ClientWatch *watch; // NULL: no ticks
+	ClientPhase phase;
+	uint64_t nextTick;
+	uint64_t acceptedAt; // when the harness took the job, 0 until it has
+	ClientOutcome outcome;
+} Exchange;
+
 static const char waitingNotice[] =
 	"the harness is running another job; waiting for it to finish\n";
 
 static bool validResult(char *result, size_t length);
-static int connectHarness(uint64_t deadline, bool *noticed);
+static int connectHarness(uint64_t deadline, bool *noticed, Exchange *exchange);
 static bool retryConnect(int error, const char *path, uint64_t deadline, uint64_t *missingSince);
-static void reportConnectFailure(int error, const char *path);
+static ClientOutcome reportConnectFailure(int error, const char *path);
 static int tryConnect(const struct sockaddr_un *address, int *error);
-static int waitFor(int socket, short events, uint64_t deadline);
-static bool waitAccepted(int socket, uint64_t deadline, bool noticed);
-static bool sendAll(int socket, const char *data, size_t size, uint64_t deadline);
-static bool receiveAll(int socket, char *data, size_t capacity, uint64_t deadline, size_t *done);
+static bool ticking(const Exchange *exchange);
+static bool keepWaiting(Exchange *exchange, uint64_t now);
+static Wait waitFor(int socket, short events, uint64_t deadline, Exchange *exchange);
+static bool waitAccepted(int socket, uint64_t deadline, bool noticed, Exchange *exchange);
+static bool
+sendAll(int socket, const char *data, size_t size, uint64_t deadline, Exchange *exchange);
+static bool receiveAll(
+	int socket,
+	char *data,
+	size_t capacity,
+	uint64_t deadline,
+	size_t *done,
+	Exchange *exchange
+);
+static bool connectionLost(int error);
 static uint64_t nowMs(void);
 
 bool client_submit(const char *job, unsigned timeoutMs, char *result, size_t resultSize) {
+	return client_submitWatched(job, timeoutMs, NULL, result, resultSize) == CLIENT_REPLIED;
+}
+
+ClientOutcome client_submitWatched(
+	const char *job,
+	unsigned timeoutMs,
+	ClientWatch *watch,
+	char *result,
+	size_t resultSize
+) {
 	char reply[HARNESS_RESULT_LENGTH];
 	if (!result) {
 		result = reply;
 		resultSize = sizeof reply;
 	}
+	if (watch) {
+		watch->accepted = false;
+		watch->queuedMs = 0;
+		watch->runMs = 0;
+	}
 	if (resultSize < 2) {
 		fprintf(stderr, "result buffer is too small\n");
-		return false;
+		return CLIENT_FAILED;
 	}
 	result[0] = 0;
 	size_t length = strlen(job);
 	if (length > HARNESS_JOB_LENGTH) {
 		fprintf(stderr, "the job is too long\n");
-		return false;
+		return CLIENT_FAILED;
 	}
-	uint64_t deadline = nowMs() + timeoutMs;
-	bool noticed = false;
-	int connection = connectHarness(deadline, &noticed);
-	if (connection < 0) {
-		return false;
-	}
+	uint64_t started = nowMs();
+	uint64_t deadline = started + timeoutMs;
+	Exchange exchange = {.watch = watch, .phase = CLIENT_CONNECTING, .outcome = CLIENT_FAILED};
+	exchange.nextTick = started + (watch ? watch->tickMs : 0);
+	bool noticed = watch && watch->quiet;
+	int connection = connectHarness(deadline, &noticed, &exchange);
 	size_t count = 0;
-	bool ok =
-		waitAccepted(connection, deadline, noticed) && sendAll(connection, job, length, deadline);
+	bool ok = connection >= 0 && waitAccepted(connection, deadline, noticed, &exchange) &&
+						sendAll(connection, job, length, deadline, &exchange);
 	if (ok && shutdown(connection, SHUT_WR) != 0) {
-		fprintf(stderr, "cannot finish sending the job (%s)\n", platform_errorText(errno).text);
+		int error = errno;
+		fprintf(stderr, "cannot finish sending the job (%s)\n", platform_errorText(error).text);
+		exchange.outcome = connectionLost(error) ? CLIENT_LOST : CLIENT_FAILED;
 		ok = false;
 	}
-	ok = ok && receiveAll(connection, result, resultSize - 1, deadline, &count);
-	close(connection);
-	return ok && validResult(result, count);
+	ok = ok && receiveAll(connection, result, resultSize - 1, deadline, &count, &exchange);
+	if (connection >= 0) {
+		close(connection);
+	}
+	if (ok && validResult(result, count)) {
+		exchange.outcome = CLIENT_REPLIED;
+	} else if (ok) {
+		exchange.outcome = count ? CLIENT_FAILED : CLIENT_LOST; // the harness closed without a reply
+	} else {
+		result[0] = 0;
+	}
+	if (watch) {
+		uint64_t ended = nowMs();
+		watch->accepted = exchange.acceptedAt != 0;
+		watch->queuedMs = (watch->accepted ? exchange.acceptedAt : ended) - started;
+		watch->runMs = watch->accepted ? ended - exchange.acceptedAt : 0;
+	}
+	return exchange.outcome;
 }
 
 bool client_succeeded(const char *result) {
@@ -95,7 +155,7 @@ static bool validResult(char *result, size_t length) {
 // Connects to the harness socket. While a live harness refuses connections (its backlog of waiting
 // runners is full), retries until `deadline`. Without a live harness of this protocol, explains how
 // to start the game with it. Prints why and returns -1 on failure.
-static int connectHarness(uint64_t deadline, bool *noticed) {
+static int connectHarness(uint64_t deadline, bool *noticed, Exchange *exchange) {
 	struct sockaddr_un address = {.sun_family = AF_UNIX};
 	if (!channel_socketPath(address.sun_path, sizeof address.sun_path)) {
 		fprintf(stderr, "cannot resolve the harness socket path\n");
@@ -109,11 +169,14 @@ static int connectHarness(uint64_t deadline, bool *noticed) {
 			fputs(waitingNotice, stderr);
 			*noticed = true;
 		}
+		if (!keepWaiting(exchange, nowMs())) {
+			return -1;
+		}
 		platform_sleep(CONNECT_RETRY_MS);
 		connection = tryConnect(&address, &error);
 	}
 	if (connection < 0) {
-		reportConnectFailure(error, address.sun_path);
+		exchange->outcome = reportConnectFailure(error, address.sun_path);
 		return -1;
 	}
 	uid_t user = 0;
@@ -138,16 +201,22 @@ static bool retryConnect(int error, const char *path, uint64_t deadline, uint64_
 	return passing && now < deadline && channel_served(path);
 }
 
-static void reportConnectFailure(int error, const char *path) {
+// Prints why the connection failed, and returns that outcome.
+static ClientOutcome reportConnectFailure(int error, const char *path) {
 	if (error != ENOENT && error != ECONNREFUSED) {
 		fprintf(stderr, "cannot connect to the harness (%s)\n", platform_errorText(error).text);
-	} else if (!channel_served(path)) {
-		(void)inject_harness(); // explains how to load it into the game, which starts it
-	} else if (error == ECONNREFUSED) {
-		fprintf(stderr, "timed out waiting for the other job\n");
-	} else {
-		fprintf(stderr, "the harness has no job socket (see harness.log); restart the game\n");
+		return CLIENT_FAILED;
 	}
+	if (!channel_served(path)) {
+		(void)inject_harness(); // explains how to load it into the game, which starts it
+		return CLIENT_NO_HARNESS;
+	}
+	if (error == ECONNREFUSED) {
+		fprintf(stderr, "timed out waiting for the other job\n");
+		return CLIENT_QUEUE_TIMEOUT;
+	}
+	fprintf(stderr, "the harness has no job socket (see harness.log); restart the game\n");
+	return CLIENT_NO_HARNESS;
 }
 
 // A connected socket, or -1 with the reason in `error`.
@@ -167,63 +236,106 @@ static int tryConnect(const struct sockaddr_un *address, int *error) {
 	return connection;
 }
 
-// Polls for `events` until `deadline`; 1 if ready, 0 on timeout, -1 on error.
-static int waitFor(int socket, short events, uint64_t deadline) {
+static bool ticking(const Exchange *exchange) {
+	return exchange->watch && exchange->watch->tick && exchange->watch->tickMs;
+}
+
+// Ticks if a tick is due at `now`; false (CLIENT_ABANDONED) if the tick stops the wait.
+static bool keepWaiting(Exchange *exchange, uint64_t now) {
+	if (!ticking(exchange) || now < exchange->nextTick) {
+		return true;
+	}
+	ClientWatch *watch = exchange->watch;
+	exchange->nextTick = now + watch->tickMs;
+	if (watch->tick(watch->context, exchange->phase)) {
+		return true;
+	}
+	exchange->outcome = CLIENT_ABANDONED;
+	return false;
+}
+
+// Polls for `events` until `deadline`, ticking between polls.
+static Wait waitFor(int socket, short events, uint64_t deadline, Exchange *exchange) {
 	for (;;) {
 		uint64_t now = nowMs();
-		if (now >= deadline) {
-			return 0;
+		if (!keepWaiting(exchange, now)) {
+			return WAIT_ABANDONED;
 		}
-		uint64_t left = deadline - now;
+		if (now >= deadline) {
+			return WAIT_TIMED_OUT;
+		}
+		uint64_t until =
+			ticking(exchange) && exchange->nextTick < deadline ? exchange->nextTick : deadline;
+		uint64_t left = until > now ? until - now : 0;
 		struct pollfd entry = {.fd = socket, .events = events};
 		int ready = poll(&entry, 1, left > 60000 ? 60000 : (int)left);
 		if (ready > 0) {
-			return 1;
+			return WAIT_READY;
 		}
 		if (ready < 0 && errno != EINTR) {
-			return -1;
+			return WAIT_ERROR;
 		}
 	}
 }
 
 // Waits for the harness to take the connection, which it does once any earlier job has finished.
-static bool waitAccepted(int socket, uint64_t deadline, bool noticed) {
+static bool waitAccepted(int socket, uint64_t deadline, bool noticed, Exchange *exchange) {
+	exchange->phase = CLIENT_QUEUED;
 	uint64_t notice = nowMs() + ACCEPT_NOTICE_MS;
-	int ready = waitFor(socket, POLLIN, notice < deadline ? notice : deadline);
-	if (ready == 0 && nowMs() < deadline) {
+	Wait ready = waitFor(socket, POLLIN, notice < deadline ? notice : deadline, exchange);
+	if (ready == WAIT_TIMED_OUT && nowMs() < deadline) {
 		if (!noticed) {
 			fputs(waitingNotice, stderr);
 		}
-		ready = waitFor(socket, POLLIN, deadline);
+		ready = waitFor(socket, POLLIN, deadline, exchange);
 	}
-	if (ready == 0) {
+	if (ready == WAIT_ABANDONED) {
+		return false;
+	}
+	if (ready == WAIT_TIMED_OUT) {
 		fprintf(stderr, "timed out waiting for the other job\n");
+		exchange->outcome = CLIENT_QUEUE_TIMEOUT;
 		return false;
 	}
 	char accepted = 0;
-	ssize_t got = ready > 0 ? read(socket, &accepted, 1) : -1;
+	ssize_t got = ready == WAIT_READY ? read(socket, &accepted, 1) : -1;
+	int error = got < 0 && ready == WAIT_READY ? errno : 0;
 	if (got != 1 || accepted != HARNESS_SOCKET_ACCEPTED) {
 		fprintf(stderr, "the harness did not accept the job; see harness.log\n");
+		// A harness that stops serving closes the connections still waiting for it.
+		exchange->outcome = got == 0 || connectionLost(error) ? CLIENT_NO_HARNESS : CLIENT_FAILED;
 		return false;
 	}
+	exchange->phase = CLIENT_RUNNING;
+	exchange->acceptedAt = nowMs();
 	return true;
 }
 
-static bool sendAll(int socket, const char *data, size_t size, uint64_t deadline) {
+static bool
+sendAll(int socket, const char *data, size_t size, uint64_t deadline, Exchange *exchange) {
 	size_t sent = 0;
 	while (sent < size) {
-		int ready = waitFor(socket, POLLOUT, deadline);
-		if (ready <= 0) {
-			fprintf(stderr, ready ? "cannot write to the harness\n" : "timed out sending the job\n");
+		Wait ready = waitFor(socket, POLLOUT, deadline, exchange);
+		if (ready == WAIT_ABANDONED) {
+			return false;
+		}
+		if (ready != WAIT_READY) {
+			fprintf(
+				stderr,
+				ready == WAIT_ERROR ? "cannot write to the harness\n" : "timed out sending the job\n"
+			);
+			exchange->outcome = ready == WAIT_ERROR ? CLIENT_FAILED : CLIENT_RUN_TIMEOUT;
 			return false;
 		}
 		ssize_t written = write(socket, data + sent, size - sent);
 		if (written < 0 && errno != EINTR && errno != EAGAIN) {
+			int error = errno;
 			fprintf(
 				stderr,
 				"cannot write to the harness (%s); see harness.log\n",
-				platform_errorText(errno).text
+				platform_errorText(error).text
 			);
+			exchange->outcome = connectionLost(error) ? CLIENT_LOST : CLIENT_FAILED;
 			return false;
 		}
 		sent += written > 0 ? (size_t)written : 0;
@@ -232,15 +344,26 @@ static bool sendAll(int socket, const char *data, size_t size, uint64_t deadline
 }
 
 // Reads the reply until the harness closes the connection. A timeout leaves the job running.
-static bool receiveAll(int socket, char *data, size_t capacity, uint64_t deadline, size_t *done) {
+static bool receiveAll(
+	int socket,
+	char *data,
+	size_t capacity,
+	uint64_t deadline,
+	size_t *done,
+	Exchange *exchange
+) {
 	*done = 0;
 	for (;;) {
-		int ready = waitFor(socket, POLLIN, deadline);
-		if (ready == 0) {
-			fprintf(stderr, "timed out; the harness may still be running\n");
+		Wait ready = waitFor(socket, POLLIN, deadline, exchange);
+		if (ready == WAIT_ABANDONED) {
 			return false;
 		}
-		if (ready < 0) {
+		if (ready == WAIT_TIMED_OUT) {
+			fprintf(stderr, "timed out; the harness may still be running\n");
+			exchange->outcome = CLIENT_RUN_TIMEOUT;
+			return false;
+		}
+		if (ready == WAIT_ERROR) {
 			fprintf(
 				stderr,
 				"cannot read from the harness (%s); see harness.log\n",
@@ -259,11 +382,13 @@ static bool receiveAll(int socket, char *data, size_t capacity, uint64_t deadlin
 			if (errno == EINTR || errno == EAGAIN) {
 				continue;
 			}
+			int error = errno;
 			fprintf(
 				stderr,
 				"cannot read from the harness (%s); see harness.log\n",
-				platform_errorText(errno).text
+				platform_errorText(error).text
 			);
+			exchange->outcome = connectionLost(error) ? CLIENT_LOST : CLIENT_FAILED;
 			return false;
 		}
 		if (*done >= capacity) {
@@ -272,6 +397,11 @@ static bool receiveAll(int socket, char *data, size_t capacity, uint64_t deadlin
 		}
 		*done += (size_t)got;
 	}
+}
+
+// True if `error` means the harness closed the connection (as when the game exits).
+static bool connectionLost(int error) {
+	return error == ECONNRESET || error == EPIPE || error == ENOTCONN;
 }
 
 static uint64_t nowMs(void) {

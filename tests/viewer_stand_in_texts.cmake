@@ -9,6 +9,7 @@ set(real_files
 	src/runner/client_posix.c
 	src/runner/commands.c
 	src/runner/macos_game.c
+	src/runner/run_job.c
 	src/runner/session.c
 )
 # Adjacent literals as one, and the characters CMake lists treat specially as others: only whole

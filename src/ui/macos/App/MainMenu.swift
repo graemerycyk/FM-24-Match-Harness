@@ -113,8 +113,9 @@ enum MainMenu {
 		return menu
 	}
 
-	/// For each side: the Max buttons' edits and Swap player for its selected players, and its
-	/// pencil. A Max item's tag is `side * PlayerEdit.allCases.count + edit`, the others' the side.
+	/// For each side: the Max buttons' edits and Swap player for its selected players, Edit
+	/// line-up, and its pencil. A Max item's tag is `side * PlayerEdit.allCases.count + edit`, the
+	/// others' the side.
 	private static func players() -> NSMenu {
 		let menu = NSMenu(title: "Players")
 		for (side, name) in ["Home Team", "Away Team"].enumerated() {
@@ -134,6 +135,13 @@ enum MainMenu {
 			swap.tag = side
 			swap.indentationLevel = 1
 			menu.addItem(swap)
+			let lineup = item(
+				"Edit \(side == 0 ? "Home" : "Away") Line-up…",
+				#selector(AppDelegate.editLineup(_:))
+			)
+			lineup.tag = side
+			lineup.indentationLevel = 1
+			menu.addItem(lineup)
 			let replace = item("Replace \(name)…", #selector(AppDelegate.replaceTeam(_:)))
 			replace.tag = side
 			replace.indentationLevel = 1

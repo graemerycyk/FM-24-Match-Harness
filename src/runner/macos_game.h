@@ -29,6 +29,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <wchar.h>
 
@@ -44,6 +45,9 @@ int macosGame_launch(int argc, wchar_t **argv);
 // the job, with the save's in-game date in `date` if given ("" if unknown, or for another save),
 // else the exit code. Prints what it does.
 int macosGame_ensureSave(const SessionNeed *need, char *date, size_t size);
+// As macosGame_ensureSave, also giving how the wait for the save ended in `outcome` if given
+// (SESSION_WAITING if there was none), as a batch tells a busy game from another save.
+int macosGame_checkSave(const SessionNeed *need, char *date, size_t size, SessionOutcome *outcome);
 
 // Installs the current dylib and launcher (quietly if they are already current), and deletes the
 // auto-play and Rosetta requests and files next to them that no running process needs. Writes the
@@ -54,8 +58,37 @@ bool macosGame_installHarness(bool verbose, char *launcher, size_t size);
 // runs `launcher` with the game's command, as Steam has saved it.
 bool macosGame_launchOptionSet(const char *launcher);
 
+typedef enum MacosDataFolder {
+	MACOS_DATA_FOUND,
+	MACOS_DATA_UNCLEAR, // Steam's launch option sets it in a way fm24ctl does not follow
+	MACOS_DATA_NO_HOME, // HOME is not set, or the path does not fit
+} MacosDataFolder;
+
+// FM24's data folder for the game the harness's launcher starts, where a command's job or a batch
+// looks its save up: the one Steam's launch option gives the game when the option runs the
+// launcher, else the usual one in the home folder. Prints nothing.
+MacosDataFolder macosGame_dataFolder(char *out, size_t size);
+
 // The running Football Manager 2024's process ID (0 if it is not running) and executable path.
 pid_t macosGame_findRunning(char *path, size_t size);
+
+// True if process `pid` runs under Rosetta; false if it does not, or has exited.
+bool macosGame_underRosetta(pid_t pid);
+
+// True if a running game serves this protocol's harness: its harness holds the socket's lock.
+bool macosGame_harnessListening(void);
+
+// True if process `pid` is running.
+bool macosGame_running(pid_t pid);
+
+// Quits the game, process `pid`, for a batch whose plan allows it (kill_game=1): SIGTERM, up to
+// `graceS` seconds to quit, then SIGKILL, then until its harness's lock is free. Leaves any other
+// process alone. True once it has gone; prints why not.
+bool macosGame_stop(pid_t pid, unsigned graceS);
+
+// The memory process `pid` uses, its physical footprint (Activity Monitor's Memory column), or 0
+// if it cannot be read.
+uint64_t macosGame_residentBytes(pid_t pid);
 
 // The installed fm.app, in the Steam library that holds app 2252570.
 bool macosGame_findInstalled(char *app, size_t size);

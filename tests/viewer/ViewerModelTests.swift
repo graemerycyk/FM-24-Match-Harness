@@ -135,7 +135,7 @@ enum ViewerModelTests {
 		model.noteFile = { noted.append($0) }
 		open(model, source)
 		let venue = try FixtureHandle(json: json).venue
-		let written = try FixtureHandle.write(json: json, playerEdits: nil, venue: venue, binary: false)
+		let written = try FixtureHandle.write(json: json, changes: nil, venue: venue, binary: false)
 
 		// The Save panel offers the file's own name, folder and format.
 		let saved = scratch.file("saved.json")
@@ -155,7 +155,7 @@ enum ViewerModelTests {
 		// JSON to binary is encoded here, without the game.
 		let binary = scratch.file("saved.bin")
 		save(model, binary, binary: true)
-		let encoded = try FixtureHandle.write(json: written, playerEdits: nil, venue: nil, binary: true)
+		let encoded = try FixtureHandle.write(json: written, changes: nil, venue: nil, binary: true)
 		checkEqual(try Data(contentsOf: binary), encoded)
 		checkEqual(model.source?.kind, .binary)
 		checkEqual(model.source?.original, encoded)

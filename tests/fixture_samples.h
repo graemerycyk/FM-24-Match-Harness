@@ -18,6 +18,7 @@ typedef enum FixtureSample {
 	FIXTURE_SAMPLE_SWAPPED,     // the away side human: the home line-up is not known
 	FIXTURE_SAMPLE_VENUE,       // every venue field and the values derived from them
 	FIXTURE_SAMPLE_FAMILIARITY, // home players 1 and 2 with tactical familiarity
+	FIXTURE_SAMPLE_LINEUP,      // Liverpool (human) v Newcastle (AI), laid out as an export
 	FIXTURE_SAMPLE_COUNT,
 } FixtureSample;
 
@@ -53,3 +54,14 @@ bool fixtureSamples_familiarity(struct ByteBuffer *out);
 // The value (0-10000) the game's tactic familiarity panel showed for the familiarity sample's
 // player (0 or 1: home players 1 and 2) in a category.
 unsigned fixtureSamples_familiarityShown(unsigned player, unsigned category);
+// Liverpool v Newcastle as an export lays it out, one field a line, for line-up changes. Home
+// (flags 0x20308) has 22 players: an XI, a bench of 9 (formation[11..19]) with a goalkeeper at
+// place 11, and 2 reserves; Curtis Jones (17) and Lewis Jones (14) share a surname, and Luis Díaz
+// (18) is the accented name. Away (flags 0x34000, the AI's) has 13, with a bench of 2. Each block
+// starts with the serialiser's 15 header fields, has named wellbeing values and holds its unique ID
+// twice, named and not, with 0-3 more fields by place. Away's slot 9 marks home place 19 (Florian
+// Wirtz); every other marking is 255. Both sides have a uniform part_4240 and a has_team_extra
+// after their blocks.
+bool fixtureSamples_lineup(struct ByteBuffer *out);
+// The unique ID of the lineup sample's player at `place` on `side`, or 0.
+unsigned fixtureSamples_lineupId(unsigned side, unsigned place);

@@ -5,8 +5,9 @@ import FixtureCore
 import FixtureSamples
 import Foundation
 
-/// ViewerModel's offline editing: the Max buttons, the Venue tab, what saves write, and the
-/// questions before unsaved edits are discarded, with the Windows viewer's rules and messages.
+/// ViewerModel's offline editing: the Max buttons, the Edit line-up sheet, the Venue tab, what
+/// saves write, and the questions before unsaved edits are discarded, with the Windows viewer's
+/// rules and messages.
 @MainActor
 enum ViewerEditTests {
 	static func register() {
@@ -19,7 +20,15 @@ enum ViewerEditTests {
 		Tests.test("viewer asks before an open discards edits", asksBeforeOpening)
 		Tests.test("viewer asks before closing with edits", asksBeforeClosing)
 		Tests.test("viewer allows no edits while a file operation runs", locksEdits)
+		Tests.test("the Edit line-up sheet exchanges players by place", editsLineup)
+		Tests.test("a new line-up stays pending until Confirm, and Reset undoes it", confirmsLineup)
+		Tests.test("viewer saves a new line-up with the selection and Max edits", savesLineup)
+		Tests.test("viewer saves a new away line-up as it does the home one", savesAwayLineup)
+		Tests.test("an export writes a new line-up as a save does", exportsLineup)
+		Tests.test("Edit line-up is off for FM24's AI, while busy and while asking", locksLineup)
 	}
+
+	private static let happiness = UInt8(FIXTURE_VIEW_MAX_HAPPINESS.rawValue)
 
 	private static let surface = FixtureHandle.surfaceField
 	private static let capacity = 4
@@ -174,7 +183,7 @@ enum ViewerEditTests {
 		let flags = fixture.playerEdits
 		let expected = try FixtureHandle.write(
 			json: json,
-			playerEdits: flags,
+			changes: PlayerChanges(flags: flags),
 			venue: nil,
 			binary: false
 		)
@@ -210,14 +219,14 @@ enum ViewerEditTests {
 		let binary = scratch.file("edited.bin")
 		let written = try FixtureHandle.write(
 			json: expected,
-			playerEdits: fixture.playerEdits,
+			changes: fixture.playerChanges,
 			venue: nil,
 			binary: false
 		)
 		save(model, binary, binary: true)
 		checkEqual(
 			try Data(contentsOf: binary),
-			try FixtureHandle.write(json: written, playerEdits: nil, venue: nil, binary: true)
+			try FixtureHandle.write(json: written, changes: nil, venue: nil, binary: true)
 		)
 		checkEqual(model.source?.json, written)
 		check(!model.hasUnsavedEdits)
@@ -255,7 +264,7 @@ enum ViewerEditTests {
 		values[surface].value = 1
 		let expected = try FixtureHandle.write(
 			json: json,
-			playerEdits: nil,
+			changes: nil,
 			venue: values,
 			binary: false
 		)
@@ -501,5 +510,519 @@ enum ViewerEditTests {
 		check(model.fixture?.hasPlayerEdits == false)
 		checkEqual(model.selection, [[0], []])
 		check(prompts.errors.isEmpty, "\(prompts.errors)")
+	}
+
+	/// Opens the lineup sample's home Edit line-up sheet, exchanges places `first` and `second` and
+	/// confirms.
+	private static func exchange(_ model: ViewerModel, _ first: Int, _ second: Int) {
+		model.editLineup(side: 0)
+		check(model.lineupEditor != nil, "no Edit line-up sheet")
+		model.lineupEditor?.exchange(first, second)
+		model.confirmLineup()
+	}
+
+	/// The log's last line, without its time.
+	private static func lastLine(_ model: ViewerModel) -> String? {
+		model.log.lines.last.map { String($0.drop { $0 != " " }.dropFirst()) }
+	}
+
+	static func editsLineup() {
+		let scratch = Scratch()
+		let (model, prompts) = model()
+		open(model, scratch.file("lu.json", lineupSampleJSON()))
+		guard let fixture = model.fixture else {
+			check(false, "no fixture")
+			return
+		}
+		check(model.canEditLineup(side: 0) && !model.canEditLineup(side: 1))
+		// Opened for a player, with that player's row selected.
+		model.editLineup(side: 0, block: 19)
+		guard let editor = model.lineupEditor else {
+			check(false, "no Edit line-up sheet")
+			return
+		}
+		check(model.isAsking)
+		checkEqual(editor.title, "Edit home line-up — Liverpool")
+		checkEqual(LineupEditor.columns, ["Slot", "Position", "Role", "Player", "Rating"])
+		checkEqual(editor.count, 22)
+		checkEqual(editor.benchSize, 9)
+		checkEqual(editor.selection, 19)
+		// A row per place: the XI in its slots, the 9 substitutes, then the reserves.
+		checkEqual(
+			(0..<22).map(editor.slot),
+			(0..<11).map(String.init) + Array(repeating: "Sub", count: 9) + ["Reserve", "Reserve"]
+		)
+		checkEqual([0, 5, 10, 11, 21].map(editor.position), ["GK", "DMCR", "ST", "", ""])
+		checkEqual([0, 10, 19].map(editor.role), ["Goalkeeper", "Deep Lying Forward", ""])
+		checkEqual(
+			[0, 10, 18, 19].map(editor.player),
+			["Alisson Becker", "Ryan Gravenberch", "Luis Díaz", "Florian Wirtz"]
+		)
+		// The rating for the slot's position: pos_gk, pos_dm and pos_st here.
+		checkEqual([0, 5, 10, 19].map(editor.rating), ["20", "1", "7", ""])
+		check(!(0..<22).contains(where: editor.isChanged))
+		checkEqual(editor.help(5), nil)
+		checkEqual(editor.help(19), nil)
+		checkEqual(
+			editor.help(20),
+			"Not among the substitutes; no such player came on in the matches tested."
+		)
+		checkEqual(editor.warnings, [])
+		check(!editor.isReordered)
+		// Exchange with: everyone else, with their places.
+		let choices = editor.exchangeChoices
+		checkEqual(choices.map(\.place), (0..<22).filter { $0 != 19 })
+		checkEqual(choices.first { $0.place == 10 }?.label, "Ryan Gravenberch — Slot 10, ST")
+		checkEqual(choices.first { $0.place == 6 }?.label, "Alexis Mac Allister — Slot 6, DMCL")
+		checkEqual(choices.first { $0.place == 11 }?.label, "Caoimhin Kelleher — Sub")
+		checkEqual(choices.first { $0.place == 21 }?.label, "Erling Haaland — Reserve")
+		editor.exchangeSelection(with: 10)
+		checkEqual(editor.selection, 19)
+		checkEqual([10, 19].map(editor.player), ["Florian Wirtz", "Ryan Gravenberch"])
+		checkEqual(editor.rating(10), "16")
+		checkEqual((0..<22).filter(editor.isChanged), [10, 19])
+		checkEqual(editor.help(10), "Was Ryan Gravenberch")
+		checkEqual(editor.help(19), "Was Florian Wirtz")
+		checkEqual(editor.moved, [10, 19])
+		check(editor.isReordered)
+		// The lists are as they were until Confirm.
+		checkEqual(fixture.cell(side: 0, row: 10, column: 1), "Ryan Gravenberch")
+		check(!fixture.hasPlayerEdits)
+
+		// Move Up and Down exchange the selected player with the next row, which takes the
+		// selection; the warnings follow the order.
+		editor.selection = 10
+		editor.move(by: 1)
+		checkEqual(editor.selection, 11)
+		checkEqual([10, 11].map(editor.player), ["Caoimhin Kelleher", "Florian Wirtz"])
+		checkEqual(
+			editor.warnings,
+			[
+				"Caoimhin Kelleher, a goalkeeper, is in slot 10 (ST).",
+				"No goalkeeper among the substitutes.",
+			]
+		)
+		editor.move(by: -1)
+		checkEqual(editor.selection, 10)
+		checkEqual(editor.warnings, [])
+		editor.selection = 0
+		check(!editor.canMove(by: -1) && editor.canMove(by: 1))
+		editor.move(by: -1)
+		checkEqual(editor.selection, 0)
+		editor.selection = 21
+		check(!editor.canMove(by: 1) && editor.canMove(by: -1))
+		editor.selection = nil
+		check(!editor.canMove(by: 1) && editor.exchangeChoices.isEmpty)
+		editor.move(by: 1)
+		editor.exchangeSelection(with: 3)
+		checkEqual(editor.moved, [10, 19])
+
+		// Dropping a row on another exchanges the two, and selects the dropped player.
+		editor.drop(5, onto: 0)
+		checkEqual(editor.selection, 0)
+		checkEqual([0, 5].map(editor.player), ["Wataru Endo", "Alisson Becker"])
+		checkEqual(
+			editor.warnings,
+			[
+				"Wataru Endo is in goal (slot 0) but is not a goalkeeper (GK 1).",
+				"Alisson Becker, a goalkeeper, is in slot 5 (DMCR).",
+			]
+		)
+		editor.drop(0, onto: 0)
+		editor.drop(0, onto: 22)
+		editor.drop(0, onto: 5)
+		checkEqual(editor.moved, [10, 19])
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+	}
+
+	static func confirmsLineup() {
+		let scratch = Scratch()
+		let (model, prompts) = model()
+		open(model, scratch.file("lu.json", lineupSampleJSON()))
+		guard let fixture = model.fixture else {
+			check(false, "no fixture")
+			return
+		}
+		// Cancel keeps nothing.
+		let revision = model.revision
+		model.editLineup(side: 0)
+		model.lineupEditor?.exchange(10, 19)
+		model.cancelLineup()
+		check(model.lineupEditor == nil && !model.isAsking)
+		check(!fixture.hasPlayerEdits && !model.hasUnsavedEdits)
+		checkEqual(model.revision, revision)
+
+		// Confirm: a pending order, which the lists, summary and close button show.
+		exchange(model, 10, 19)
+		check(model.lineupEditor == nil && !model.isAsking)
+		check(model.revision > revision, "the lists were not told")
+		checkEqual(
+			lastLine(model),
+			"Exchanged Ryan Gravenberch (slot 10) and Florian Wirtz (sub) in the home line-up"
+		)
+		check(fixture.lineupEdited(side: 0) && !fixture.lineupEdited(side: 1))
+		check(!fixture.lineupMarked(side: 0))
+		check(fixture.hasPlayerEdits && model.hasUnsavedEdits)
+		checkEqual(model.heading?.marker, " (unsaved player edits)")
+		checkEqual(model.closeCheck(), .confirm)
+		checkEqual(Array(fixture.order(side: 0).prefix(22)), exchangedPlaces(10, 19))
+		checkEqual(fixture.playerChanges.lineup, exchangedOrder(10, 19))
+		checkEqual(fixture.playerEdits, [UInt8](repeating: 0, count: 512))
+		// Each place keeps its slot, with the player the order puts there.
+		checkEqual(
+			(0..<5).map { fixture.cell(side: 0, row: 10, column: $0) },
+			["10", "Florian Wirtz", "ST", "Deep Lying Forward", "Unknown"]
+		)
+		checkEqual(fixture.rowBlock(side: 0, row: 10), 19)
+		checkEqual(fixture.rowBlock(side: 0, row: 19), 10)
+
+		// Reopened, the sheet starts from the pending order, its changes still bold.
+		model.editLineup(side: 0, block: 19)
+		guard let editor = model.lineupEditor else {
+			check(false, "no Edit line-up sheet")
+			return
+		}
+		checkEqual(editor.selection, 10)
+		checkEqual(editor.player(10), "Florian Wirtz")
+		checkEqual((0..<22).filter(editor.isChanged), [10, 19])
+		checkEqual(editor.moved, [])
+		// Reset puts the file's order back, which Confirm makes the order again.
+		editor.reset()
+		check(!editor.isReordered && !(0..<22).contains(where: editor.isChanged))
+		checkEqual(editor.moved, [10, 19])
+		checkEqual(editor.selection, 10)
+		model.confirmLineup()
+		checkEqual(
+			lastLine(model),
+			"Exchanged Florian Wirtz (slot 10) and Ryan Gravenberch (sub) in the home line-up"
+		)
+		check(!fixture.hasPlayerEdits && !model.hasUnsavedEdits)
+		checkEqual(model.heading?.marker, "")
+		checkEqual(fixture.cell(side: 0, row: 10, column: 1), "Ryan Gravenberch")
+
+		// More than two players moved; and a Confirm that moves nobody changes nothing.
+		model.editLineup(side: 0)
+		model.lineupEditor?.exchange(0, 11)
+		model.lineupEditor?.exchange(11, 5)
+		model.confirmLineup()
+		checkEqual(lastLine(model), "Changed the home line-up (3 players)")
+		checkEqual(
+			[0, 5, 11].map { fixture.cell(side: 0, row: $0, column: 1) },
+			["Caoimhin Kelleher", "Alisson Becker", "Wataru Endo"]
+		)
+		let lines = model.log.lines.count
+		let confirmed = model.revision
+		model.editLineup(side: 0)
+		model.lineupEditor?.exchange(3, 4)
+		model.lineupEditor?.exchange(4, 3)
+		model.confirmLineup()
+		checkEqual(model.log.lines.count, lines)
+		checkEqual(model.revision, confirmed)
+		check(model.lineupEditor == nil)
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+	}
+
+	static func savesLineup() throws {
+		let scratch = Scratch()
+		let json = lineupSampleJSON()
+		let (model, prompts) = model()
+		open(model, scratch.file("lu.json", json))
+		guard let fixture = model.fixture else {
+			check(false, "no fixture")
+			return
+		}
+		// Gravenberch's happiness maximised and Gravenberch selected, then exchanged with Wirtz: the
+		// edit and the selection follow him to the bench.
+		model.select(side: 0, blocks: [10])
+		model.maxPlayers(.happiness, side: 0)
+		model.editLineup(side: 0, block: 10)
+		model.lineupEditor?.exchangeSelection(with: 19)
+		model.confirmLineup()
+		checkEqual(model.selection, [[10], []])
+		checkEqual(fixture.rowBlock(side: 0, row: 19), 10)
+		checkEqual(fixture.cell(side: 0, row: 19, column: 5), "20")
+		checkEqual(fixture.cell(side: 0, row: 10, column: 5), "9")
+		var flags = [UInt8](repeating: 0, count: 512)
+		flags[10] = happiness
+		let changes = PlayerChanges(flags: flags, lineup: exchangedOrder(10, 19))
+		checkEqual(fixture.playerChanges, changes)
+		// What fm24ctl lineup writes: the blocks under their new places' names, the header marked.
+		let expected = try FixtureHandle.write(json: json, changes: changes, venue: nil, binary: false)
+		check(
+			occurrences("{\"name\": \"home.player[10]\", \"player\": \"Florian Wirtz\"", in: expected)
+				== 1
+		)
+		check(
+			occurrences("{\"name\": \"home.player[19]\", \"player\": \"Ryan Gravenberch\"", in: expected)
+				== 1
+		)
+		checkEqual(occurrences("\"home_lineup\": true", in: expected), 1)
+		checkEqual(occurrences("away_lineup", in: expected), 0)
+
+		let saved = scratch.file("edited.json")
+		prompts.destination = (saved, false)
+		model.requestSave()
+		check(waitUntil { !model.isBusy })
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+		checkEqual(try Data(contentsOf: saved), expected)
+		checkEqual(try Data(contentsOf: scratch.file("lu.json")), json)
+		// The saved file is on show: Gravenberch is in block 19 now, with his edit, still selected.
+		checkEqual(model.heading, SummaryHeading(name: "edited.json", marker: ""))
+		check(!fixture.hasPlayerEdits && !model.hasUnsavedEdits)
+		check(!fixture.lineupEdited(side: 0) && fixture.lineupMarked(side: 0))
+		check(!fixture.lineupMarked(side: 1))
+		checkEqual(model.selection, [[19], []])
+		checkEqual(fixture.playerName(side: 0, block: 19), "Ryan Gravenberch")
+		checkEqual(fixture.rowBlock(side: 0, row: 19), 19)
+		checkEqual(Array(fixture.order(side: 0).prefix(22)), Array(0..<22))
+		checkEqual(fixture.playerEdits, [UInt8](repeating: 0, count: 512))
+		checkEqual(model.source?.json, expected)
+		let reopened = try FixtureHandle(json: expected)
+		check(reopened.lineupMarked(side: 0) && !reopened.lineupMarked(side: 1))
+		for side in 0..<2 {
+			for row in 0..<fixture.rowCount(side: side) {
+				checkEqual(
+					(0..<16).map { reopened.cell(side: side, row: row, column: $0) },
+					(0..<16).map { fixture.cell(side: side, row: row, column: $0) }
+				)
+				checkEqual(reopened.rowBlock(side: side, row: row), fixture.rowBlock(side: side, row: row))
+			}
+		}
+		// A Max edit after the save names the player's new block.
+		model.maxPlayers(.condition, side: 0)
+		checkEqual(fixture.playerEdits[19], UInt8(FIXTURE_VIEW_MAX_CONDITION.rawValue))
+
+		// An order saved as binary is written before it is encoded.
+		exchange(model, 0, 11)
+		let pending = fixture.playerChanges
+		checkEqual(pending.lineup, exchangedOrder(0, 11))
+		let binary = scratch.file("edited.bin")
+		save(model, binary, binary: true)
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+		let written = try FixtureHandle.write(
+			json: expected,
+			changes: pending,
+			venue: nil,
+			binary: false
+		)
+		checkEqual(
+			try Data(contentsOf: binary),
+			try FixtureHandle.write(json: written, changes: nil, venue: nil, binary: true)
+		)
+		checkEqual(model.source?.json, written)
+		check(!model.hasUnsavedEdits)
+		checkEqual(fixture.playerName(side: 0, block: 0), "Caoimhin Kelleher")
+		// The .bin has no place for the marker, but the line-up counts as changed until the file is
+		// opened again, so the question before a rebuild is still asked.
+		check(fixture.lineupMarked(side: 0) && !fixture.lineupEdited(side: 0))
+
+		// A binary fixture whose only edit is a new order is written, never copied as it is; the
+		// order moves bytes but adds none.
+		let bytes = try FixtureHandle.write(json: json, changes: nil, venue: nil, binary: true)
+		let source = FixtureSource(
+			url: scratch.file("source.bin", bytes),
+			kind: .binary,
+			json: json,
+			original: bytes,
+			temporary: false
+		)
+		let copied = try FixtureFiles.save(
+			source,
+			changes: PlayerChanges(),
+			venue: fixture.venue,
+			as: .binary,
+			to: scratch.file("copied.bin")
+		)
+		checkEqual(copied.original, bytes)
+		let order = PlayerChanges(lineup: exchangedOrder(10, 19))
+		let ordered = try FixtureFiles.save(
+			source,
+			changes: order,
+			venue: fixture.venue,
+			as: .binary,
+			to: scratch.file("ordered.bin")
+		)
+		let orderedJSON = try FixtureHandle.write(json: json, changes: order, venue: nil, binary: false)
+		checkEqual(
+			try Data(contentsOf: scratch.file("ordered.bin")),
+			try FixtureHandle.write(json: orderedJSON, changes: nil, venue: nil, binary: true)
+		)
+		check(ordered.original != bytes, "the order was not written")
+		checkEqual(ordered.original?.count, bytes.count)
+	}
+
+	static func savesAwayLineup() throws {
+		let scratch = Scratch()
+		let json = awayLineupSampleJSON()
+		let (model, prompts) = model()
+		open(model, scratch.file("away.json", json))
+		guard let fixture = model.fixture else {
+			check(false, "no fixture")
+			return
+		}
+		check(!model.canEditLineup(side: 0) && model.canEditLineup(side: 1))
+		// Miley's happiness maximised and Miley selected, then a cycle of three that takes him from
+		// the bench to slot 2.
+		model.select(side: 1, blocks: [12])
+		model.maxPlayers(.happiness, side: 1)
+		model.editLineup(side: 1)
+		for (first, second) in awayCycle {
+			model.lineupEditor?.exchange(first, second)
+		}
+		model.confirmLineup()
+		checkEqual(lastLine(model), "Changed the away line-up (3 players)")
+		check(fixture.lineupEdited(side: 1) && !fixture.lineupEdited(side: 0))
+		check(model.hasUnsavedEdits)
+		checkEqual(model.selection, [[], [12]])
+		checkEqual(fixture.cell(side: 1, row: 2, column: 1), "Lewis Miley")
+		checkEqual(fixture.cell(side: 1, row: 2, column: 5), "20")
+		var flags = [UInt8](repeating: 0, count: 512)
+		flags[FixtureHandle.blockCount + 12] = happiness
+		let changes = PlayerChanges(flags: flags, lineup: exchangedOrder(awayCycle, side: 1))
+		checkEqual(fixture.playerChanges, changes)
+		let expected = try FixtureHandle.write(json: json, changes: changes, venue: nil, binary: false)
+		checkEqual(occurrences("\"away_lineup\": true", in: expected), 1)
+		checkEqual(occurrences("home_lineup", in: expected), 0)
+		check(
+			occurrences("{\"name\": \"away.player[2]\", \"player\": \"Lewis Miley\"", in: expected) == 1
+		)
+
+		let saved = scratch.file("edited.json")
+		prompts.destination = (saved, false)
+		model.requestSave()
+		check(waitUntil { !model.isBusy })
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+		checkEqual(try Data(contentsOf: saved), expected)
+		// The saved file is on show: Miley is in block 2 now, with his edit, still selected.
+		check(!fixture.hasPlayerEdits && !model.hasUnsavedEdits)
+		check(!fixture.lineupEdited(side: 1) && fixture.lineupMarked(side: 1))
+		check(!fixture.lineupMarked(side: 0))
+		checkEqual(model.selection, [[], [2]])
+		checkEqual(
+			[1, 2, 12].map { fixture.playerName(side: 1, block: $0) },
+			["Sven Botman", "Lewis Miley", "Kieran Trippier"]
+		)
+		checkEqual(fixture.rowBlock(side: 1, row: 2), 2)
+		checkEqual(fixture.playerEdits, [UInt8](repeating: 0, count: 512))
+		let reopened = try FixtureHandle(json: expected)
+		for side in 0..<2 {
+			for row in 0..<fixture.rowCount(side: side) {
+				checkEqual(
+					(0..<16).map { reopened.cell(side: side, row: row, column: $0) },
+					(0..<16).map { fixture.cell(side: side, row: row, column: $0) }
+				)
+			}
+		}
+		// Saved again, the file is the same: the order is not applied twice.
+		let again = scratch.file("again.json")
+		prompts.destination = (again, false)
+		model.requestSave()
+		check(waitUntil { !model.isBusy })
+		checkEqual(try Data(contentsOf: again), expected)
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+	}
+
+	static func exportsLineup() throws {
+		let scratch = Scratch()
+		let prompts = FakePrompts()
+		let settings = ViewerSettings(defaults: MemorySettings(), documents: scratch.url)
+		settings.exportFolder = scratch.url.appendingPathComponent("Exports")
+		let model = ViewerModel(log: ViewerLog(echo: false), prompts: prompts, settings: settings)
+		model.now = { Date(timeIntervalSince1970: 1_700_000_000) }
+		let json = lineupSampleJSON()
+		model.open(scratch.file("temp-fixture.json", json), temporary: true)
+		check(waitUntil { !model.isBusy })
+		guard let fixture = model.fixture else {
+			check(false, "no fixture")
+			return
+		}
+		model.select(side: 0, blocks: [19])
+		exchange(model, 10, 19)
+		model.export()
+		check(waitUntil { !model.isBusy })
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+		let names = scratch.names("Exports")
+		checkEqual(names.count, 1)
+		let exported = settings.exportFolder.appendingPathComponent(names.first ?? "")
+		checkEqual(
+			try Data(contentsOf: exported),
+			try FixtureHandle.write(
+				json: json,
+				changes: PlayerChanges(lineup: exchangedOrder(10, 19)),
+				venue: nil,
+				binary: false
+			)
+		)
+		check(!model.isTemporary && !model.hasUnsavedEdits)
+		check(fixture.lineupMarked(side: 0) && !fixture.lineupEdited(side: 0))
+		checkEqual(model.selection, [[10], []])
+		checkEqual(fixture.playerName(side: 0, block: 10), "Florian Wirtz")
+	}
+
+	static func locksLineup() {
+		let scratch = Scratch()
+		let (model, prompts) = model()
+		// No fixture: nothing to change.
+		check(!model.canEditLineup(side: 0))
+		checkEqual(model.lineupHelp(side: 0), nil)
+		model.editLineup(side: 0)
+		check(model.lineupEditor == nil)
+		let url = scratch.file("lu.json", lineupSampleJSON())
+		open(model, url)
+		// FM24's AI picks the away XI: no sheet, and the button says why.
+		check(!model.canEditLineup(side: 1))
+		checkEqual(model.lineupHelp(side: 1), "FM24's AI picks this side's XI at kick-off.")
+		checkEqual(model.lineupHelp(side: 0), nil)
+		checkEqual(model.lineupHelp(side: 2), nil)
+		model.editLineup(side: 1)
+		check(model.lineupEditor == nil)
+		check(model.fixture?.setOrder(side: 1, exchangedPlaces(0, 1, count: 13)) == false)
+		// The other way round in the swapped sample, and in the labelled one, as the C core has it.
+		open(model, scratch.file("swapped.json", sampleJSON(FIXTURE_SAMPLE_SWAPPED)))
+		check(!model.canEditLineup(side: 0) && model.canEditLineup(side: 1))
+		checkEqual(model.lineupHelp(side: 0), LineupEditor.aiHelp)
+		checkEqual(model.lineupHelp(side: 1), nil)
+		open(model, scratch.file("labelled.json", playersJSON()))
+		check(model.canEditLineup(side: 0) && !model.canEditLineup(side: 1))
+
+		// While a file operation runs, it is off.
+		open(model, url)
+		model.save(to: scratch.file("saved.json"), binary: false)
+		check(model.isBusy && !model.canEditLineup(side: 0))
+		model.editLineup(side: 0)
+		check(model.lineupEditor == nil)
+		check(waitUntil { !model.isBusy })
+		check(model.canEditLineup(side: 0))
+		// While a question or panel waits, it does not open; while it is open, a second does not.
+		prompts.deferring = true
+		model.requestOpen()
+		check(model.isAsking)
+		model.editLineup(side: 0)
+		check(model.lineupEditor == nil)
+		prompts.choose(nil)
+		check(!model.isAsking)
+		model.editLineup(side: 0)
+		guard let editor = model.lineupEditor else {
+			check(false, "no Edit line-up sheet")
+			return
+		}
+		model.editLineup(side: 0, block: 3)
+		check(model.lineupEditor === editor)
+		checkEqual(editor.selection, nil)
+		model.cancelLineup()
+		check(prompts.errors.isEmpty, "\(prompts.errors)")
+
+		// A pending order asks before another fixture opens, as Max edits do.
+		prompts.deferring = false
+		exchange(model, 10, 19)
+		prompts.answers = [false]
+		model.requestOpen(scratch.file("other.json", lineupSampleJSON()))
+		checkEqual(prompts.questions.last?.message, ViewerModel.openDiscardMessage)
+		checkEqual(model.source?.name, "saved.json")
+		check(model.fixture?.lineupEdited(side: 0) == true)
+		// Another fixture starts with none.
+		open(model, scratch.file("other.json"))
+		checkEqual(model.source?.name, "other.json")
+		check(model.fixture?.lineupEdited(side: 0) == false && !model.hasUnsavedEdits)
 	}
 }

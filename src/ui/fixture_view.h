@@ -41,6 +41,8 @@ typedef struct FixtureViewNumber {
 // A fixture read from JSON, with its pending player edits. Use one from one thread at a time.
 typedef struct FixtureView FixtureView;
 
+// NULL, with the reason, if `json` is not a fixture or a side's player blocks were moved without
+// being renamed (block N not at place N), as fm24ctl lineup refuses them.
 FixtureView *fixtureView_open(const char *json, size_t length, char *error, size_t errorSize);
 void fixtureView_close(FixtureView *view);
 
@@ -109,8 +111,75 @@ bool fixtureView_applyEdit(
 );
 // The pending edits as 2 * FIXTURE_VIEW_BLOCKS flags, home first.
 void fixtureView_playerEdits(const FixtureView *view, uint8_t *flags);
+// True if a Max edit or a new order (below) is pending.
 bool fixtureView_hasPlayerEdits(const FixtureView *view);
+// Forgets the pending Max edits, once a save has written them. A pending order stays until
+// fixtureView_commitOrder.
 void fixtureView_clearPlayerEdits(FixtureView *view);
+
+// The line-up (fixture_lineup.h). A side's order gives, for each place, the block whose player
+// moves there: FIXTURE_VIEW_BLOCKS entries, of which those from the side's player count on are
+// ignored and given back as their own places. While an order is pending, a squad list's row shows
+// the slot of its place and the player the order puts there; fixtureView_rowBlock gives that
+// player's own block, which the selection and the Max edits use.
+
+// Whether the side's line-up is known: its manager's flags were read and FM24's AI does not manage
+// it, so its first 11 players are its XI.
+bool fixtureView_lineupKnown(const FixtureView *view, unsigned side);
+// Whether the side's order can be changed: its line-up is known and it has 11 or more player
+// blocks, as many as its player_count says.
+bool fixtureView_lineupEditable(const FixtureView *view, unsigned side);
+// Whether the fixture's header says the side's line-up was changed ("<side>_lineup": true), or a
+// committed order changed it.
+bool fixtureView_lineupMarked(const FixtureView *view, unsigned side);
+// Whether a new order of the side is pending.
+bool fixtureView_lineupEdited(const FixtureView *view, unsigned side);
+// The substitutes' places after the first 11 (0 for no side).
+unsigned fixtureView_benchSize(const FixtureView *view, unsigned side);
+// The side's pending order, or each place's own block if there is none.
+void fixtureView_order(const FixtureView *view, unsigned side, uint8_t *from);
+// Makes `from` the side's pending order; one that moves nobody clears it. False, changing nothing,
+// if the side's order cannot be changed or `from` does not place each of its players once.
+bool fixtureView_setOrder(FixtureView *view, unsigned side, const uint8_t *from);
+// The place the pending order gives the player of `block` (`block` itself without one), or -1 if
+// the side has no such block.
+int fixtureView_placeOf(const FixtureView *view, unsigned side, unsigned block);
+// After a save that wrote the pending orders: each player's block becomes the one of its new place,
+// with its Max edits, the side counts as marked, and no order is pending.
+void fixtureView_commitOrder(FixtureView *view);
+// The order fixtureLineup_byPeople gives the side for `people` (`count` unique IDs, in order) in
+// `from` (FIXTURE_VIEW_BLOCKS entries, as fixtureView_setOrder takes them), and for each person
+// whether the side has them (`found`) and their place (`places`), or for one it lacks the place
+// another player took instead (-1 if none was left), `count` entries each. False if the side's
+// order cannot be changed or `count` is more than FIXTURE_VIEW_BLOCKS.
+bool fixtureView_orderByPeople(
+	const FixtureView *view,
+	unsigned side,
+	const uint32_t *people,
+	unsigned count,
+	uint8_t *from,
+	bool *found,
+	int *places
+);
+// The unique ID (.person_uid) of the side's player in `block`, or -1 if it is not stored.
+int64_t fixtureView_personId(const FixtureView *view, unsigned side, unsigned block);
+// The player in `block`'s rating (1-20) for the position of `slot` (pos_gk to pos_wbr, see
+// docs/FIXTURE.md#ratings), or -1 if the position or the rating is not known.
+int fixtureView_positionRating(
+	const FixtureView *view,
+	unsigned side,
+	unsigned block,
+	unsigned slot
+);
+// What `lineup` would warn about the side's players in the order `from`, a sentence a line ("" if
+// nothing, if the side's order cannot be changed, or if `from` does not place each player once).
+size_t fixtureView_lineupWarnings(
+	const FixtureView *view,
+	unsigned side,
+	const uint8_t *from,
+	char *out,
+	size_t size
+);
 
 // The venue fields: labels, stored values (FIXTURE_VIEW_VENUE_FIELDS) and their text ("" when not
 // stored; the surface's name, if it is one of the choices).
@@ -142,13 +211,15 @@ void fixtureView_setVenue(FixtureView *view, const FixtureViewNumber *values);
 bool fixtureView_hasVenue(const FixtureViewNumber *values);
 
 // What a save writes for the fixture `json`: the player edits (`playerEdits` as
-// fixtureView_playerEdits gives them, or NULL), then the venue (`venue`, or NULL; written only if
-// fixtureView_hasVenue), as JSON or, if `binary`, encoded. `*out` is to be freed with
-// fixtureView_free.
+// fixtureView_playerEdits gives them, or NULL), then the new orders (`order`, 2 *
+// FIXTURE_VIEW_BLOCKS entries, home first, as fixtureView_order gives each side's, or NULL), then
+// the venue (`venue`, or NULL; written only if fixtureView_hasVenue), as JSON or, if `binary`,
+// encoded. `*out` is to be freed with fixtureView_free.
 bool fixtureView_write(
 	const char *json,
 	size_t length,
 	const uint8_t *playerEdits,
+	const uint8_t *order,
 	const FixtureViewNumber *venue,
 	bool binary,
 	uint8_t **out,

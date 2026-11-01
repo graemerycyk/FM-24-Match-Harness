@@ -24,7 +24,7 @@
 // takes effect when the game is next started; runners of another version find no socket of theirs.
 #pragma once
 
-#define HARNESS_PROTOCOL_TEXT "1.3.0"
+#define HARNESS_PROTOCOL_TEXT "1.4.0"
 #define HARNESS_WIDE_TEXT_(text) L##text
 #define HARNESS_WIDE_TEXT(text) HARNESS_WIDE_TEXT_(text)
 #define HARNESS_PROTOCOL HARNESS_WIDE_TEXT(HARNESS_PROTOCOL_TEXT)

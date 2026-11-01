@@ -3,6 +3,7 @@
 
 #include "platform.h"
 
+#include <io.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@ typedef struct ThreadStart {
 	void *argument;
 } ThreadStart;
 
+static void printFailure(const char *action, const wchar_t *path, DWORD error);
 static DWORD WINAPI threadMain(LPVOID parameter);
 
 FILE *platform_openFile(const wchar_t *path, const char *mode) {
@@ -40,6 +42,138 @@ bool platform_removeFile(const wchar_t *path) {
 		error
 	);
 	return false;
+}
+
+bool platform_syncFile(FILE *file) {
+	if (fflush(file) != 0) {
+		return false;
+	}
+	intptr_t handle = _get_osfhandle(_fileno(file));
+	return handle != -1 && FlushFileBuffers((HANDLE)handle);
+}
+
+bool platform_syncDirectory(const wchar_t *path) {
+	(void)path; // NTFS journals its directory entries; MoveFileExW writes through
+	return true;
+}
+
+bool platform_replaceFile(const wchar_t *from, const wchar_t *to) {
+	if (MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		return true;
+	}
+	DWORD error = GetLastError();
+	char source[4096];
+	char target[4096];
+	fprintf(
+		stderr,
+		"cannot rename %s to %s (Windows error %lu)\n",
+		platform_toUtf8(from, source, sizeof source) ? source : "a file",
+		platform_toUtf8(to, target, sizeof target) ? target : "another",
+		error
+	);
+	return false;
+}
+
+bool platform_renameFolder(const wchar_t *from, const wchar_t *to) {
+	// MOVEFILE_REPLACE_EXISTING cannot be used with a folder.
+	if (MoveFileExW(from, to, MOVEFILE_WRITE_THROUGH)) {
+		return true;
+	}
+	DWORD error = GetLastError();
+	printFailure("rename the folder", from, error);
+	return false;
+}
+
+bool platform_makeDirectory(const wchar_t *path) {
+	if (CreateDirectoryW(path, NULL)) {
+		return true;
+	}
+	DWORD error = GetLastError();
+	DWORD attributes = GetFileAttributesW(path);
+	if (error == ERROR_ALREADY_EXISTS && attributes != INVALID_FILE_ATTRIBUTES &&
+			(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+		return true;
+	}
+	printFailure("create the folder", path, error);
+	return false;
+}
+
+bool platform_listDirectory(const wchar_t *path, PlatformDirectoryVisit *visit, void *context) {
+	size_t length = wcslen(path);
+	wchar_t *pattern = malloc((length + 3) * sizeof *pattern);
+	if (!pattern) {
+		printFailure("read the folder", path, ERROR_NOT_ENOUGH_MEMORY);
+		return false;
+	}
+	wmemcpy(pattern, path, length);
+	wmemcpy(pattern + length, L"\\*", 3);
+	WIN32_FIND_DATAW entry;
+	HANDLE search = FindFirstFileW(pattern, &entry);
+	free(pattern);
+	if (search == INVALID_HANDLE_VALUE) {
+		printFailure("read the folder", path, GetLastError());
+		return false;
+	}
+	bool ok = true;
+	do {
+		const wchar_t *name = entry.cFileName;
+		if (wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0) {
+			continue;
+		}
+		DWORD attributes = entry.dwFileAttributes;
+		bool isDirectory =
+			(attributes & FILE_ATTRIBUTE_DIRECTORY) && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+		ok = visit(context, name, isDirectory);
+	} while (ok && FindNextFileW(search, &entry));
+	DWORD error = ok ? GetLastError() : ERROR_NO_MORE_FILES;
+	FindClose(search);
+	if (error != ERROR_NO_MORE_FILES) {
+		printFailure("read the folder", path, error);
+		return false;
+	}
+	return ok;
+}
+
+bool platform_removeDirectory(const wchar_t *path) {
+	if (RemoveDirectoryW(path)) {
+		return true;
+	}
+	DWORD error = GetLastError();
+	if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+		return true;
+	}
+	printFailure("remove the folder", path, error);
+	return false;
+}
+
+bool platform_freeBytes(const wchar_t *path, uint64_t *bytes) {
+	ULARGE_INTEGER available;
+	if (!GetDiskFreeSpaceExW(path, &available, NULL, NULL)) {
+		printFailure("read the free space of", path, GetLastError());
+		return false;
+	}
+	*bytes = available.QuadPart;
+	return true;
+}
+
+PlatformLockResult platform_lockFile(const wchar_t *path, PlatformFileLock *lock) {
+	HANDLE file = CreateFileW(
+		path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL
+	);
+	if (file != INVALID_HANDLE_VALUE) {
+		*lock = file;
+		return PLATFORM_LOCK_TAKEN;
+	}
+	DWORD error = GetLastError();
+	if (error == ERROR_SHARING_VIOLATION) {
+		return PLATFORM_LOCK_HELD;
+	}
+	printFailure("lock", path, error);
+	return PLATFORM_LOCK_FAILED;
+}
+
+void platform_unlockFile(PlatformFileLock lock) {
+	CloseHandle(lock);
 }
 
 bool platform_toUtf8(const wchar_t *text, char *out, size_t size) {
@@ -85,6 +219,13 @@ uint64_t platform_tickFrequency(void) {
 	return (uint64_t)frequency.QuadPart;
 }
 
+uint64_t platform_uptimeTicks(void) {
+	ULONGLONG units = 0; // 100 ns, without the time asleep
+	QueryUnbiasedInterruptTime(&units);
+	uint64_t frequency = platform_tickFrequency();
+	return units / 10000000U * frequency + units % 10000000U * frequency / 10000000U;
+}
+
 uint64_t platform_threadCpuTime(void) {
 	FILETIME created;
 	FILETIME exited;
@@ -105,6 +246,10 @@ void platform_timeOfDay(int *hour, int *minute, int *second, int *millisecond) {
 	*minute = time.wMinute;
 	*second = time.wSecond;
 	*millisecond = time.wMilliseconds;
+}
+
+bool platform_utcTime(time_t seconds, struct tm *out) {
+	return gmtime_s(out, &seconds) == 0;
 }
 
 void platform_sleep(unsigned milliseconds) {
@@ -149,6 +294,17 @@ void platform_joinThreads(PlatformThread *threads, size_t count) {
 	for (size_t i = 0; i < count; ++i) {
 		CloseHandle(threads[i]);
 	}
+}
+
+static void printFailure(const char *action, const wchar_t *path, DWORD error) {
+	char text[4096];
+	fprintf(
+		stderr,
+		"cannot %s %s (Windows error %lu)\n",
+		action,
+		platform_toUtf8(path, text, sizeof text) ? text : "a path that is not valid text",
+		error
+	);
 }
 
 static DWORD WINAPI threadMain(LPVOID parameter) {

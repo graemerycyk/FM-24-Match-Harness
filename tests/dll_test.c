@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2026 Phil Armstead <philarmstead@mailbox.org>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "sha256.h"
 #include "test.h"
 #include "tests.h"
 
@@ -396,6 +397,12 @@ bool database_personName(const uint8_t *person, char *out, size_t size) {
 void database_clubShortName(const uint8_t *team, char *out, size_t size) {
 	(void)team;
 	(void)snprintf(out, size, "team");
+}
+
+uint32_t database_teamUniqueId(const uint8_t *team) {
+	uint32_t uniqueId = 0;
+	memcpy(&uniqueId, team + TEAM_UNIQUE_ID, sizeof uniqueId);
+	return uniqueId;
 }
 // NOLINTEND(readability-non-const-parameter)
 
@@ -1122,6 +1129,7 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 	(void)snprintf(build, sizeof build, "command=build_next\noutput=%s\nseed=42\n", path);
 	static const char run[] = "command=run\ninput=/in.bin\noutput=/out.csv\nseeds=1\n";
 	char text[sizeof build];
+	uint64_t counted = job_count(); // every job but status counts, run or not
 #ifdef __APPLE__
 	FakeGame loading = readyGame;
 	loading.inProgress = false;
@@ -1182,11 +1190,17 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 		0
 	);
 	setFakeGame(&readyGame);
+	ASSERT_BOOL_EQ(job_count() == counted + 6, true); // the jobs refused above
+	counted = job_count();
 #else
 	(void)snprintf(text, sizeof text, "command=status\n");
 	dllTest_execute(text);
 	ASSERT_INT_EQ(strcmp(job_takeResult(), "error: status is not available on Windows yet"), 0);
 #endif
+	(void)snprintf(text, sizeof text, "command=run\nseeds=x\n");
+	dllTest_execute(text);
+	ASSERT_INT_EQ(strcmp(job_takeResult(), "error: cannot read the job; see harness.log"), 0);
+	ASSERT_BOOL_EQ(job_count() == counted + 1, true);
 	// An idle game (or Windows, where the harness cannot tell) runs the jobs. The export records the
 	// save and the in-game date where they are known.
 	dispatched = JOB_NONE;
@@ -1194,12 +1208,14 @@ TEST(refuses_jobs_but_status_while_the_game_is_busy) {
 	dllTest_execute(text);
 	ASSERT_INT_EQ(strcmp(job_takeResult(), "ok: stub"), 0);
 	ASSERT_INT_EQ((int)dispatched, JOB_RUN);
+	ASSERT_BOOL_EQ(job_count() == counted + 2, true);
 	hasFixture = true;
 	fakeMatch = true;
 	seedFound = true;
 	(void)snprintf(text, sizeof text, "%s", build);
 	dllTest_execute(text);
 	ASSERT_INT_EQ(strncmp(job_takeResult(), "ok: ", 4), 0);
+	ASSERT_BOOL_EQ(job_count() == counted + 3, true);
 	ByteBuffer json = {0};
 	ASSERT_BOOL_EQ(files_read(output, &json), true);
 #ifdef __APPLE__
@@ -2141,15 +2157,522 @@ TEST(keeps_statistics_with_player_identity) {
 
 TEST(rejects_truncated_statistics_paths) {
 	wchar_t output[HARNESS_PATH_LENGTH];
-	ASSERT_BOOL_EQ(siblingPath(L"match.csv", L"-players.csv", output, HARNESS_PATH_LENGTH), true);
+	ASSERT_BOOL_EQ(
+		matchStats_siblingPath(L"match.csv", L"-players.csv", output, HARNESS_PATH_LENGTH), true
+	);
 	ASSERT_BOOL_EQ(wcscmp(output, L"match-players.csv") == 0, true);
 	wchar_t longPath[HARNESS_PATH_LENGTH];
 	wmemset(longPath, L'a', HARNESS_PATH_LENGTH - 1);
 	longPath[HARNESS_PATH_LENGTH - 1] = 0;
-	ASSERT_BOOL_EQ(siblingPath(longPath, L"-players.csv", output, HARNESS_PATH_LENGTH), false);
+	ASSERT_BOOL_EQ(
+		matchStats_siblingPath(longPath, L"-players.csv", output, HARNESS_PATH_LENGTH), false
+	);
 	longPath[300] = 0;
-	ASSERT_BOOL_EQ(siblingPath(longPath, L"-players.csv", output, HARNESS_PATH_LENGTH), true);
+	ASSERT_BOOL_EQ(
+		matchStats_siblingPath(longPath, L"-players.csv", output, HARNESS_PATH_LENGTH), true
+	);
 	ASSERT_BOOL_EQ(wcslen(output) == 312, true);
+}
+
+// What a synthetic player did in its match (see syntheticRole).
+typedef enum SyntheticRole {
+	ROLE_FULL,     // started and played the whole match
+	ROLE_OFF,      // started, substituted off
+	ROLE_INJURED,  // started, went off injured
+	ROLE_SENT_OFF, // started, sent off
+	ROLE_NEGATIVE, // started, with a negative rating
+	ROLE_STOPPAGE, // brought on at the end of the match: no whole minutes, but appeared
+	ROLE_SUB_ON,   // brought on for the player substituted off
+	ROLE_UNUSED,   // a substitute who did not come on
+	ROLE_ABSENT,   // a slot without a person (STATS_PERSON -1)
+} SyntheticRole;
+
+// A match whose players' statistics follow from its seed (dllTest_makeMatch): every kind of slot
+// matchStats tells apart, with values also in the statistics of players who did not appear.
+typedef struct SyntheticMatch {
+	_Alignas(void *) uint8_t match[MATCH_TEAM_AWAY + sizeof(void *)]; // first: the match's address
+	_Alignas(void *) uint8_t result[RESULT_MATCH_LENGTH + sizeof(uint16_t)];
+	_Alignas(void *) uint8_t teams[2][TEAM_PLAYER_COUNT + 1];
+	_Alignas(void *) uint8_t clubs[2][TEAM_UNIQUE_ID + sizeof(uint32_t)];
+	TestPlayer players[2][MATCH_STATS_MAX_PLAYERS];
+	uint32_t seed;
+} SyntheticMatch;
+
+static uint32_t syntheticMix(uint32_t seed, uint32_t a, uint32_t b) {
+	uint32_t x = seed * 0x9E3779B1U ^ a * 0x85EBCA77U ^ b * 0xC2B2AE3DU;
+	x ^= x >> 16;
+	x *= 0x7FEB352DU;
+	x ^= x >> 15;
+	x *= 0x846CA68BU;
+	return x ^ x >> 16;
+}
+
+// The home side has 9 or 10 players and the away side 5 or 6: starters first, then the
+// substitutes; the away side's last slot has no person for even seeds.
+static SyntheticRole syntheticRole(uint32_t seed, int side, int slot, int squad) {
+	static const SyntheticRole starters[] = {
+		ROLE_FULL, ROLE_OFF, ROLE_INJURED, ROLE_SENT_OFF, ROLE_NEGATIVE};
+	int fromEnd = squad - 1 - slot;
+	if (fromEnd == 0) {
+		return side && seed % 2 == 0 ? ROLE_ABSENT : ROLE_UNUSED;
+	}
+	if (fromEnd == 1) {
+		return ROLE_SUB_ON;
+	}
+	if (fromEnd == 2 && !side) {
+		return ROLE_STOPPAGE;
+	}
+	return slot < (int)(sizeof starters / sizeof starters[0]) ? starters[slot] : ROLE_FULL;
+}
+
+static void setSyntheticValues(uint8_t *stats, uint32_t seed, uint32_t player) {
+	for (uint32_t v = 0; v < MATCH_STATS_PLAYER_VALUES; ++v) {
+		const PlayerValue *value = &playerValues[v];
+		uint32_t mix = syntheticMix(seed, player, v);
+		float number = 0;
+		switch (value->kind) {
+			case VALUE_U8: {
+				bool many = v == V_PASSES_ATTEMPTED || v == V_PASSES_COMPLETED ||
+										v == V_PRESSURES_ATTEMPTED || v == V_POSSESSION_LOST;
+				stats[value->offset] = (uint8_t)(mix % (many ? 61 : 5));
+				continue;
+			}
+			case VALUE_F32: number = (float)(mix % 1000003) / 1300021.0F; break;
+			case VALUE_F32_THOUSANDTHS: number = 4000.0F + (float)(mix % 8000000) / 997.0F; break;
+		}
+		memcpy(stats + value->offset, &number, sizeof number);
+	}
+}
+
+static void setSyntheticPlayer(SyntheticMatch *synthetic, int side, int slot, int squad) {
+	uint32_t seed = synthetic->seed;
+	TestPlayer *player = &synthetic->players[side][slot];
+	uint32_t base = side ? 200000 : 100000;
+	uint32_t uniqueId = base + (uint32_t)(slot + (int)seed) % (uint32_t)squad;
+	if (!side && slot == squad - 1 && seed % 3 == 0) {
+		uniqueId = base + 50; // a player the other matches do not have
+	}
+	setPlayer(player, uniqueId, 0);
+	uint8_t *stats = player->stats;
+	uint32_t key = (uint32_t)(side * 64 + slot);
+	setSyntheticValues(stats, seed, key);
+	if (!side && slot == 0) {
+		memset(stats + playerValues[V_XG].offset, 0, sizeof(float));
+	}
+	uint32_t matchLength = 90 + seed % 4;
+	uint8_t offMinute = (uint8_t)(46 + syntheticMix(seed, (uint32_t)side, 900) % 40);
+	SyntheticRole role = syntheticRole(seed, side, slot, squad);
+	int32_t person = role == ROLE_ABSENT ? NO_PERSON : 1000 + slot;
+	uint32_t flags = syntheticMix(seed, key, 901) & 0x100;
+	int16_t rating = (int16_t)(600 + syntheticMix(seed, key, 902) % 300);
+	switch (role) {
+		case ROLE_FULL:
+		case ROLE_ABSENT: break;
+		case ROLE_OFF: stats[STATS_OFF_MINUTE] = offMinute; break;
+		case ROLE_INJURED: stats[STATS_OUT_MINUTE] = (uint8_t)(10 + seed % 30); break;
+		case ROLE_SENT_OFF: stats[STATS_SENT_OFF_MINUTE] = (uint8_t)(60 + seed % 25); break;
+		case ROLE_NEGATIVE: rating = (int16_t)(-5 - (int)(seed % 3) * 50); break;
+		case ROLE_STOPPAGE: stats[STATS_ON_MINUTE] = (uint8_t)matchLength; break;
+		case ROLE_SUB_ON: stats[STATS_ON_MINUTE] = offMinute; break;
+		case ROLE_UNUSED: break;
+	}
+	if (role >= ROLE_STOPPAGE) {
+		flags |= FLAG_SUBSTITUTE;
+	}
+	memcpy(stats + STATS_PERSON, &person, sizeof person);
+	memcpy(stats + STATS_FLAGS, &flags, sizeof flags);
+	memcpy(stats + STATS_RATING, &rating, sizeof rating);
+}
+
+uint8_t *dllTest_makeMatch(uint32_t seed) {
+	SyntheticMatch *synthetic = calloc(1, sizeof *synthetic);
+	if (!synthetic) {
+		return NULL;
+	}
+	synthetic->seed = seed;
+	uint16_t matchLength = (uint16_t)(90 + seed % 4);
+	memcpy(synthetic->result + RESULT_MATCH_LENGTH, &matchLength, sizeof matchLength);
+	setPointer(synthetic->match, MATCH_RESULT, synthetic->result);
+	for (int side = 0; side < 2; ++side) {
+		uint8_t *team = synthetic->teams[side];
+		int squad = (side ? 5 : 9) + (int)(seed % 2);
+		team[TEAM_PLAYER_COUNT] = (uint8_t)squad;
+		team[MATCH_TEAM_GOALS] = (uint8_t)(side ? seed / 4 % 3 : seed % 4);
+		uint32_t club = side ? 677 : 2000123;
+		memcpy(synthetic->clubs[side] + TEAM_UNIQUE_ID, &club, sizeof club);
+		setPointer(team, TEAM_DATABASE_TEAM, synthetic->clubs[side]);
+		for (int slot = 0; slot < squad; ++slot) {
+			setSyntheticPlayer(synthetic, side, slot, squad);
+			setPointer(
+				team, TEAM_PLAYERS + sizeof(void *) * (size_t)slot, synthetic->players[side][slot].object
+			);
+		}
+		setPointer(synthetic->match, side ? MATCH_TEAM_AWAY : MATCH_TEAM_HOME, team);
+	}
+	return synthetic->match;
+}
+
+void dllTest_matchScore(const uint8_t *match, uint32_t *seed, unsigned goals[2]) {
+	const SyntheticMatch *synthetic = (const SyntheticMatch *)(const void *)match;
+	*seed = synthetic->seed;
+	goals[0] = synthetic->teams[0][MATCH_TEAM_GOALS];
+	goals[1] = synthetic->teams[1][MATCH_TEAM_GOALS];
+}
+
+void dllTest_freeMatch(uint8_t *match) {
+	free(match);
+}
+
+bool dllTest_formatRows(uint32_t seed, uint64_t index, ByteBuffer *players, ByteBuffer *teams) {
+	uint8_t *match = dllTest_makeMatch(seed);
+	MatchStats *stats = malloc(sizeof *stats);
+	bool ok = match && stats;
+	if (ok) {
+		matchStats_read(match, stats);
+		ok = matchStats_formatRows(stats, index, seed, players, teams);
+	}
+	free(stats);
+	dllTest_freeMatch(match);
+	return ok;
+}
+
+// `path`'s contents as text, or "" if it cannot be read.
+static void readText(const wchar_t *path, ByteBuffer *out) {
+	if (!files_read(path, out)) {
+		buffer_free(out);
+	}
+}
+
+static void checkText(const char *name, const ByteBuffer *actual, const char *expected) {
+	bool same = strcmp(buffer_string(actual), expected) == 0;
+	ASSERT_BOOL_EQ(same, true);
+	if (!same) {
+		fprintf(stderr, "%s is:\n%s\n", name, buffer_string(actual));
+	}
+}
+
+static void checkDigest(const char *name, const ByteBuffer *actual, const char *expected) {
+	char hex[SHA256_HEX_LENGTH];
+	sha256_hexOf(actual->data, actual->length, hex);
+	bool same = strcmp(hex, expected) == 0;
+	ASSERT_BOOL_EQ(same, true);
+	if (!same) {
+		fprintf(stderr, "%s (SHA-256 %s) is:\n%s\n", name, hex, buffer_string(actual));
+	}
+}
+
+// The averages of --detailed, as they were written before the per-match rows were added.
+TEST(writes_the_detailed_averages_unchanged) {
+	static const uint32_t seeds[] = {41, 42, 43, 41};
+	MatchStatsTotals totals = {0};
+	bool ok = true;
+	for (size_t i = 0; ok && i < sizeof seeds / sizeof seeds[0]; ++i) {
+		uint8_t *match = dllTest_makeMatch(seeds[i]);
+		ok = match && matchStats_add(&totals, match);
+		dllTest_freeMatch(match);
+	}
+	wchar_t output[HARNESS_PATH_LENGTH];
+	wchar_t players[HARNESS_PATH_LENGTH];
+	wchar_t teams[HARNESS_PATH_LENGTH];
+	ok = ok && temporaryPath(L"detailed.csv", output, HARNESS_PATH_LENGTH) &&
+			 temporaryPath(L"detailed-players.csv", players, HARNESS_PATH_LENGTH) &&
+			 temporaryPath(L"detailed-teams.csv", teams, HARNESS_PATH_LENGTH);
+	ASSERT_BOOL_EQ(ok, true);
+	if (ok) {
+		ASSERT_BOOL_EQ(matchStats_write(&totals, output), true);
+		ByteBuffer playersText = {0};
+		ByteBuffer teamsText = {0};
+		readText(players, &playersText);
+		readText(teams, &teamsText);
+		checkDigest(
+			"detailed-players.csv",
+			&playersText,
+			"eabe90de2837f2febb38a73ee6775f56c1eb21223a46c273cfb869616eb35f42"
+		);
+		checkText(
+			"detailed-teams.csv",
+			&teamsText,
+			"side,team,matches,goals,possession,average_rating,xg,shots,shots_on_target,blocked_shots,"
+			"long_shots,clear_cut_chances,half_chances,corners,fouls,fouled,offsides,passes_attempted,"
+			"passes_completed,progressive_passes,crosses_attempted,crosses_completed,tackles_attempted,"
+			"tackles_won,headers_attempted,headers_won,interceptions,clearances,blocks,shots_blocked,"
+			"pressures_attempted,pressures_completed,yellow_cards,red_cards,saves,distance_km,key_passes,"
+			"dribbles,possession_won,possession_lost,high_intensity_sprints\n"
+			"home,\"team\",4,1.750,58.750,5.823,3.546,19.500,14.000,16.750,18.750,16.000,16.500,22.500,"
+			"16.750,17.000,20.250,243.250,266.500,16.750,21.250,16.250,17.000,16.750,13.750,18.500,"
+			"18.250,15.750,18.500,17.000,268.500,21.000,18.750,16.250,45.750,75.128,16.000,15.000,"
+			"22.500,294.250,13.500\n"
+			"away,\"team\",4,1.000,41.250,7.760,1.788,10.250,5.750,9.250,9.750,9.750,9.500,9.000,5.000,"
+			"9.250,12.000,137.000,147.250,9.250,10.500,12.000,11.250,9.750,12.750,8.000,7.500,7.500,"
+			"11.000,6.500,135.500,9.500,9.750,8.500,33.750,36.780,8.000,10.000,8.000,104.000,9.000\n"
+		);
+		buffer_free(&playersText);
+		buffer_free(&teamsText);
+		(void)platform_removeFile(players);
+		(void)platform_removeFile(teams);
+	}
+	matchStats_free(&totals);
+}
+
+// Seed 42's synthetic match: 9 home slots, 5 away (the last without a person), 92 minutes.
+TEST(reads_each_slots_part_in_the_match) {
+	uint8_t *match = dllTest_makeMatch(42);
+	MatchStats *stats = malloc(sizeof *stats);
+	ASSERT_BOOL_EQ(match && stats, true);
+	if (!match || !stats) {
+		dllTest_freeMatch(match);
+		free(stats);
+		return;
+	}
+	matchStats_read(match, stats);
+	ASSERT_INT_EQ(stats->matchLength, 92);
+	const MatchTeamStats *home = &stats->teams[0];
+	const MatchTeamStats *away = &stats->teams[1];
+	ASSERT_BOOL_EQ(home->squad == 9 && home->used == 8 && home->goals == 2, true);
+	ASSERT_BOOL_EQ(away->squad == 5 && away->used == 4 && away->goals == 1, true);
+	ASSERT_BOOL_EQ(home->teamUid == 2000123 && away->teamUid == 677, true);
+	int offMinute = 46 + (int)(syntheticMix(42, 0, 900) % 40);
+	static const struct {
+		int slot;
+		bool inSquad, started, appeared;
+		int minutes, on, off, injured, sentOff;
+	} expected[] = {
+		{0, true, true, true, 92, 0, 0, 0, 0},   // played the whole match
+		{1, true, true, true, -1, 0, -1, 0, 0},  // substituted off (at offMinute)
+		{2, true, true, true, 22, 0, 0, 22, 0},  // off injured
+		{3, true, true, true, 77, 0, 0, 0, 77},  // sent off
+		{4, true, true, true, 92, 0, 0, 0, 0},   // a negative rating
+		{6, true, false, true, 0, 92, 0, 0, 0},  // brought on as the match ended
+		{7, true, false, true, -2, -1, 0, 0, 0}, // brought on at offMinute
+		{8, true, false, false, 0, 0, 0, 0, 0},  // not brought on
+	};
+	for (size_t i = 0; i < sizeof expected / sizeof expected[0]; ++i) {
+		const MatchPlayerStats *player = &home->players[expected[i].slot];
+		int minutes = expected[i].minutes == -1   ? offMinute
+									: expected[i].minutes == -2 ? 92 - offMinute
+																							: expected[i].minutes;
+		ASSERT_INT_EQ(player->slot, expected[i].slot);
+		ASSERT_BOOL_EQ(player->inSquad, expected[i].inSquad);
+		ASSERT_BOOL_EQ(player->started, expected[i].started);
+		ASSERT_BOOL_EQ(player->appeared, expected[i].appeared);
+		ASSERT_INT_EQ(player->minutes, minutes);
+		ASSERT_INT_EQ(player->onMinute, expected[i].on == -1 ? offMinute : expected[i].on);
+		ASSERT_INT_EQ(player->offMinute, expected[i].off == -1 ? offMinute : expected[i].off);
+		ASSERT_INT_EQ(player->injuredMinute, expected[i].injured);
+		ASSERT_INT_EQ(player->sentOffMinute, expected[i].sentOff);
+		ASSERT_BOOL_EQ((player->flags & FLAG_SUBSTITUTE) != 0, !expected[i].started);
+	}
+	ASSERT_INT_EQ(home->players[4].rating, -5);
+	ASSERT_BOOL_EQ(home->players[0].uniqueId == 100006 && home->players[8].uniqueId == 100050, true);
+	const MatchPlayerStats *absent = &away->players[4];
+	ASSERT_BOOL_EQ(absent->inSquad || absent->started || absent->appeared, false);
+	ASSERT_INT_EQ(absent->minutes, 0);
+	// Values are kept raw: counts, xG as the engine's f32, the distance in metres.
+	ASSERT_BOOL_EQ(home->players[0].values[V_XG] == 0, true);
+	float xa = (float)(syntheticMix(42, 2, V_XA) % 1000003) / 1300021.0F;
+	float metres = 4000.0F + (float)(syntheticMix(42, 2, V_DISTANCE_KM) % 8000000) / 997.0F;
+	ASSERT_BOOL_EQ(home->players[2].values[V_XA] == xa, true);
+	ASSERT_BOOL_EQ(home->players[2].values[V_DISTANCE_KM] == metres, true);
+	ASSERT_INT_EQ(
+		(int)home->players[3].values[V_PASSES_COMPLETED],
+		(int)(syntheticMix(42, 3, V_PASSES_COMPLETED) % 61)
+	);
+	// Possession counts every listed player's completed passes.
+	unsigned passes[2] = {0, 0};
+	for (int side = 0; side < 2; ++side) {
+		for (int i = 0; i < stats->teams[side].squad; ++i) {
+			passes[side] += syntheticMix(42, (uint32_t)(side * 64 + i), V_PASSES_COMPLETED) % 61;
+		}
+	}
+	ASSERT_BOOL_EQ(
+		home->possession == floor(100.0 * passes[0] / (passes[0] + passes[1]) + 0.5), true
+	);
+	ASSERT_BOOL_EQ(home->possession + away->possession == 100, true);
+	dllTest_freeMatch(match);
+	free(stats);
+}
+
+// The `field`th comma-separated field of `line` (0-based), up to its comma or end of line.
+static const char *csvField(const char *line, int field, size_t *length) {
+	for (int i = 0; i < field && line; ++i) {
+		line = strchr(line, ',');
+		line = line ? line + 1 : NULL;
+	}
+	if (!line) {
+		*length = 0;
+		return "";
+	}
+	*length = strcspn(line, ",\n");
+	return line;
+}
+
+static int csvFieldCount(const char *line) {
+	int count = 1;
+	for (; *line && *line != '\n'; ++line) {
+		count += *line == ',';
+	}
+	return count;
+}
+
+static const char *nthLine(const char *text, int line) {
+	for (int i = 0; i < line && text; ++i) {
+		text = strchr(text, '\n');
+		text = text ? text + 1 : NULL;
+	}
+	return text ? text : "";
+}
+
+static bool lineIs(const char *text, int line, const char *expected) {
+	const char *start = nthLine(text, line);
+	size_t length = strcspn(start, "\n");
+	bool same = length == strlen(expected) && strncmp(start, expected, length) == 0;
+	if (!same) {
+		fprintf(stderr, "line %d is %.*s\n", line, (int)length, start);
+	}
+	return same;
+}
+
+TEST(formats_each_matchs_rows) {
+	uint8_t *match = dllTest_makeMatch(42);
+	MatchStats *stats = malloc(sizeof *stats);
+	ASSERT_BOOL_EQ(match && stats, true);
+	if (!match || !stats) {
+		dllTest_freeMatch(match);
+		free(stats);
+		return;
+	}
+	matchStats_read(match, stats);
+	ByteBuffer players = {0};
+	ByteBuffer teams = {0};
+	ASSERT_BOOL_EQ(matchStats_formatRows(stats, 37000, 4210832071U, &players, &teams), true);
+	const char *text = buffer_string(&players);
+	// A starter, the substitute brought on for player 1, the one not brought on, and an away slot
+	// without a person.
+	ASSERT_BOOL_EQ(
+		lineIs(
+			text,
+			0,
+			"37000,4210832071,home,2000123,0,100006,1,1,1,92,0,0,0,0,0,6.07,1,1,4,2,3,4,0,0.662852347,0,"
+			"0,1,"
+			"35,27,4,4,3,0,1,4,2,0,0,2,0,10,1,3,0,0,3,1,3,2,2,2,3,0,0,2,0,2,3,2,47,3,4.81573633"
+		),
+		true
+	);
+	ASSERT_BOOL_EQ(
+		lineIs(
+			text,
+			7,
+			"37000,4210832071,home,2000123,7,100004,1,0,1,42,50,0,0,0,288,6.04,4,4,0,4,1,2,0.448060453,"
+			"0.644812644,1,3,3,50,24,2,1,3,3,1,2,2,2,1,1,2,32,1,0,4,2,0,3,2,3,1,2,4,0,3,4,2,3,4,1,33,1,"
+			"11.0149395"
+		),
+		true
+	);
+	ASSERT_BOOL_EQ(
+		lineIs(
+			text,
+			8,
+			"37000,4210832071,home,2000123,8,100050,1,0,0,0,0,0,0,0,32,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,"
+			",,,,"
+			",,,,,,,,"
+		),
+		true
+	);
+	ASSERT_BOOL_EQ(
+		lineIs(
+			text,
+			13,
+			"37000,4210832071,away,677,4,200001,0,0,0,0,0,0,0,0,288,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,"
+			",,,,"
+			",,,,,"
+		),
+		true
+	);
+	for (int line = 0; line < 14; ++line) {
+		ASSERT_INT_EQ(csvFieldCount(nthLine(text, line)), 62);
+	}
+	ASSERT_BOOL_EQ(nthLine(text, 14)[0] == 0, true);
+	checkDigest(
+		"the match's player rows",
+		&players,
+		"90bf8f42b4fb2f3e7768907f7fb03681cb0882188eb43a3485c4558fa8ad8430"
+	);
+	checkText(
+		"the match's team rows",
+		&teams,
+		"37000,4210832071,home,2000123,9,8,2,60,5.51,2.80578923,16,14,14,23,10,11,20,15,15,22,230,206,"
+		"16,"
+		"17,17,9,15,13,14,14,11,22,16,219,14,19,10,37,75.5101562,8,9,18,255,18\n"
+		"37000,4210832071,away,677,5,4,1,40,8.32,1.13104556,10,8,10,12,10,5,9,7,4,6,131,118,9,7,11,8,"
+		"15,"
+		"6,7,4,6,8,3,118,10,9,9,32,30.4043066,10,8,7,85,7\n"
+	);
+	// Nine significant digits give back each player's f32 xG and distance.
+	for (int line = 0; line < 14; ++line) {
+		const char *row = nthLine(text, line);
+		size_t length = 0;
+		int side = strncmp(csvField(row, 2, &length), "away", 4) == 0;
+		int slot = atoi(csvField(row, 4, &length));
+		const MatchPlayerStats *player = &stats->teams[side].players[slot];
+		const char *xg = csvField(row, 16 + V_XG, &length);
+		ASSERT_BOOL_EQ(player->appeared ? length > 0 : length == 0, true);
+		if (player->appeared) {
+			ASSERT_BOOL_EQ(strtof(xg, NULL) == player->values[V_XG], true);
+			double km = strtod(csvField(row, 16 + V_DISTANCE_KM, &length), NULL);
+			ASSERT_BOOL_EQ((float)(km * 1000.0) == player->values[V_DISTANCE_KM], true);
+		}
+	}
+	buffer_free(&players);
+	buffer_free(&teams);
+	dllTest_freeMatch(match);
+	free(stats);
+}
+
+// Ratings are hundredths: each sign and size of them, written exactly.
+TEST(formats_ratings_and_values_exactly) {
+	static const struct {
+		long long hundredths;
+		const char *text;
+	} ratings[] = {{712, "7.12"},
+		{-5, "-0.05"},
+		{-105, "-1.05"},
+		{0, "0.00"},
+		{1000, "10.00"},
+		{-32768, "-327.68"}};
+	for (size_t i = 0; i < sizeof ratings / sizeof ratings[0]; ++i) {
+		Row row = {.length = 0};
+		putRating(&row, ratings[i].hundredths);
+		row.text[row.length] = 0;
+		ASSERT_INT_EQ(strcmp(row.text, ratings[i].text), 0);
+	}
+	Row row = {.length = 0};
+	putFloat(&row, -0.0);
+	putText(&row, ",");
+	putFloat(&row, 0.412337601F);
+	putText(&row, ",");
+	putUnsigned(&row, UINT64_MAX);
+	row.text[row.length] = 0;
+	ASSERT_INT_EQ(strcmp(row.text, "0,0.412337601,18446744073709551615"), 0);
+}
+
+// The headers name the columns the tables define, in their order.
+TEST(names_the_per_match_columns) {
+	char players[2048] =
+		"index,seed,side,team_uid,slot,person_uid,in_squad,started,appeared,minutes,on_minute,"
+		"off_minute,injured_minute,sent_off_minute,stats_flags,rating";
+	for (size_t v = 0; v < MATCH_STATS_PLAYER_VALUES; ++v) {
+		strcat(strcat(players, ","), playerValues[v].name);
+	}
+	strcat(players, "\n");
+	ASSERT_INT_EQ(strcmp(matchStats_playerRowsHeader, players), 0);
+	ASSERT_INT_EQ(csvFieldCount(matchStats_playerRowsHeader), 62);
+	char teams[2048] = "index,seed,side,team_uid,squad,used";
+	for (size_t v = 0; v < MATCH_STATS_TEAM_VALUES; ++v) {
+		strcat(strcat(teams, ","), teamValues[v].name);
+	}
+	strcat(teams, "\n");
+	ASSERT_INT_EQ(strcmp(matchStats_teamRowsHeader, teams), 0);
+	ASSERT_INT_EQ(csvFieldCount(matchStats_teamRowsHeader), 44);
 }
 
 TEST(labels_instruction_runs_in_order) {
@@ -2519,7 +3042,7 @@ void registerDllTests(void) {
 	);
 #endif
 	test_run(
-		"DLL refuses jobs but status while the game loads or processes",
+		"DLL refuses jobs but status while the game loads or processes, and counts all but status",
 		test_refuses_jobs_but_status_while_the_game_is_busy
 	);
 	test_run("DLL interns call chains without repeated text formatting", test_interns_numeric_paths);
@@ -2586,6 +3109,14 @@ void registerDllTests(void) {
 		test_keeps_statistics_with_player_identity
 	);
 	test_run("DLL rejects truncated detailed-report paths", test_rejects_truncated_statistics_paths);
+	test_run(
+		"DLL writes the detailed averages as before the per-match rows",
+		test_writes_the_detailed_averages_unchanged
+	);
+	test_run("DLL reads each slot's part in a match", test_reads_each_slots_part_in_the_match);
+	test_run("DLL formats each match's player and team rows", test_formats_each_matchs_rows);
+	test_run("DLL formats ratings and values exactly", test_formats_ratings_and_values_exactly);
+	test_run("DLL names the per-match columns as its tables do", test_names_the_per_match_columns);
 	test_run("DLL numbers instruction runs consistently", test_labels_instruction_runs_in_order);
 	test_run(
 		"DLL exports staff attributes as one named u8 each", test_labels_staff_attributes_byte_by_byte

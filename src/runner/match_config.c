@@ -29,6 +29,8 @@ typedef struct FieldState {
 	size_t valueLength;
 	size_t playerOffset;
 	size_t playerLength;
+	size_t nameOffset;
+	size_t nameLength;
 } FieldState;
 
 static bool
@@ -48,6 +50,10 @@ static bool readFields(Encoder *encoder);
 static bool readTopLevel(Encoder *encoder, bool *formatOk, bool *haveFields);
 static bool isKey(const ByteBuffer *key, const char *name);
 static bool readOriginText(JsonReader *reader, ByteBuffer *text, char *out, size_t size);
+static bool
+readHeaderMember(JsonReader *reader, const ByteBuffer *key, ByteBuffer *text, ConfigHeader *header);
+static bool readHeaderNumber(JsonReader *reader, uint32_t *out);
+static bool readHeaderTrue(JsonReader *reader, bool *out);
 
 static const char configFormat[] = "fm24-match-config/1";
 
@@ -79,30 +85,30 @@ bool matchConfig_visit(
 }
 
 bool matchConfig_readOrigin(const char *json, size_t length, ConfigOrigin *origin) {
+	ConfigHeader header;
+	bool ok = matchConfig_readHeader(json, length, &header);
+	*origin = header.origin;
+	return ok;
+}
+
+bool matchConfig_readHeader(const char *json, size_t length, ConfigHeader *header) {
 	JsonReader reader;
 	ByteBuffer key = {0};
 	ByteBuffer text = {0};
 	jsonReader_init(&reader, json, length);
-	*origin = (ConfigOrigin){0};
+	*header = (ConfigHeader){0};
 	bool ok = jsonReader_consume(&reader, '{');
 	if (ok && !jsonReader_consume(&reader, '}')) {
 		do {
-			ok = jsonReader_readString(&reader, &key) && jsonReader_consume(&reader, ':');
-			bool isSave = ok && isKey(&key, "save");
-			origin->hasSave = origin->hasSave || isSave;
-			if (isSave || (ok && isKey(&key, "game_date"))) {
-				ok = isSave ? readOriginText(&reader, &text, origin->save, sizeof origin->save)
-										: readOriginText(&reader, &text, origin->gameDate, sizeof origin->gameDate);
-			} else if (ok) {
-				ok = jsonReader_skipValue(&reader);
-			}
+			ok = jsonReader_readString(&reader, &key) && jsonReader_consume(&reader, ':') &&
+					 readHeaderMember(&reader, &key, &text, header);
 		} while (ok && jsonReader_consume(&reader, ','));
 		ok = ok && jsonReader_consume(&reader, '}');
 	}
 	buffer_free(&key);
 	buffer_free(&text);
 	if (!ok) {
-		*origin = (ConfigOrigin){0};
+		*header = (ConfigHeader){0};
 	}
 	return ok;
 }
@@ -250,15 +256,19 @@ static size_t skipSpace(Encoder *encoder) {
 	return (size_t)(reader->position - reader->begin);
 }
 
-// Reads the value of one member of a field object, recording the spans of the value and of a
-// "player" annotation.
+// Reads the value of one member of a field object, recording the spans of the value and of the
+// "name" and "player" annotations.
 static bool readMember(Encoder *encoder, const char *key, FieldState *field) {
 	size_t width = widthOf(key);
 	bool isValue =
 		width || strcmp(key, "u8map") == 0 || strcmp(key, "str") == 0 || strcmp(key, "hex") == 0;
 	if (!isValue) {
 		if (encoder->visitor && strcmp(key, "name") == 0) {
-			return readText(encoder, &encoder->name);
+			field->nameOffset = skipSpace(encoder);
+			bool ok = readText(encoder, &encoder->name);
+			field->nameLength =
+				(size_t)(encoder->reader.position - encoder->reader.begin) - field->nameOffset;
+			return ok;
 		}
 		if (encoder->visitor && strcmp(key, "player") == 0) {
 			field->playerOffset = skipSpace(encoder);
@@ -296,6 +306,7 @@ static bool readField(Encoder *encoder) {
 	size_t start = encoder->out->length;
 	buffer_clear(&encoder->name);
 	buffer_clear(&encoder->player);
+	size_t objectOffset = skipSpace(encoder);
 	bool ok = jsonReader_consume(reader, '{') || failField(encoder, "expected a field object");
 	if (ok && !jsonReader_consume(reader, '}')) {
 		do {
@@ -319,6 +330,10 @@ static bool readField(Encoder *encoder) {
 			.valueLength = field.valueLength,
 			.playerOffset = field.playerOffset,
 			.playerLength = field.playerLength,
+			.objectOffset = objectOffset,
+			.objectLength = (size_t)(reader->position - reader->begin) - objectOffset,
+			.nameOffset = field.nameOffset,
+			.nameLength = field.nameLength,
 		};
 		encoder->visitor->field(encoder->visitor->context, &value);
 	}
@@ -407,6 +422,72 @@ static bool readTopLevel(Encoder *encoder, bool *formatOk, bool *haveFields) {
 static bool isKey(const ByteBuffer *key, const char *name) {
 	size_t length = strlen(name);
 	return key->length == length && memcmp(key->data, name, length) == 0;
+}
+
+// One member of the top-level object, whose key has been read: a header key's value goes into
+// `header`, and anything else is skipped.
+static bool readHeaderMember(
+	JsonReader *reader,
+	const ByteBuffer *key,
+	ByteBuffer *text,
+	ConfigHeader *header
+) {
+	ConfigOrigin *origin = &header->origin;
+	const struct {
+		const char *name;
+		char *out;
+		size_t size;
+	} texts[] = {
+		{"format", header->format, sizeof header->format},
+		{"engine_version", header->engineVersion, sizeof header->engineVersion},
+		{"source", header->source, sizeof header->source},
+		{"save", origin->save, sizeof origin->save},
+		{"game_date", origin->gameDate, sizeof origin->gameDate},
+	};
+	origin->hasSave = origin->hasSave || isKey(key, "save");
+	for (size_t i = 0; i < sizeof texts / sizeof texts[0]; ++i) {
+		if (isKey(key, texts[i].name)) {
+			return readOriginText(reader, text, texts[i].out, texts[i].size);
+		}
+	}
+	if (isKey(key, "game_build")) {
+		return readHeaderNumber(reader, &header->gameBuild);
+	}
+	if (isKey(key, "home_team") || isKey(key, "away_team")) {
+		return readHeaderNumber(reader, &header->teams[isKey(key, "away_team")]);
+	}
+	if (isKey(key, "home_lineup") || isKey(key, "away_lineup")) {
+		return readHeaderTrue(reader, &origin->lineup[isKey(key, "away_lineup")]);
+	}
+	return jsonReader_skipValue(reader);
+}
+
+// A header marker: `out` is whether the value, which is skipped, is the literal true.
+static bool readHeaderTrue(JsonReader *reader, bool *out) {
+	const char *start = reader->position;
+	if (!jsonReader_skipValue(reader)) {
+		return false;
+	}
+	while (start < reader->position && *start && strchr(" \t\r\n", *start)) {
+		++start;
+	}
+	*out = reader->position - start == 4 && memcmp(start, "true", 4) == 0;
+	return true;
+}
+
+// A header number: an unsigned integer that fits is copied to `out` (else `out` is 0); any other
+// value is skipped.
+static bool readHeaderNumber(JsonReader *reader, uint32_t *out) {
+	*out = 0;
+	JsonReader ahead = *reader;
+	unsigned long long value = 0;
+	bool isUnsigned = false;
+	if (!jsonReader_readNumber(&ahead, &value, &isUnsigned)) {
+		return jsonReader_skipValue(reader);
+	}
+	*reader = ahead;
+	*out = isUnsigned && value <= UINT32_MAX ? (uint32_t)value : 0;
+	return true;
 }
 
 // An origin key's value: a string is copied to `out` if it fits without control characters (else

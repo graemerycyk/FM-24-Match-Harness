@@ -54,6 +54,12 @@ struct SimulationForm: Equatable {
 	/// "Skip rebuild", on by default: it plays any fixture, even one the game has moved on from.
 	var keepBuild = true
 
+	/// The run rebuilds the fixture for each seed: numeric seeds without Skip rebuild, which puts
+	/// FM24's own line-ups back.
+	var rebuilds: Bool {
+		!keepBuild && !seeds.isEmpty && seeds != "keep"
+	}
+
 	mutating func setThreads(_ text: String) {
 		threads = VenueForm.limited(text, to: SimulationForm.threadsLimit)
 	}
@@ -214,17 +220,17 @@ enum SimulationFiles {
 	/// (match_stats.h).
 	static let reportSuffixes = ["-players.csv", "-teams.csv"]
 
-	/// Whether the game plays an edited copy, as on Windows when the fixture has player edits or
-	/// stores a venue value (whose derived values are then recomputed); otherwise it plays the
-	/// fixture's own bytes.
-	static func playsEdits(_ edits: [UInt8]?, venue: [FixtureViewNumber]) -> Bool {
-		edits?.contains { $0 != 0 } == true || FixtureHandle.hasVenue(venue)
+	/// Whether the game plays an edited copy, as on Windows when the fixture has player edits (a
+	/// new order among them) or stores a venue value (whose derived values are then recomputed);
+	/// otherwise it plays the fixture's own bytes.
+	static func playsEdits(_ edits: PlayerChanges?, venue: [FixtureViewNumber]) -> Bool {
+		edits?.isEmpty == false || FixtureHandle.hasVenue(venue)
 	}
 
 	/// The extension of the copy the game plays: JSON for an edited copy, else the fixture's own.
 	static func inputExtension(
 		_ source: FixtureSource,
-		playerEdits edits: [UInt8]?,
+		changes edits: PlayerChanges?,
 		venue: [FixtureViewNumber]
 	) -> String {
 		playsEdits(edits, venue: venue) || source.kind == .json ? "json" : "bin"
@@ -234,16 +240,16 @@ enum SimulationFiles {
 	/// the fixture's own file.
 	static func writeInput(
 		_ source: FixtureSource,
-		playerEdits edits: [UInt8]?,
+		changes edits: PlayerChanges?,
 		venue: [FixtureViewNumber],
 		to url: URL
 	) throws {
 		let bytes: Data
 		if playsEdits(edits, venue: venue) {
-			let changed = edits?.contains { $0 != 0 } == true ? edits : nil
+			let changed = edits?.isEmpty == false ? edits : nil
 			bytes = try FixtureHandle.write(
 				json: source.json,
-				playerEdits: changed,
+				changes: changed,
 				venue: venue,
 				binary: false
 			)

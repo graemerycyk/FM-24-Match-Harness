@@ -124,6 +124,14 @@ uint32_t game_timestamp(void) {
 	return nt->FileHeader.TimeDateStamp;
 }
 
+const char *game_architecture(void) {
+	return "x86_64";
+}
+
+bool game_translated(void) {
+	return false;
+}
+
 void *game_address(uint32_t rva) {
 	for (size_t i = shiftCount; i-- > 0;) {
 		if (rva >= shifts[i].start) {

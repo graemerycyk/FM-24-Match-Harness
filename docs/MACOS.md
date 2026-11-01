@@ -161,9 +161,12 @@ before it starts the game. The running game keeps the harness it loaded
 until it restarts, and the next start loads the new one. If the new harness
 has the same protocol version
 (`HARNESS_PROTOCOL_TEXT` in `src/common/protocol.h`), commands use the
-loaded harness without saying so. Only a different protocol version is
-reported: commands then fail, saying that the game has another harness
-version loaded, until you quit the game and start it again.
+loaded harness without saying so, except `run --manifest`, which warns
+when the harness was built from another commit and records it
+(`harness_matches_fm24ctl`; see [Run manifests](CLI.md#run-manifests)).
+A different protocol version is always reported: commands then fail,
+saying that the game has another harness version loaded, until you quit
+the game and start it again.
 
 ## Working headless
 
@@ -211,6 +214,151 @@ stays open afterwards: quit it without saving (see
 [Loading a save](#loading-a-save)). The details are under
 [Commands that check the save](CLI.md#commands-that-check-the-save).
 
+## Running a batch unattended
+
+[`batch run`](CLI.md#run-a-batch-batch-run) keeps the Mac from sleeping on
+AC power while it runs (`caffeinate -m -s`), notices when it slept anyway,
+pauses on battery power, and starts the game again after a crash. For a
+batch of days ([BATCH.md](BATCH.md) has the rest):
+
+- **Power and the lid.** Keep the Mac on AC power with the lid open.
+  `caffeinate` holds sleep off only on AC power, and closing a MacBook's
+  lid sleeps it regardless, unless an external display and power are
+  connected. On battery power, `batch run` waits for AC power before the
+  next attempt (`pause_on_battery=1`), and the Mac may sleep meanwhile; it
+  goes on once it is awake on AC power again. With `pause_on_battery=0` it
+  plays on and holds idle sleep off on battery power too (`caffeinate -i`).
+- **A copy of the save.** First bring your career to **Go to Match** for
+  the fixture and save it there, before any harness work (step 4 of
+  [Setting up](#setting-up)), then quit FM24. Copy the save to a folder of
+  its own, outside FM24's folders, load the copy, export the fixtures from
+  it, and name the copy's file in the plan's `save=`:
+
+  ```sh
+  mkdir -p ~/fm24-sandbox fixtures
+  cp ~/Library/Application\ Support/Sports\ Interactive/Football\ Manager\ 2024/cloud/games/LIV.fm ~/fm24-sandbox/LIV_COPY.fm
+  ./fm24ctl launch --save ~/fm24-sandbox/LIV_COPY.fm
+  ./fm24ctl get-next-fixture fixtures/next.json --save LIV_COPY
+  ```
+
+  (Copy from `games` instead of `cloud/games` if your save is there.)
+
+  The batch then starts the game with that file, so it never loads your
+  own career, and Steam Cloud does not sync the copy. (`batch create`
+  requires the file's name to be the fixtures' save.) Do not press
+  **Continue** or save in a session with the copy loaded: FM24 would
+  autosave the copy with the harness's changes and a later date, which the
+  batch's later sessions would load. Quit FM24 without saving when the
+  batch is done.
+- **Steam's updates.** An update to FM24 stops a batch: its build is not
+  the one the batch pinned, and this harness supports only 24.4.2. In
+  FM24's Steam **Properties > Updates**, *Only update this game when I
+  launch it* keeps Steam from updating it in the background; the batch
+  starts the game through Steam after a crash, which can still update it
+  then.
+- **App Nap.** Whether macOS slows down FM24 while its window is hidden
+  has not been measured. To rule it out, you can turn App Nap off for the
+  game; `fm24ctl` does not do it for you:
+
+  ```sh
+  defaults write com.sigames.eur.FootballManager2024 NSAppSleepDisabled -bool YES
+  defaults delete com.sigames.eur.FootballManager2024 NSAppSleepDisabled   # to undo it
+  ```
+
+- **After a restart.** A restart or power cut stops `batch run`, and
+  running it again goes on. For that to happen by itself, log in
+  automatically (**System Settings > Users & Groups**; FileVault does not
+  allow it) and add a LaunchAgent that runs `batch run` each time you log
+  in. `fm24ctl` installs none; this one is an example to adapt, as
+  `~/Library/LaunchAgents/local.fm24ctl.batch.plist`:
+
+  ```xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0">
+  <dict>
+  	<key>Label</key>
+  	<string>local.fm24ctl.batch</string>
+  	<key>ProgramArguments</key>
+  	<array>
+  		<string>/Users/you/fm24/fm24ctl</string>
+  		<string>batch</string>
+  		<string>run</string>
+  		<string>/Users/you/fm24-batches/liv-ars</string>
+  	</array>
+  	<key>RunAtLoad</key>
+  	<true/>
+  	<key>StandardOutPath</key>
+  	<string>/Users/you/fm24-batches/liv-ars-run.log</string>
+  	<key>StandardErrorPath</key>
+  	<string>/Users/you/fm24-batches/liv-ars-run.log</string>
+  </dict>
+  </plist>
+  ```
+
+  ```sh
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.fm24ctl.batch.plist
+  ```
+
+  Once the batch is done, and before you delete its folder or `fm24ctl`,
+  unload the agent and delete its file: `bootout` alone unloads it only
+  until you next log in, and the agent would run `batch run` again at every
+  login:
+
+  ```sh
+  launchctl bootout gui/$(id -u)/local.fm24ctl.batch
+  rm ~/Library/LaunchAgents/local.fm24ctl.batch.plist
+  ```
+
+  Nothing deletes the agent's log, `~/fm24-batches/liv-ars-run.log` here:
+  delete it once you no longer need it.
+  [Files and removal](#files-and-removal) lists the batch's other files.
+
+  A complete batch's `batch run` exits at once, though it logs the run and,
+  with `notify=1`, says again that the batch is complete; it leaves FM24's
+  logs alone. While the agent's run holds the batch, another `batch run`
+  exits with `1`: run `batch status` instead, or `batch stop` to stop it.
+- **FM24's logs.** `batch run` empties FM24's current file-list error log
+  and deletes the older ones before its first chunk and after each one
+  (`trim_game_logs=1`; see [FM24's logs](CLI.md#fm24s-logs)), so they hold
+  about one chunk's worth (about 0.2 GB for a chunk of 1,000) rather than
+  growing by about 0.2 MB a match. After the first chunk, and again once
+  the batch has run for a day, check that `events.log` has a
+  `game_logs_trimmed` line after each `chunk_committed` and no
+  `game_logs_failed`, and that FM24's `Logs` folder holds one
+  `file llist errors_…` file, taking no more than about a chunk's worth
+  (`du -h` shows the space it takes). Note too whether `ls -l` gives it a
+  much larger size than `du -h` does: FM24 then writes at its old place in
+  the emptied log rather than at its end, which frees the space all the
+  same. Which of the two FM24 does has not been checked. A warning on
+  standard error, and `game_logs_failed`, say once a run what could not be
+  trimmed; the batch plays on, and what was not trimmed grows as before.
+- **Stopping it.** `./fm24ctl batch stop <dir>` stops `batch run` once the
+  chunk under way is committed (before the next begins if none is), and
+  `--now` once the matches under way have finished; Ctrl-C does the same in
+  its window. A stop never starts FM24 again: if FM24 exits or crashes once
+  a stop is asked, `batch run` stops too, and the next run starts FM24
+  (`launch=1`). While `batch run` waits behind another runner's job, for a
+  busy game or in a pause, any stop ends it within seconds. If a job has
+  hung (no progress for `hang_minutes`), any stop ends `batch run` within
+  five seconds of the hang being noted, and `--now` within about 30 seconds
+  of being asked if the job makes no progress. With the default
+  `kill_game=0` the job is then left running in FM24: `batch run` says so
+  with FM24's process ID, and notifies. The next `batch run` waits for an
+  attempt at a chunk left this way and keeps what it played; a warm-up or
+  canary keeps nothing, and the next run waits behind it as behind another
+  runner's job. Quitting FM24 ends either. Without a stop, `batch run`
+  watches a hung job until it ends, for up to `queue_wait_minutes` (six
+  hours by default) after the hang is noted, then stops with `1`, leaving
+  the job running. See [Stop a batch](CLI.md#stop-a-batch-batch-stop).
+- **Notifications** (`notify=1`) come from `osascript`, which macOS lists
+  as Script Editor in **System Settings > Notifications**. That has not
+  been checked with a batch's own notifications, which the tests record
+  rather than post (see [What has been checked](#what-has-been-checked)).
+  To do without them, put `notify=0` in a plan before `batch create`, as a
+  batch's plan cannot change afterwards, or turn Script Editor's
+  notifications off there, which also turns off those of other scripts.
+
 ## The fixture viewer
 
 FM24Viewer.app (FM24 Viewer), in the release beside `fm24ctl` and built by
@@ -235,9 +383,12 @@ values, and works as follows:
   `.bin` ones, which needs FM24 running and idle. Open one with
   `./fm24ctl next-fixture.json` (or `open -a ./FM24Viewer.app
   next-fixture.json`), by dropping it on the app or its window, with
-  **Open With** in Finder, or with **File > Open**. If opening a fixture
-  fails while none is on show, the window stays open, says why and offers
-  **Retry**.
+  **Open With** in Finder, or with **File > Open**. It refuses a fixture
+  whose player blocks were moved without being renamed, saying which block
+  is in which place: move players with `fm24ctl lineup` instead (see
+  [Changing the line-up](FIXTURE.md#changing-the-line-up)). If opening a
+  fixture fails while none is on show, the window stays open, says why and
+  offers **Retry**.
 - A fixture not yet saved shows "This fixture object is not saved. Click
   here to export it". The link, or **File > Export** (⌘E), writes it with
   its edits to `<home>-v-<away>-<time>.json` in the export folder, never
@@ -261,8 +412,8 @@ values, and works as follows:
 - Opening another fixture, closing the window or quitting with unsaved
   edits asks whether to discard them (**Cancel**, the default, or Escape
   keeps them), as does opening another fixture over one not yet saved.
-  While a question, panel or the swap prompt is open, nothing else can be
-  started.
+  While a question, panel, the swap prompt or the **Edit line-up** sheet is
+  open, nothing else can be started.
 - The blue pencil after each team's heading (or **Players > Replace Home
   Team…** and **Replace Away Team…**) opens a team picker, a popover under
   it, filled with the team's name. Type a team ID or club short name, or
@@ -278,12 +429,53 @@ values, and works as follows:
   game has listed its players with `fm24ctl list-players`; at least three
   letters, accents ignored, so "odegaard" finds Ødegaard) and pick them
   from the list, or type a unique ID. Tick **Allow duplicates?** to swap in
-  a player who is already in the fixture.
+  a player who is already in the fixture. A player already in the side's
+  squad, on a side whose line-up can be changed, is refused without asking
+  the game, with their place ("… is already in Liverpool's squad (Sub)"):
+  move them with **Edit line-up** instead.
+- **Edit line-up** (between the Max buttons and **Swap player**; also
+  **Players > Edit Home Line-up…** and **Edit Away Line-up…**, and **Edit
+  Line-up…** in the squad lists' context menu, which selects the player
+  clicked) changes a side's order as
+  [`fm24ctl lineup`](CLI.md#change-a-sides-line-up-lineup) does, offline.
+  Its sheet lists a row per place: the XI in its slots, with each slot's
+  position and role, then the substitutes (**Sub**, as many as the
+  formation's bench places) and the players after them (**Reserve**, whom no
+  match tested brought on), with each starter's rating for the slot's
+  position, a hint only. **Exchange with** puts the selected player in
+  another's place and that player in theirs; **Move Up** and **Move Down**
+  (⌥⌘↑ and ⌥⌘↓) exchange the selected player with the next row, and
+  dropping one row on another exchanges the two. Changed rows are bold, and
+  their tooltip names the player the fixture has there. Under the table, the
+  sheet shows what `lineup` would warn of (a goalkeeper outfield, an
+  outfield player in goal, no goalkeeper among the substitutes), and, while
+  the **Simulation** tab would rebuild each seed, that a rebuild does not
+  play the changes. **Reset** puts every player back in the fixture's
+  place; **Cancel** (Escape) closes the sheet; **Confirm** (Return) keeps
+  the new order as an unsaved player edit, which the squad lists show at
+  once, each place keeping its slot. The selection and the Max edits follow
+  the players. A save or export writes it as `lineup` does, renaming the
+  player blocks and adding the `home_lineup` or `away_lineup` marker; a
+  `.bin` save keeps the new order but not the marker, which binary data
+  has no place for (see
+  [`encode`](CLI.md#convert-json-to-binary-encode)). A side FM24's AI
+  manages cannot be changed: the button is off, and its tooltip says that
+  the AI picks the XI at kick-off.
 - A replacement or swap keeps your other edits (not those of the replaced
   side or player) and the venue values, and shows the result as a fixture
-  not yet saved, which you can export or save. Nothing else can be done to
-  the fixture while it runs. Saving a replaced team as `.bin` first warns
-  that binary fixtures do not keep the replacement (see
+  not yet saved, which you can export or save. The game's build lists the
+  players of the side that is not replaced in its own order: if you changed
+  that side's line-up (a new order not yet saved, or one the fixture has
+  from a save or `lineup`), each player goes back to their place, as
+  [`replace-home` and
+  `replace-away`](CLI.md#replace-a-team-replace-home-replace-away) put them
+  back in the file, and the log says so. A player the rebuilt side does not
+  have, such as one you swapped in, whose unique ID the rebuild writes back,
+  is named in the log with the player who takes that place. The replaced
+  side's new line-up is dropped. A swap after a new line-up puts the player
+  in the place the line-up gives the selected player. Nothing else can be
+  done to the fixture while it runs. Saving a replaced team as `.bin` first
+  warns that binary fixtures do not keep the replacement (see
   [`encode`](CLI.md#convert-json-to-binary-encode)). The team and player
   lists are fetched again after the game quits, since another save may
   have other ones.
@@ -300,6 +492,13 @@ values, and works as follows:
   export name. **Show in Finder** (or **Fixture > Show Results in
   Finder**) shows them. If the run fails part way, the results so far are
   saved; if it fails before any, earlier results stay.
+  With a changed line-up (a pending one, or a fixture whose header has the
+  marker), numeric seeds and **Skip rebuild** off, it first asks whether to
+  **Simulate Anyway**, as a rebuild puts FM24's own line-up back;
+  **Cancel**, the default, shows the **Simulation** tab instead. After a
+  `.bin` save it still asks until the file is opened again; opened again,
+  the `.bin` has no marker, so it does not ask, and each rebuilt seed
+  plays FM24's own line-up.
 - A fixture the harness exports records its save (`save` and `game_date`;
   see [Working headless](#working-headless)), which the summary shows as
   "Save: LIV_MAIN_FM24, 2024 day 123 15:00" and the viewer keeps in what it
@@ -409,11 +608,11 @@ any errors, which also go to standard error.
 
 ## Files and removal
 
-This section lists the files the harness, `fm24ctl` and FM24 Viewer put on
-your Mac, what they change elsewhere, and how to remove it all. Your saves
-are only read: the harness never writes them, and FM24 does only when you
-save or when **Continue** makes it autosave (see
-[Loading a save](#loading-a-save)).
+This section lists the files the harness, `fm24ctl`, its batches, the batch
+tools and FM24 Viewer put on your Mac, what they change elsewhere, and how
+to remove it all. Your saves are only read: the harness never writes them,
+and FM24 does only when you save or when **Continue** makes it autosave
+(see [Loading a save](#loading-a-save)).
 
 Most of the files are in two folders:
 
@@ -429,12 +628,12 @@ protocol version, which `./fm24ctl install` prints.
 
 | What | Where | Made by | Safe to delete? |
 |------|-------|---------|-----------------|
-| `fm24-harness-<version>.dylib`, the harness: one file for each version installed | The harness folder | `fm24ctl install` and `launch`, any command that finds no harness (also one the viewer runs, as when it opens without a fixture and exports the next one), and the viewer's **Install Harness…** and **Launch FM24…** | Older versions, with FM24 quit (see [Tidying up](#tidying-up)). The current one only as in [Removing the harness](#removing-the-harness) |
+| `fm24-harness-<version>.dylib`, the harness: one file for each version installed | The harness folder | `fm24ctl install` and `launch`, any command that finds no harness (also one the viewer runs, as when it opens without a fixture and exports the next one), `batch run` when it starts the game, and the viewer's **Install Harness…** and **Launch FM24…** | Older versions, with FM24 quit (see [Tidying up](#tidying-up)). The current one only as in [Removing the harness](#removing-the-harness) |
 | `launch-fm24.sh`, the launcher that Steam's launch option runs | The harness folder | As the harness, rewritten when its text changes | Only after clearing the launch option, as in [Removing the harness](#removing-the-harness) |
 | `harness.log`, one line per event, shared by every version and never trimmed | The harness folder | The harness, in the game, at each start | Yes, with FM24 quit |
 | `autoplay-request-<pid>.json`, `autoplay-<pid>.json`, `rosetta-request-<pid>` and `rosetta-<pid>`, the requests of `launch --save` and `--rosetta` | The harness folder | `fm24ctl` and the launcher | Yes, with FM24 and `fm24ctl` quit. They are normally gone once the game has started, and `install` and `launch` delete leftovers |
 | `fm24-harness-<version>.dylib.<pid>.tmp` or `launch-fm24.sh.<pid>.tmp`, left only if `fm24ctl` is stopped while it installs | The harness folder | `fm24ctl` | Yes, when no `fm24ctl` is running |
-| `fm24-harness-<version>.sock`, the harness's job socket | The temporary folder | The harness, at each start | Yes, with FM24 quit. The harness removes it when FM24 quits normally; after a crash it stays until the next start replaces it |
+| `fm24-harness-<version>.sock`, the harness's job socket | The temporary folder | The harness, at each start | Yes, with FM24 quit. The harness removes it when FM24 quits normally; after a crash or a force quit, as a batch's `kill_game=1` can do, it stays until the next start replaces it |
 | `fm24-harness-<version>.sock.lock`, an empty file, one for each version | The temporary folder | The harness, at each start | Yes, with FM24 quit. Nothing removes it |
 | `temp-fixture.json`, the next fixture exported by `./fm24ctl` with no arguments or by the viewer | The temporary folder | The game, for `fm24ctl` | Yes, when no export is running. The next export replaces it; nothing removes it |
 | `_job_input-<pid>-<n>.bin` and `.json`, a job's input or a fetched player | The temporary folder | `fm24ctl` (the game writes the `.json`) | Yes, when no `fm24ctl` is running. Left only if `fm24ctl` is stopped during its job, or stops waiting for it |
@@ -450,6 +649,28 @@ Fixtures, results, lists and profiles that you or the viewer write stay
 where you put them, and nothing removes them: commands run in the release
 folder or `bin/` write there unless you give another folder, and the viewer
 exports to `~/Documents/FM24 Match Harness` unless you chose another folder.
+
+### What runs and batches write
+
+`run`'s extra outputs, batches and the batch tools' outputs are yours too:
+nothing removes them. `<results>` below is `run`'s results path without
+`.csv`.
+
+| What | Where | Made by | Safe to delete? |
+|------|-------|---------|-----------------|
+| `<results>-match-players.csv` and `<results>-match-teams.csv` from `run --per-match`, and `<results>-failed.csv` from `--keep-going` ([Per-match rows](CLI.md#per-match-rows)) | Beside `run`'s results | The game, when the run starts | Yes, once the run has ended |
+| `<results>-manifest.json` from `run --manifest` ([Run manifests](CLI.md#run-manifests)), and `<results>-manifest.json.<pid>.tmp`, left only if `fm24ctl` is stopped while it writes the manifest | Beside `run`'s results | `fm24ctl`, as the run ends | Yes, once the run has ended |
+| A batch's folder: its frozen plan and inputs, its committed chunks, which hold the matches, its sessions, `events.log` and the rest ([The folder](CLI.md#the-folder)) | The folder you gave `batch create`, such as `~/fm24-batches/liv-ars` | `batch create` and `batch run`; the game writes the matches' rows | Only as a whole, once `batch run` has ended for it as in [Removing the harness](#removing-the-harness) and FM24 has quit. A job can go on writing there after `batch run` has ended: one a killed `batch run` left, or one that made no progress, which with the default `kill_game=0` `batch run` stops waiting for when asked to stop, or after `queue_wait_minutes` ([Stop a batch](CLI.md#stop-a-batch-batch-stop), [When things go wrong](CLI.md#when-things-go-wrong)). `batch run` needs the files inside it to go on. Its chunks are the batch's data, by an estimate about 1.5 GB per million matches of an arm ([BATCH.md](BATCH.md#from-a-plan-to-a-batch)), so merge or copy what you want first. A season batch also keeps each fixture's inputs, about 0.5 MB each with `compress=gzip` and 3 MB without (0.19 or 1.1 GB for 20 teams) ([Season runs](BATCH.md#time-and-space)) |
+| The LaunchAgent that runs a batch at each login, `local.fm24ctl.batch.plist`, and the log its plist names, such as `~/fm24-batches/liv-ars-run.log` | `~/Library/LaunchAgents/`, and the log where the plist says | You, from the example in [Running a batch unattended](#running-a-batch-unattended); `fm24ctl` installs none | Unload it first, then delete the plist and the log, as [Running a batch unattended](#running-a-batch-unattended) says |
+| `merge.py`'s files: `<arm>-results.csv.gz`, the arm's other merged files and `<arm>-merge.json`, and a `.tmp` file beside each while it is written, which a merge that fails part way leaves behind | `--out`'s folder, or `<name>-merged` (the plan's `name`) in the folder you ran `merge.py` from | `tools/batch/merge.py` | Yes, when `merge.py` is not running |
+| `summary.py --out`'s tables: `arms.csv`, `sessions.csv`, `chunks.csv`, `<arm>-players.csv` and `<arm>-teams.csv` | `--out`'s folder | `tools/batch/summary.py` | Yes |
+| `season.py`'s files: `standings.csv.gz`, `players.csv.gz`, `teams.csv`, `fixtures.csv`, `incomplete.csv`, `seasons.json` and with `--matches` `matches.csv.gz`, and a `.tmp` file beside each while they are written, which a run that fails part way leaves behind | `--out`'s folder, or `<name>-seasons` in the folder you ran `season.py` from | `tools/batch/season.py` | Yes, when `season.py` is not running |
+| `__pycache__`, Python's compiled copy of the tools' shared code | `tools/batch/` in the clone | Python, when you run `summary.py`, `merge.py` or `season.py` | Yes, any time. Deleting the clone deletes it |
+
+Run manifests and a batch's `plan.txt` and `batch.json` hold full paths,
+which include your account's name (`/Users/you`), and the manifests and
+`batch.json` also record your Mac's model, processor, memory and macOS
+version. Look at them before you share them.
 
 ### What it changes elsewhere
 
@@ -485,7 +706,36 @@ exports to `~/Documents/FM24 Match Harness` unless you chose another folder.
   `keep` and `--keep-build` do not rebuild. FM24 starts a new file in each
   session that builds a match. On the tested Mac, seven such sessions left
   578 MB in all, 461 MB of it from one afternoon of runs, and FM24 has not
-  deleted any of them.
+  deleted any of them. A batch rebuilds every index it plays, its warm-up
+  and canary seeds included, unless its plan has `keep_build=1`. At the rate
+  above, a million matches would add about 200 GB, over a hundred times the
+  batch's own files. So `batch run` trims them (`trim_game_logs=1`, the
+  default): before its first chunk and after each one, it empties the newest
+  log in place and deletes the older ones, in the `Logs` folder of the data
+  folder it looks the save up in, and touches nothing else there (see
+  [FM24's logs](CLI.md#fm24s-logs)). They then hold about one chunk's
+  matches, about 0.2 GB for a chunk of 1,000. That has run only on folders
+  of test files: `batch run` has not run with the game. `run`, the viewer
+  and a batch with `trim_game_logs=0` leave the logs to grow, and the
+  batch's free-space check (`min_free_gb`) does not count them, so delete
+  them as in [Tidying up](#tidying-up). Look at them after a one-chunk pilot
+  (see [BATCH.md](BATCH.md#from-a-plan-to-a-batch)).
+- **Settings you changed for a batch.**
+  [Running a batch unattended](#running-a-batch-unattended) suggests a
+  LaunchAgent, automatic login, App Nap off for FM24 and a Steam update
+  setting for it; `fm24ctl` makes none of these changes. Set back those
+  you made where that section makes them; it gives the commands to undo
+  the LaunchAgent and App Nap. While the LaunchAgent is loaded, macOS may
+  list it in **System Settings > General > Login Items & Extensions**,
+  which has not been checked.
+- **Notifications.** A batch with `notify=1` posts its notifications with
+  `osascript`, which macOS lists as Script Editor in **System Settings >
+  Notifications**; that has not been checked with a batch's own
+  notifications. [Running a batch unattended](#running-a-batch-unattended)
+  says how to turn them off.
+- **Keeping the Mac awake.** While `batch run` runs, it keeps the Mac from
+  sleeping with `caffeinate`, which stops when `batch run` exits. It
+  changes no power setting.
 - **Privacy permissions.** macOS may have asked whether Football Manager
   2024 may use a folder, when the game wrote a command's output in
   Desktop, Documents, Downloads or an external volume (it may be asked about
@@ -497,8 +747,8 @@ exports to `~/Documents/FM24 Match Harness` unless you chose another folder.
   Security > Files and Folders**.
 
 `fm24ctl`, the harness and the viewer add no login items, background
-services or system settings. The launcher sets the variables that load the
-harness only for the game's own process.
+services or system settings themselves. The launcher sets the variables
+that load the harness only for the game's own process.
 
 ### Tidying up
 
@@ -508,10 +758,16 @@ You can delete these and keep using the harness:
   harness folder other than the version `./fm24ctl install` prints, and
   their `.sock.lock` files in the temporary folder, with FM24 quit.
   `fm24ctl` never removes them, and the launcher loads only the current
-  version.
+  version. If you use builds of `fm24ctl` with different versions, such as
+  one with protocol 1.4.0, which has batches, and an earlier 1.3.0 one, the
+  launcher loads the version of whichever installed it last, so run
+  `./fm24ctl install` from the build you keep before you delete the
+  others' files.
 - `harness.log`, with FM24 quit. The next start begins a new one.
-- FM24's file-list error logs, with FM24 quit. Delete only those files, not
-  the rest of the folder. In FM24's usual data folder:
+- FM24's file-list error logs, with FM24 quit. A batch keeps them small
+  itself unless its plan has `trim_game_logs=0`; `run` and the viewer never
+  delete them. Delete only those files, not the rest of the folder. In
+  FM24's usual data folder:
 
   ```sh
   rm ~/Library/Application\ Support/Sports\ Interactive/Football\ Manager\ 2024/Logs/file\ llist\ errors_*.txt
@@ -519,19 +775,43 @@ You can delete these and keep using the harness:
 
   If Steam's launch option gives the game another data folder
   (`--user_data_location=<dir>`), FM24 may write them in `<dir>/Logs`
-  instead. That has not been checked, so look there too.
+  instead. That has not been checked, so look there too. During a long
+  batch with `trim_game_logs=0`, you can stop it with `batch stop`, quit
+  FM24 once `batch run` has stopped, delete them, and run the batch again,
+  which starts FM24 in a new session (with the default `launch=1`). Like
+  `batch run` itself, that has not been tried with the game.
 
 - Copies of saves you made for harness work, such as
   `~/fm24-sandbox/LIV_COPY.fm`, with FM24's `(v02)` and `(v03)` autosaves
-  beside them, once FM24 is closed. Keep your backup.
-- Outputs you no longer need, and `temp-fixture.json` in the temporary
-  folder.
+  beside them, once FM24 is closed and no batch needs them. Keep your
+  career's backup. The plan and fixtures you gave `batch create` can go
+  once it has run, as the batch keeps its own copies.
+- Outputs you no longer need, finished batches' folders once you have
+  merged or copied what you want and quit FM24 (see
+  [What runs and batches write](#what-runs-and-batches-write)), and
+  `temp-fixture.json` in the temporary folder.
 
 ### Removing the harness
 
-1. Quit FM24. If you used FM24 Viewer, clear its recent files with
+1. If you run batches, stop them first. While `batch run` runs a batch,
+   run `./fm24ctl batch stop <dir>` (`--now` stops it without waiting for
+   the chunk under way) and wait for `batch run` to exit, which takes at
+   most the rest of the chunk, or with `--now` the matches under way, and
+   only seconds once a job is noted as hung:
+   `./fm24ctl batch status <dir>` then says `state: stopped`, or
+   `state: complete` if `batch run` finished the batch's last chunk first.
+   It still says `running` if `batch run` was killed, or exited at a third
+   Ctrl-C, instead. If `batch run` left a job running in FM24 (its reason
+   in `batch status` says so, with FM24's process ID), quitting FM24 in
+   step 2 ends it. These two commands use only the batch's folder and never
+   start the game, and a stopped `batch run` does not start it again. If
+   you added the LaunchAgent, unload it and delete its file, as
+   [Running a batch unattended](#running-a-batch-unattended) says.
+   Otherwise it runs `batch run` at your next login, which for an
+   unfinished batch can start FM24 and install the harness again.
+2. Quit FM24. If you used FM24 Viewer, clear its recent files with
    **File > Open Recent > Clear Menu**, then quit it.
-2. Before deleting anything, clear Steam's launch option. In Steam, open
+3. Before deleting anything, clear Steam's launch option. In Steam, open
    **Football Manager 2024 > Properties > General > Launch Options** and
    delete `/bin/sh "…/launch-fm24.sh" %command%`, keeping any arguments of
    your own that came after it, or leave the field empty if there were
@@ -551,7 +831,7 @@ You can delete these and keep using the harness:
 
    It prints the settings file of each Steam account whose launch option
    still names the launcher, and nothing once none does. Do not go on to
-   step 3 until it prints nothing. If it prints a file, edit that file with
+   step 4 until it prints nothing. If it prints a file, edit that file with
    Steam still quit: in the game's block (`"2252570"` under `"apps"`),
    delete `/bin/sh \"…/launch-fm24.sh\" %command%` from the
    `"LaunchOptions"` line, keeping any arguments of your own, or delete the
@@ -564,7 +844,7 @@ You can delete these and keep using the harness:
    `install`, and any other `fm24ctl` command that finds no harness,
    installs the harness again, and the viewer runs one to export the next
    fixture when it opens without a fixture.
-3. Delete the harness folder. This deletes everything in it, so first move
+4. Delete the harness folder. This deletes everything in it, so first move
    out anything of your own that you keep there, such as a copy of
    `localconfig.vdf`:
 
@@ -572,7 +852,7 @@ You can delete these and keep using the harness:
    rm -rf ~/Library/Application\ Support/fm24-harness
    ```
 
-4. Delete the harness's files in your temporary folder. With `-print` in
+5. Delete the harness's files in your temporary folder. With `-print` in
    place of `-exec rm -rf {} +`, the command lists them instead:
 
    ```sh
@@ -585,19 +865,24 @@ You can delete these and keep using the harness:
    This leaves the compiler's empty folders. On the tested Mac, the
    temporary folder held nothing from before the Mac last restarted, so a
    restart seems to clear them.
-5. If you used FM24 Viewer, delete its settings and caches:
+6. If you used FM24 Viewer, delete its settings and caches:
 
    ```sh
    defaults delete io.github.graemerycyk.fm24-match-harness.viewer
    rm -rf "$(getconf DARWIN_USER_CACHE_DIR)io.github.graemerycyk.fm24-match-harness.viewer"
    ```
 
-6. Move anything you want to keep out of the release folder, or `bin/`,
-   then delete that folder or the clone, for example with
+7. Move anything you want to keep out of the release folder, or `bin/`,
+   such as `merge.py`'s `<name>-merged` folder if you ran it there, then
+   delete that folder or the clone, for example with
    `rm -rf ~/FM24-Harness-macOS-<version>` or `rm -rf ~/FM-24-Match-Harness`.
-7. If you like, delete your save copies, outputs and FM24's file-list error
-   logs (see [Tidying up](#tidying-up)), and turn off the privacy
-   permissions listed under
+8. If you like, delete your save copies, outputs, batches' folders, the
+   LaunchAgent's log and the batch tools' outputs (see
+   [What runs and batches write](#what-runs-and-batches-write)) and FM24's
+   file-list error logs (see [Tidying up](#tidying-up)). Set back the
+   settings you changed for a batch, and turn off the privacy permissions
+   you allowed (and Script Editor's notifications, if only batches used
+   them), as listed under
    [What it changes elsewhere](#what-it-changes-elsewhere).
 
 Removal leaves your saves and your career's backup, FM24's own settings
@@ -823,6 +1108,34 @@ All checks ran on one Apple silicon Mac, an M1 with macOS 27, with FM24
   both has not been checked on this slice. Per-seed rebuilds, team
   replacement, the player commands, `decode` and everything added in
   protocol 1.3.0 have not run on it.
+- Protocol 1.4.0's per-match rows, skipped seeds, stop file and report
+  (see [Per-match rows and run reports](TECHNICAL.md#per-match-rows-and-run-reports-protocol-140))
+  have been checked only with synthetic matches, not yet in the game.
+  So have `run --manifest` (with a stand-in for the client), the watched
+  client (against a scripted harness on a test socket) and the reading of
+  a process's memory (on test processes, not the game).
+- `batch run` has not run with the game. It has run only against a fake
+  game and against a stand-in harness on a test socket: its sessions,
+  warm-up, canary and lookups, the watchdog, each case of
+  [When things go wrong](CLI.md#when-things-go-wrong), and committing
+  chunks with gzip. `caffeinate`, `pmset` and the notifications'
+  `osascript` were recorded rather than run, and quitting the game
+  (`kill_game=1`) ran against a stand-in for its process. Trimming FM24's
+  file-list error logs ran only on folders of test files in test home
+  folders, never on FM24's own `Logs` folder or with the game: whether FM24
+  appends to an emptied log or writes at its old place in it, and whether
+  it goes on logging into it at all, is not known. On APFS, a 64 MB test
+  file emptied while another process held it open took 4 KB once that
+  process wrote at its old place, though its size still read 64 MB.
+- Season batches (`mode=season`) have not run with the game either, only
+  against the fake game and the stand-in harness, which answer replacement
+  jobs as the harness would; `season.py` has run only on folders of
+  synthetic rows. Not known yet: how long a replacement takes; whether the
+  replacements' replies say `0 edits kept` and their fixtures rebuild to
+  themselves, the base's away team's home fixtures (built as a team against
+  itself) above all; whether a club built into your managed club's slot of
+  the base gets the same line-up, tactic and AI flags as in the other slot;
+  and the job overhead of chunks of 100 seasons.
 - Not checked yet: Intel Macs and older macOS versions; the direct start,
   with or without `--save`; saving manually in a session started by
   `launch --save`; the harness refusing an unsupported build when the game
@@ -901,8 +1214,16 @@ All checks ran on one Apple silicon Mac, an M1 with macOS 27, with FM24
   the sheet's warning, with its own **Install Harness…**, then also say;
   and a seed pattern `fm24ctl` refuses, whose reason the error box shows.
   The offscreen renders of both sheets predate those launch-option texts
-  and buttons, which no render shows. Its menus, panels, alerts, popover,
-  sheets, Dock badge, drag and drop and keyboard use have not been tried
+  and buttons, which no render shows. **Edit line-up**, on the arm64 slice
+  only so far: its model (the rows, exchanges, moves, drops, **Reset**,
+  warnings, **Confirm** and **Cancel**), saves and exports writing what
+  `lineup` writes with the selection and Max edits following the players,
+  a `.bin` save, the question before a rebuild and **Run Anyway** after
+  it, swaps given the new place, the own-squad refusal, the replaced
+  side's order dropped and the other side's kept, for a home and for an
+  away line-up, against the stand-in; its sheet has not been
+  rendered or used. Its menus, panels, alerts, popover, sheets, Dock
+  badge, drag and drop and keyboard use have not been tried
   systematically by hand. What it has done with the game is listed next.
 - The fixture viewer with the game, by hand on the arm64 slice with
   protocol 1.3.0: the export at startup; replacing the home team and then
@@ -945,6 +1266,10 @@ All checks ran on one Apple silicon Mac, an M1 with macOS 27, with FM24
   - the window itself: its menus, the Open and Save panels, the popover,
     sheets and alerts, Open Recent, drag and drop, **Open With**, and
     keyboard use, with and without Full Keyboard Access;
+  - **Edit line-up**: the sheet, its menu items and shortcuts, dropping
+    rows, and a simulation of a changed line-up with **Skip rebuild**,
+    which should give the results `fm24ctl lineup`'s file gives with
+    `--keep-build`;
   - macOS 13 and 14.
 
 ## Known limits
@@ -989,8 +1314,14 @@ All checks ran on one Apple silicon Mac, an M1 with macOS 27, with FM24
   folder it keeps the app `fm24ctl` runs in (such as Terminal) out of may
   still be open to the game, so for a folder that macOS reports as closed
   to `fm24ctl` ("operation not permitted"), `fm24ctl` refuses only the
-  outputs it opens itself, `run`'s results, which it reads back, and
-  `inject-player`'s output, and leaves the others to the game. Which error
+  outputs it opens itself, `run`'s results, which it reads back, its
+  manifest, the outputs of `inject-player` and `lineup`, and that of
+  `replace-home` or `replace-away` when it keeps the other side's changed
+  line-up, and leaves the others to the game.
+  `run`'s manifest replaces an earlier one with a new file, so it needs
+  you to be allowed to add files to its folder even if it exists, and a
+  folder that is not append-only (`chflags uappnd`), which takes the new
+  file but not the rename over the old one. Which error
   macOS gives `fm24ctl` for such a folder, and whether checking it makes
   macOS ask about the app `fm24ctl` runs in, has not been checked: if the
   check passes there, `run` plays the matches and then cannot read its

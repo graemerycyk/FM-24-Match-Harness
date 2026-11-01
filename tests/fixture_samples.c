@@ -405,6 +405,243 @@ bool fixtureSamples_familiarity(ByteBuffer *json) {
 	return ok;
 }
 
+// The lineup sample's squads: each player's note, unique ID and pos_gk.
+static const struct {
+	const char *name;
+	unsigned id;
+	unsigned goalkeeper;
+} lineupPlayers[2][22] = {
+	{
+		{"Alisson Becker", 19058734, 20},
+		{"Conor Bradley", 28127166, 1},
+		{"Virgil van Dijk", 37036372, 1},
+		{"Ibrahima Konate", 85028014, 1},
+		{"Andrew Robertson", 28044813, 1},
+		{"Wataru Endo", 29056345, 1},
+		{"Alexis Mac Allister", 43219372, 1},
+		{"Dominik Szoboszlai", 67236018, 1},
+		{"Mohamed Salah", 98028753, 1},
+		{"Cody Gakpo", 37060815, 1},
+		{"Ryan Gravenberch", 37071197, 1},
+		{"Caoimhin Kelleher", 28104130, 20},
+		{"Joe Gomez", 28076016, 1},
+		{"Trent Alexander-Arnold", 28104124, 1},
+		{"Lewis Jones", 28100917, 1},
+		{"Harvey Elliott", 29233143, 1},
+		{"Jarell Quansah", 2000049283, 1},
+		{"Curtis Jones", 28115788, 1},
+		{"Luis D\\u00edaz", 76049803, 1},
+		{"Florian Wirtz", 91193048, 1},
+		{"Ben Doak", 2000164850, 1},
+		{"Erling Haaland", 29179241, 1},
+	},
+	{
+		{"Nick Pope", 29083750, 20},
+		{"Kieran Trippier", 28018613, 1},
+		{"Sven Botman", 37063649, 1},
+		{"Dan Burn", 28057781, 1},
+		{"Tino Livramento", 28124569, 1},
+		{"Bruno Guimaraes", 19297055, 1},
+		{"Sandro Tonali", 43298481, 1},
+		{"Joelinton", 19184436, 1},
+		{"Anthony Gordon", 28116386, 1},
+		{"Alexander Isak", 93070286, 1},
+		{"Harvey Barnes", 28100207, 1},
+		{"Martin Dubravka", 3020153, 20},
+		{"Lewis Miley", 2000189871, 1},
+	},
+};
+static const unsigned lineupCounts[2] = {22, 13};
+
+unsigned fixtureSamples_lineupId(unsigned side, unsigned place) {
+	return side < 2 && place < lineupCounts[side] ? lineupPlayers[side][place].id : 0;
+}
+
+// A side's manager and tactic: its flags, part_4240, plan[0]'s slots with one role's instructions
+// each (the u8 after bits[1] is the marked opponent's place) and formation[0..25].
+static bool appendLineupTactic(ByteBuffer *out, unsigned side) {
+	static const unsigned positions[11] = {
+		1, 4, 2097168, 1048592, 8, 2097280, 1048704, 2048, 8192, 4096, 16384};
+	static const char *const roles[11] = {
+		"goalkeeper",
+		"full_back",
+		"central_defender",
+		"central_defender",
+		"full_back",
+		"defensive_midfielder",
+		"central_midfielder",
+		"winger",
+		"attacking_midfielder",
+		"winger",
+		"advanced_forward",
+	};
+	static const unsigned bench[9] = {1, 28, 1792, 114688, 1792, 28, 114688, 1792, 114688};
+	const char *name = side ? "away" : "home";
+	bool ok = fixtureSamples_append(
+		out,
+		",\n    {\"name\": \"%s.team\", \"u8\": 2},\n    {\"str\": \"%s\"},"
+		"\n    {\"name\": \"%s.manager\", \"u32\": %u},"
+		"\n    {\"name\": \"%s.manager.tactic.part_4240\", \"u16\": 3},\n    {\"u32\": 26}",
+		name,
+		side ? "Newcastle" : "Liverpool",
+		name,
+		side ? 0x34000U : 0x20308U,
+		name
+	);
+	for (unsigned record = 0; ok && record < 26; ++record) {
+		ok = fixtureSamples_append(
+			out,
+			",\n    {\"u32\": 0},\n    {\"u32\": 0},\n    {\"u32\": 0},\n    {\"u32\": 0},"
+			"\n    {\"u8\": 0},\n    {\"u8\": 0},\n    {\"u8\": 0},\n    {\"u8\": 0},\n    {\"u8\": 0},"
+			"\n    {\"u8\": 1}"
+		);
+	}
+	ok = ok && fixtureSamples_append(
+							 out,
+							 ",\n    {\"name\": \"%s.manager.tactic.plan[0]\", \"u8\": 34},"
+							 "\n    {\"str\": \"4-2-3-1 Wide\"},"
+							 "\n    {\"name\": \"%s.manager.tactic.plan[0].mentality\", \"u8\": 3}",
+							 name,
+							 name
+						 );
+	for (unsigned slot = 0; ok && slot < 11; ++slot) {
+		bool marking = side == 1 && slot == 9;
+		ok = fixtureSamples_append(
+			out,
+			",\n    {\"name\": \"%s.manager.tactic.plan[0].slot[%u].position\", \"u32\": %u},"
+			"\n    {\"name\": \"%s.manager.tactic.plan[0].slot[%u].role\", \"u64\": %u},"
+			"\n    {\"name\": \"%s.manager.tactic.plan[0].slot[%u].player_instructions[%s]\","
+			" \"u64\": %u},",
+			name,
+			slot,
+			positions[slot],
+			name,
+			slot,
+			1U << slot,
+			name,
+			slot,
+			roles[slot],
+			1U << slot
+		);
+		ok = ok && fixtureSamples_append(
+								 out,
+								 "\n    {\"name\": \"%s.manager.tactic.plan[0].slot[%u].player_instructions[%s]"
+								 ".bits[0]\", \"flags\": [], \"u32\": 0},"
+								 "\n    {\"name\": \"%s.manager.tactic.plan[0].slot[%u].player_instructions[%s]"
+								 ".bits[1]\", \"flags\": [%s], \"u32\": %u},"
+								 "\n    {\"u8\": %u},\n    {\"u32\": 0}",
+								 name,
+								 slot,
+								 roles[slot],
+								 name,
+								 slot,
+								 roles[slot],
+								 marking ? "\"mark a specific player\"" : "",
+								 marking ? 4U : 0U,
+								 marking ? 19U : 255U
+							 );
+	}
+	for (unsigned k = 0; ok && k < 26; ++k) {
+		unsigned position = k < 11 ? positions[k] : k - 11 < (side ? 2U : 9U) ? bench[k - 11] : 0;
+		ok = fixtureSamples_append(
+			out,
+			",\n    {\"name\": \"%s.manager.tactic.formation[%u]\", \"u8\": 2},\n    {\"u32\": %u}",
+			name,
+			k,
+			position
+		);
+	}
+	return ok;
+}
+
+// One player block: the serialiser's 15 header fields, ratings, the named wellbeing values, the
+// squad number, the unique ID and its unnamed copy, and 0-3 more fields by place.
+static bool appendLineupPlayer(ByteBuffer *out, unsigned side, unsigned place) {
+	static const char *const positions[15] = {
+		"gk", "sw", "dl", "dc", "dr", "dm", "ml", "mc", "mr", "aml", "amc", "amr", "st", "wbl", "wbr"};
+	const char *name = side ? "away" : "home";
+	unsigned goalkeeper = lineupPlayers[side][place].goalkeeper;
+	bool ok = fixtureSamples_append(
+		out,
+		",\n    {\"name\": \"%s.player[%u]\", \"player\": \"%s\", \"u8\": 255},"
+		"\n    {\"u16\": 0},\n    {\"u8\": 0},\n    {\"u8\": 0},\n    {\"u16\": 58},\n    {\"u8\": 2},"
+		"\n    {\"u32\": 0},\n    {\"u64\": 0},\n    {\"u8\": 1},\n    {\"u8\": 1},\n    {\"u32\": 0},"
+		"\n    {\"u32\": 0},\n    {\"u8\": 255},\n    {\"u8\": 0},\n    {\"u8\": 1},"
+		"\n    {\"name\": \"%s.player[%u].ratings\", \"u8map\": {",
+		name,
+		place,
+		lineupPlayers[side][place].name,
+		name,
+		place
+	);
+	for (unsigned i = 0; ok && i < 15; ++i) {
+		unsigned rating = i == 0 ? goalkeeper : goalkeeper > 1 ? 1 : 1 + (place + 3 * i) % 20;
+		ok = fixtureSamples_append(out, "%s\"pos_%s\": %u", i ? ", " : "", positions[i], rating);
+	}
+	for (unsigned i = 0; ok && i < 54; ++i) {
+		ok = fixtureSamples_append(out, ", \"a%u\": %u", i, 20 + (place * 7 + i) % 80);
+	}
+	ok = ok && fixtureSamples_append(
+							 out,
+							 "}},\n    {\"name\": \"%s.player[%u].condition\", \"u16\": %u},"
+							 "\n    {\"name\": \"%s.player[%u].sharpness[0]\", \"u16\": 9500},"
+							 "\n    {\"name\": \"%s.player[%u].sharpness[1]\", \"u16\": 9500},"
+							 "\n    {\"name\": \"%s.player[%u].fatigue\", \"u16\": 65469},"
+							 "\n    {\"name\": \"%s.player[%u].morale\", \"u8\": 9}",
+							 name,
+							 place,
+							 9000 + place,
+							 name,
+							 place,
+							 name,
+							 place,
+							 name,
+							 place,
+							 name,
+							 place
+						 );
+	ok = ok && fixtureSamples_append(
+							 out,
+							 ",\n    {\"name\": \"%s.player[%u].squad_number\", \"u8\": %u},"
+							 "\n    {\"name\": \"%s.player[%u].person_uid\", \"u32\": %u}",
+							 name,
+							 place,
+							 place + 1,
+							 name,
+							 place,
+							 lineupPlayers[side][place].id
+						 );
+	for (unsigned i = 0; ok && i < place % 4; ++i) {
+		ok = fixtureSamples_append(out, ",\n    {\"u8\": %u}", place * 10 + i);
+	}
+	return ok && fixtureSamples_append(
+								 out, ",\n    {\"u32\": %u},\n    {\"u8\": 7}", lineupPlayers[side][place].id
+							 );
+}
+
+bool fixtureSamples_lineup(ByteBuffer *out) {
+	bool ok = fixtureSamples_append(
+		out,
+		"{\n  \"format\": \"fm24-match-config/1\",\n  \"game_build\": 2081827,"
+		"\n  \"source\": \"Liverpool vs Newcastle, 2026 day 25 15:00, seed 42\","
+		"\n  \"fields\": [\n    {\"name\": \"fixture\", \"u8\": 24},\n    {\"str\": \"Premier League\"}"
+	);
+	for (unsigned side = 0; ok && side < 2; ++side) {
+		const char *name = side ? "away" : "home";
+		ok = appendLineupTactic(out, side) &&
+				 fixtureSamples_append(
+					 out, ",\n    {\"name\": \"%s.player_count\", \"u8\": %u}", name, lineupCounts[side]
+				 );
+		for (unsigned place = 0; ok && place < lineupCounts[side]; ++place) {
+			ok = appendLineupPlayer(out, side, place);
+		}
+		ok = ok && fixtureSamples_append(
+								 out, ",\n    {\"name\": \"%s.has_team_extra\", \"u8\": 0},\n    {\"u8\": 9}", name
+							 );
+	}
+	return ok && fixtureSamples_append(out, "\n  ]\n}\n");
+}
+
 char *fixtureSamples_json(int sample, size_t *length) {
 	ByteBuffer json = {0};
 	bool ok = false;
@@ -422,6 +659,7 @@ char *fixtureSamples_json(int sample, size_t *length) {
 			break;
 		case FIXTURE_SAMPLE_VENUE: ok = fixtureSamples_venue(&json); break;
 		case FIXTURE_SAMPLE_FAMILIARITY: ok = fixtureSamples_familiarity(&json); break;
+		case FIXTURE_SAMPLE_LINEUP: ok = fixtureSamples_lineup(&json); break;
 		default: break;
 	}
 	if (!ok) {

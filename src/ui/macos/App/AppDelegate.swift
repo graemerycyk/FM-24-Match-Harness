@@ -34,8 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 	)
 	private var window: NSWindow?
 	private var logWindow: NSWindow?
-	/// The sheet of the viewer's own that is open: the swap prompt, or the Launch FM24 or Install
-	/// Harness sheet (one at a time, as each opens only while no other waits for the user).
+	/// The sheet of the viewer's own that is open: the swap prompt, or the Edit line-up, Launch FM24
+	/// or Install Harness sheet (one at a time, as each opens only while no other waits for the
+	/// user).
 	private var sheet: (kind: SheetKind, window: NSWindow)?
 	private var watchers: Set<AnyCancellable> = []
 	/// A file came with the launch, so the command line's is not opened again.
@@ -216,6 +217,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 		model.requestSwap(side: sender.tag)
 	}
 
+	@objc func editLineup(_ sender: NSMenuItem) {
+		model.editLineup(side: sender.tag)
+	}
+
 	@objc func replaceTeam(_ sender: NSMenuItem) {
 		model.editTeam(side: sender.tag)
 	}
@@ -236,13 +241,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 		NSDocumentController.shared.clearRecentDocuments(sender)
 	}
 
-	/// The commands that start or change something, which wait while a question, panel or the swap
-	/// prompt is open, as Windows' modal dialogs make them.
+	/// The commands that start or change something, which wait while a question, panel, the swap
+	/// prompt or a sheet is open, as Windows' modal dialogs make them.
 	private static let starters: Set<Selector> = [
 		#selector(openFixture(_:)), #selector(openRecent(_:)), #selector(saveFixture(_:)),
 		#selector(exportFixture(_:)), #selector(chooseExportFolder(_:)), #selector(simulate(_:)),
-		#selector(maxPlayers(_:)), #selector(swapPlayer(_:)), #selector(replaceTeam(_:)),
-		#selector(launchGame(_:)), #selector(installHarness(_:)),
+		#selector(maxPlayers(_:)), #selector(swapPlayer(_:)), #selector(editLineup(_:)),
+		#selector(replaceTeam(_:)), #selector(launchGame(_:)), #selector(installHarness(_:)),
 	]
 
 	func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -261,6 +266,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 			return model.canEditPlayers(side: menuItem.tag / PlayerEdit.allCases.count)
 		case #selector(swapPlayer(_:)):
 			return model.canSwap(side: menuItem.tag)
+		case #selector(editLineup(_:)):
+			menuItem.toolTip = model.lineupHelp(side: menuItem.tag)
+			return model.canEditLineup(side: menuItem.tag)
 		case #selector(replaceTeam(_:)):
 			return model.canEditTeam(side: menuItem.tag)
 		case #selector(showTab(_:)):
@@ -337,8 +345,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 			}
 			.store(in: &watchers)
 		// After each change (@Published sends before it), the sheet the model asks for.
-		Publishers.Merge3(
+		Publishers.Merge4(
 			model.$swapPrompt.map { _ in () },
+			model.$lineupEditor.map { _ in () },
 			model.$launchPrompt.map { _ in () },
 			model.$installState.map { _ in () }
 		)
@@ -362,16 +371,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 	/// The viewer's own sheets.
 	private enum SheetKind: Equatable {
 		case swap(ObjectIdentifier)
+		case lineup(ObjectIdentifier)
 		case launch(ObjectIdentifier)
 		case install
 	}
 
-	/// Opens the sheet the model asks for on the viewer window (the swap prompt, the Launch FM24
-	/// sheet or the Install Harness sheet), closing the one open if it is another. A window in the
-	/// Dock comes back first, and the sheet opens once it has; a hidden one is shown.
+	/// Opens the sheet the model asks for on the viewer window (the swap prompt, or the Edit
+	/// line-up, Launch FM24 or Install Harness sheet), closing the one open if it is another. A
+	/// window in the Dock comes back first, and the sheet opens once it has; a hidden one is shown.
 	private func updateSheet() {
 		let wanted: SheetKind? =
 			model.swapPrompt.map { .swap(ObjectIdentifier($0)) }
+			?? model.lineupEditor.map { .lineup(ObjectIdentifier($0)) }
 			?? model.launchPrompt.map { .launch(ObjectIdentifier($0)) }
 			?? (model.installState != nil ? .install : nil)
 		guard sheet?.kind != wanted else {
@@ -403,6 +414,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 				SwapSheet(model: model, prompt: prompt, players: model.players)
 			)
 			title = SwapPrompt.title
+		case .lineup:
+			guard let editor = model.lineupEditor else {
+				return
+			}
+			controller = AppDelegate.sized(LineupSheet(model: model, editor: editor))
+			title = editor.title
 		case .launch:
 			guard let prompt = model.launchPrompt else {
 				return
@@ -427,6 +444,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 			self.prompts.sheet = nil
 			switch wanted {
 			case .swap: self.model.cancelSwap()
+			case .lineup: self.model.cancelLineup()
 			case .launch: self.model.cancelLaunch()
 			case .install: self.model.closeInstall()
 			}

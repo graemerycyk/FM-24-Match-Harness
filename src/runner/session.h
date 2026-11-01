@@ -38,6 +38,7 @@ typedef enum SessionOutcome {
 	SESSION_REFUSED,     // the harness did not answer with a status
 	SESSION_EXITED,      // the game exited
 	SESSION_TIMED_OUT,
+	SESSION_STOPPED, // a batch was asked to stop while the wait went on (SessionStop)
 } SessionOutcome;
 
 typedef struct SessionSample {
@@ -45,6 +46,7 @@ typedef struct SessionSample {
 	bool running; // the game's process is running
 	SessionAnswer answer;
 	GameStatus status; // with SESSION_ANSWER_STATUS
+	bool stopped;      // a stop was asked (SessionStop): a wait it does not decide ends
 } SessionSample;
 
 typedef struct SessionWait {
@@ -64,12 +66,27 @@ typedef struct SessionWait {
 // Takes a sample of the game; the wait sets its time.
 typedef void SessionPoll(void *context, SessionSample *sample);
 
+// What a batch's check of the game asks while it waits, behind another runner's job or for the
+// game: true from `asked` ends the wait (SESSION_STOPPED). A check the first sample decides is not
+// stopped.
+typedef struct SessionStop {
+	bool (*asked)(void *context);
+	void *context;
+	unsigned tickMs; // how often a status query asks while it waits for the harness to take it
+} SessionStop;
+
 // A command's job for a save: the game must have that save loaded and idle before it is submitted.
 typedef struct SessionNeed {
 	const char *save;   // as the harness names it; NULL or "" if the job is for whatever is loaded
 	bool launch;        // start the game with the save if it is not running (not --no-launch)
 	bool anySave;       // the job may use another save the game has loaded (--any-save)
 	unsigned timeoutMs; // how long the job may wait for another runner's job, and so may a check
+	// A batch's (zero for a command's job):
+	bool batch;           // the plan's launch= and any_save= decide, not a command's options
+	const char *savePath; // the save's .fm file to start the game with; NULL to look the name up
+	bool rosetta;         // start the game's x86_64 slice under Rosetta, as launch --rosetta does
+	unsigned readyS;      // how long the save may take to be loaded and idle; 0 for launch's default
+	SessionStop *stop;    // what ends the check while it waits; NULL for nothing
 } SessionNeed;
 
 typedef enum SessionPlan {
@@ -78,8 +95,9 @@ typedef enum SessionPlan {
 	SESSION_PLAN_CHECK,  // wait for the running game, then submit the job if session_submits
 } SessionPlan;
 
-// Asks the harness what the game is doing, waiting at most `timeoutMs` for another runner's job.
-SessionAnswer session_query(GameStatus *status, unsigned timeoutMs);
+// Asks the harness what the game is doing, waiting at most `timeoutMs` for another runner's job,
+// or, with `stop`, until a stop is asked meanwhile (SESSION_ANSWER_NONE).
+SessionAnswer session_query(GameStatus *status, unsigned timeoutMs, SessionStop *stop);
 
 // What to do before a job for `need`, given whether a game process is `running` and whether it
 // `serves` this protocol's harness. A game without it gets the job as before, which explains.
@@ -100,7 +118,8 @@ void session_start(
 
 // The wait's outcome after one more sample: SESSION_WAITING until it is decided. A game that was
 // already running is decided by its first sample unless that finds it busy; one fm24ctl started
-// must be ready for SESSION_STABLE_SAMPLES in a row.
+// must be ready for SESSION_STABLE_SAMPLES in a row. A sample that does not decide it ends it if
+// `stopped`.
 SessionOutcome session_step(SessionWait *wait, const SessionSample *sample);
 
 // Samples the game every SESSION_POLL_MS until the wait is decided, printing its state as it
